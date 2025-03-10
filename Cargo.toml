@@ -1,0 +1,40 @@
+cargo-features = ["edition2024"]
+
+[package]
+name = "zygote"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["test"]
+test = []
+
+[dependencies]
+anyhow = "1.0.97"
+arrayvec = "0.7.6"
+clap = { version = "4.5.0", features = ["derive"] }
+libc = "0.2.161"
+static_assertions = "1.1.0"
+zerocopy = "0.8.21"
+
+[dev-dependencies]
+rustix = { version = "1.0.2", features = [
+    "alloc",
+    "event",
+    "fs",
+    "libc",
+    "libc_errno",
+    "mm",
+    "std",
+    "use-libc",
+    "use-libc-auxv",
+] }
+
+[[test]]
+name = "file_descriptor_tests_no_panic"
+path = "tests/file_descriptors/calm.rs"
+test = true
+bench = false
+doc = false
+harness = false
+required-features = ["test"]
