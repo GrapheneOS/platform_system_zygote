@@ -25,7 +25,6 @@ use std::{
 };
 
 use anyhow::Result;
-use arrayvec::ArrayVec;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 
@@ -58,11 +57,12 @@ pub struct Errno {
 
 pub(crate) fn errno() -> Errno {
     Errno {
-        // SAFETY: Reads from the thread's errno address should never fail
         #[cfg(not(target_os = "android"))]
+        // SAFETY: Reads from the thread's errno address should never fail
         code: unsafe { *libc::__errno_location() },
 
         #[cfg(target_os = "android")]
+        // SAFETY: Reads from the thread's errno address should never fail
         code: unsafe { *libc::__errno() },
     }
 }
@@ -85,6 +85,15 @@ impl std::error::Error for Errno {}
 
 pub type LibcResult<T> = std::result::Result<T, Errno>;
 
+// TODO: Consider adding [`closedir`] as a destructor.
+pub struct LibcDir {
+    inner: NonNull<libc::DIR>,
+}
+
+fn libcdir_from_nonnull(ptr: NonNull<libc::DIR>) -> LibcDir {
+    LibcDir { inner: ptr }
+}
+
 pub fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
     if retval == T::from(-1) {
         Err(errno())
@@ -102,27 +111,19 @@ pub fn libc_result_from_int_with_aux<T: Eq + From<i8>, P>(retval: T, payload: P)
     }
 }
 
-pub fn libc_result_from_ptr<T>(retval: *mut T) -> LibcResult<NonNull<T>> {
-    NonNull::new(retval).ok_or(errno())
-}
-
-pub fn libc_result_from_ptr_with_constructor<T, P>(
-    retval: *mut T,
-    constructor: impl Fn(*mut T) -> P,
-) -> LibcResult<P> {
-    if retval.is_null() {
-        Err(errno())
-    } else {
-        Ok(constructor(retval))
-    }
-}
-
 pub fn libc_result_from_int_with_void<T: Eq + From<i8>>(retval: T) -> LibcResult<()> {
     if retval == T::from(-1) {
         Err(errno())
     } else {
         Ok(())
     }
+}
+
+pub fn libc_result_from_ptr<T, U, C: Fn(NonNull<T>) -> U>(
+    retval: *mut T,
+    constructor: C,
+) -> LibcResult<U> {
+    NonNull::new(retval).map(constructor).ok_or(errno())
 }
 
 /*
@@ -158,6 +159,9 @@ pub fn bound_socket_address(path: &str, family: libc::sa_family_t) -> libc::sock
 // TODO: Handle EINTR
 
 pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> {
+    // SAFETY: The pointer argument to `libc::bind` is guaranteed to reference
+    //         allocated memory and the return value is checked and wrapped in
+    //         a LibcResult type.
     libc_result_from_int_with_void(unsafe {
         libc::bind(
             fd,
@@ -173,50 +177,77 @@ pub fn close(fd: RawFd) -> LibcResult<c_int> {
     libc_result_from_int(unsafe { libc::close(fd) })
 }
 
-pub fn closedir(dir: NonNull<libc::DIR>) -> LibcResult<c_int> {
-    libc_result_from_int(unsafe { libc::closedir(dir.as_ptr()) })
+pub fn closedir(dir: LibcDir) -> LibcResult<()> {
+    // SAFETY: The directory struct pointer is guaranteed to be NonNull and
+    //         the return value is checked and wrapped in a LibcResult type.
+    libc_result_from_int_with_void(unsafe { libc::closedir(dir.inner.as_ptr()) })
 }
 
-pub fn dirfd(dir: &NonNull<libc::DIR>) -> LibcResult<RawFd> {
-    libc_result_from_int(unsafe { libc::dirfd(dir.as_ptr()) })
+pub fn dirfd(dir: &LibcDir) -> LibcResult<RawFd> {
+    // SAFETY: The directory struct pointer is guaranteed to be NonNull and
+    //         the return value is checked and wrapped in a LibcResult type.
+    libc_result_from_int(unsafe { libc::dirfd(dir.inner.as_ptr()) })
 }
 
-pub fn dup3(oldfd: RawFd, newfd: RawFd, flags: c_int) -> LibcResult<c_int> {
+pub fn dup3(oldfd: RawFd, newfd: RawFd, flags: c_int) -> LibcResult<()> {
     #[cfg(not(target_os = "android"))]
-    return libc_result_from_int(unsafe { libc::dup3(oldfd, newfd, flags) });
+    // SAFETY: Invalid arguments will result in an error code being returned
+    //         that will be wrapped by a LibcResult.
+    return libc_result_from_int_with_void(unsafe { libc::dup3(oldfd, newfd, flags) });
 
     #[cfg(target_os = "android")]
-    return libc_result_from_int(unsafe { libc_fill::dup3(oldfd, newfd, flags) });
+    // SAFETY: Invalid arguments will result in an error code being returned
+    //         that will be wrapped by a LibcResult.
+    return libc_result_from_int_with_void(unsafe { libc_fill::dup3(oldfd, newfd, flags) });
 }
 
 pub fn fcntl_getfd(fd: RawFd) -> LibcResult<c_int> {
+    // SAFETY: An invalid file descriptor will result in an error code being
+    //         returned that will be wrapped by a LibcResult.
     libc_result_from_int(unsafe { libc::fcntl(fd, libc::F_GETFD) })
 }
 
 pub fn fcntl_getfl(fd: RawFd) -> LibcResult<c_int> {
+    // SAFETY: An invalid file descriptor will result in an error code being
+    //         returned that will be wrapped by a LibcResult.
     libc_result_from_int(unsafe { libc::fcntl(fd, libc::F_GETFL) })
 }
 
 pub fn fcntl_setfd(fd: RawFd, flags: c_int) -> LibcResult<()> {
+    // SAFETY: Invalid arguments will result in an error code being returned
+    //         that will be wrapped by a LibcResult.
     libc_result_from_int_with_void(unsafe { libc::fcntl(fd, libc::F_SETFD, flags) })
 }
 
 pub fn fcntl_setfl(fd: RawFd, flags: c_int) -> LibcResult<()> {
+    // SAFETY: Invalid arguments will result in an error code being returned
+    //         that will be wrapped by a LibcResult.
     libc_result_from_int_with_void(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) })
 }
 
 pub fn fstat(fd: RawFd) -> LibcResult<libc::stat> {
     let mut buffer = MaybeUninit::<libc::stat>::uninit();
 
-    libc_result_from_int_with_aux(unsafe { libc::fstat(fd, buffer.as_mut_ptr().cast()) }, unsafe {
-        buffer.assume_init()
-    })
+    libc_result_from_int_with_aux(
+        // SAFETY: The stat buffer pointer is guaranteed to point to a valid
+        //         memory address.  The return value is checked and wrapped in
+        //         a LibcResult type.
+        unsafe { libc::fstat(fd, buffer.as_mut_ptr().cast()) },
+        // SAFETY: The `libc::fstat` function fully initializes the stat
+        //         struct.
+        unsafe { buffer.assume_init() },
+    )
 }
 
 pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
     let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
     let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
+    // SAFETY: The address buffer pointer is guaranteed to reference valid
+    //         memory that has been zeroed out.  This ensures that the any
+    //         strings contained in the buffer will be valid null-terminated
+    //         C strings.  The return value is checked and wrapped in a
+    //         LibcResult type.
     libc_result_from_int(unsafe {
         libc::getsockname(fd, addr.as_mut_ptr().cast(), &mut addr_len)
     })?;
@@ -227,6 +258,9 @@ pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
         return Err(Errno { code: 0 });
     }
 
+    // SAFETY: The memory had been zero initialized before `libc::getsockname`
+    //         filled in any relevant data.  All strings should be valid C
+    //         strings.
     let addr = unsafe { addr.assume_init() };
 
     if addr.sun_family != libc::AF_UNIX as u16 {
@@ -239,33 +273,54 @@ pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
 }
 
 pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> LibcResult<libc::off64_t> {
+    // SAFETY: The `libc::lseek64` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult type.  Invalid
+    //         argument values will result in a None variant being returned.
     libc_result_from_int(unsafe { libc::lseek64(fd, offset, whence) })
 }
 
-pub fn open(path: &[u8], flags: c_int) -> LibcResult<RawFd> {
+pub fn open(path: &CStr, flags: c_int) -> LibcResult<RawFd> {
+    // SAFETY: Path points to a valid, null-terminated C string and the return
+    //         value is checked and wrapped in a LibcResult type.
     libc_result_from_int(unsafe { libc::open(path.as_ptr().cast(), flags) })
 }
 
-pub fn opendir(path: &CStr) -> LibcResult<NonNull<libc::DIR>> {
-    libc_result_from_ptr(unsafe { libc::opendir(path.as_ptr()) })
+pub fn opendir(path: &CStr) -> LibcResult<LibcDir> {
+    // SAFETY: Path points to a valid, null-terminated C string and the return
+    //         value is checked and wrapped in a LibcResult type.  The pointer
+    //         itself has been verified as non-null and is thus wrapped in the
+    //         appropriate helper type.
+    libc_result_from_ptr(unsafe { libc::opendir(path.as_ptr()) }, libcdir_from_nonnull)
 }
 
 pub fn pipe() -> LibcResult<(RawFd, RawFd)> {
     let mut pipes = [0; 2];
+    // SAFETY: The file descriptor buffer is guaranteed to point to valid memory
+    //         and the return value is checked before the resulting pipes are
+    //         wrapped in a LibcResult type.
     libc_result_from_int_with_aux(unsafe { libc::pipe(pipes.as_mut_ptr()) }, (pipes[0], pipes[1]))
 }
 
-pub fn readdir(dir: &NonNull<libc::DIR>) -> Option<NonNull<libc::dirent>> {
-    libc_result_from_ptr(unsafe { libc::readdir(dir.as_ptr()) }).ok()
+pub fn readdir(dir: &LibcDir) -> Option<NonNull<libc::dirent>> {
+    // SAFETY: The pointer to the directory is guaranteed to be NonNull and the
+    //         return value is checked and wrapped in a LibcResult type.  The
+    //         pointer itself has been verified as non-null and is thus wrapped
+    //         in the appropriate helper type.
+    libc_result_from_ptr(unsafe { libc::readdir(dir.inner.as_ptr()) }, std::convert::identity).ok()
 }
 
-pub fn readlink(path_name: &mut ArrayVec<u8, STRING_BUF_SIZE>) -> LibcResult<CStringBuffer> {
+pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
     let mut link_buffer: CStringBuffer = EMPTY_CSTRING_BUFFER;
 
     libc_result_from_int_with_aux(
+        // SAFETY: The path name is guaranteed to be a valid null-terminated C
+        //         string.  The link buffer is guaranteed to be a
+        //         zero-initialized buffer and the size_of function is used to
+        //         provide the buffer length to the libc call.  The return
+        //         value is checked and wrapped in a LibcResult type.
         unsafe {
             libc::readlink(
-                path_name.as_slice().as_ptr().cast(),
+                path_name.as_ptr(),
                 link_buffer.as_mut_ptr().cast(),
                 std::mem::size_of::<CStringBuffer>(),
             )
@@ -275,5 +330,8 @@ pub fn readlink(path_name: &mut ArrayVec<u8, STRING_BUF_SIZE>) -> LibcResult<CSt
 }
 
 pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
+    // SAFETY: Invalid argument values will result in a error being returned
+    //         by `libc::socket`.  The return value is checked and wrapped in
+    //         a LibcResult type.
     libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
 }

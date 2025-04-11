@@ -87,7 +87,7 @@ impl Action {
                     offset,
                     ..
                 } => {
-                    let new_fd = sys::open(path.as_slice(), *fs_flags_open).unwrap_or_else(|_| {
+                    let new_fd = sys::open(path.as_cstr(), *fs_flags_open).unwrap_or_else(|_| {
                         panic!(
                             "Failed to open new file descriptor to existing path: {:?}",
                             path.as_cstr()
@@ -193,8 +193,9 @@ impl FileDescriptorInfo {
     fn get_file_info(fd: RawFd, stat: &libc::stat) -> Result<FileDescriptorInfo> {
         let mut path_cstr_buff = ArrayVec::<u8, STRING_BUF_SIZE>::new();
         write!(path_cstr_buff, "{}/{}\0", PROC_PATH_FD_PREFIX, fd)?;
+        let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice()).unwrap();
 
-        let link_path = sys::readlink(&mut path_cstr_buff)
+        let link_path = sys::readlink(path_cstr)
             .with_context(|| format!("Unable to read procfs symlink for fd {}", fd))?;
 
         // File descriptor flags : currently on FD_CLOEXEC. We can set these
@@ -349,8 +350,7 @@ impl FileDescriptorRegistry {
     pub fn execute_actions(&self) {
         assert_single_threaded();
 
-        let dev_null_fd =
-            sys::open(DEV_NULL_PATH_C.to_bytes(), libc::O_RDWR | libc::O_CLOEXEC).unwrap();
+        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC).unwrap();
 
         for entry in &self.data {
             entry.action.execute(entry.fd, &entry.info, dev_null_fd);

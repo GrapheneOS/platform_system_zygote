@@ -18,7 +18,6 @@
 //! This library contains the logic used by the Zygote executable.
 
 #![allow(missing_docs)]
-#![allow(clippy::undocumented_unsafe_blocks)]
 
 #[cfg(any(test, feature = "test"))]
 pub mod test;

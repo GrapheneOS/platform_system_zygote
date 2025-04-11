@@ -43,6 +43,8 @@ pub(crate) fn get_open_file_descriptors() -> Result<Vec<RawFd>> {
 
     let mut fd_vec = Vec::<RawFd>::new();
     while let Some(dir_entry) = sys::readdir(&proc_self_fds_dir) {
+        // SAFETY: Libc guarantees that the dir_entry->d_name member contains
+        //         a valid C string.
         let dir_entry_str =
             unsafe { std::ffi::CStr::from_ptr((*dir_entry.as_ptr()).d_name.as_ptr()) };
 
