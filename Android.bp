@@ -35,6 +35,27 @@ rust_library {
     ],
 }
 
+rust_library {
+    name: "libzygote_test",
+    crate_name: "zygote",
+    host_supported: true,
+    edition: "2024",
+    features: [
+        "test",
+    ],
+    srcs: [
+        "src/lib.rs",
+    ],
+    rustlibs: [
+        "libanyhow",
+        "libarrayvec",
+        "libclap",
+        "liblibc",
+        "libstatic_assertions",
+        "libzerocopy",
+    ],
+}
+
 rust_binary {
     name: "zygote_next",
     host_supported: true,
@@ -50,10 +71,10 @@ rust_binary {
 }
 
 rust_test_host {
-    name: "zygote_next_test",
+    name: "zygote_next_unit_tests",
     edition: "2024",
-    flags: [
-        "--cfg feature=\\\"test\\\"",
+    features: [
+        "test",
     ],
     srcs: [
         "src/lib.rs",
@@ -65,5 +86,25 @@ rust_test_host {
         "liblibc",
         "libstatic_assertions",
         "libzerocopy",
+    ],
+}
+
+rust_test_host {
+    name: "zygote_next_integration_test_fd_no_panic",
+    edition: "2024",
+    test_harness: false,
+    cfgs: [
+        "test",
+    ],
+    features: [
+        "test",
+    ],
+    srcs: [
+        "tests/file_descriptors/calm.rs",
+    ],
+    rustlibs: [
+        "librustix",
+        "liblibtest_mimic",
+        "libzygote_test",
     ],
 }

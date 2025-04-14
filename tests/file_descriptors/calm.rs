@@ -13,7 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::assert_eq;
+//! Non-panicking tests of the file descriptor registry.  These tests need to
+//! be run without a test harness to avoid having unknown file descriptors
+//! open during execution.
+
+use core::{assert_eq, ops::Deref};
 use std::{
     fs::File,
     os::fd::{AsRawFd, RawFd},
@@ -27,6 +31,9 @@ use zygote::{
     sys::{self, AsCStr},
     test,
 };
+
+// Command-line arguments to ignore, because they are not supported by libtest-mimic.
+const IGNORED_ARGS: [&str; 2] = ["-Zunstable-options", "--report-time"];
 
 #[track_caller]
 fn assert_fd_closed(fd: RawFd) {
@@ -58,33 +65,9 @@ fn assert_fd_open_to(fd: RawFd, target: &str) {
     }
 }
 
-// TODO: Clean up if this test fails
-fn main() -> Result<(), std::io::Error> {
+fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
     assert_single_threaded();
 
-    // Test Plan:
-    //   * register ✓
-    //   * register_new ✓
-    //   * audit ✓
-    //   * execute_actions
-    //   * close_delayed
-    //   * Allow lists:
-    //     * Global ✓
-    //     * Species ✓
-    //     * Dynamic ✓
-    //   * File types:
-    //     * FIFO ✓
-    //     * File ✓
-    //     * Abstract Socket ✓
-    //     * Bound socket ✓
-    //   * Actions
-    //     * Close ✓
-    //     * Delay ✓
-    //     * DupeNull ✓
-    //     * Ignore ✓
-    //     * Reopen ✓
-
-    // TODO: If a panic occurs inside this body the cleanup code won't get called.  Why?
     test::manage_test(|| {
         /*
          * Initialize registry
@@ -180,4 +163,21 @@ fn main() -> Result<(), std::io::Error> {
     });
 
     Ok(())
+}
+
+fn main() -> Result<(), std::io::Error> {
+    let args = libtest_mimic::Arguments {
+        // Force single-threaded execution to ensure file descriptor operations
+        // do not interfere with one another.
+        test_threads: Some(1),
+        ..libtest_mimic::Arguments::from_iter(
+            std::env::args().filter(|arg| !IGNORED_ARGS.contains(&arg.deref())),
+        )
+    };
+
+    let tests = vec![libtest_mimic::Trial::test("file_descriptor_registry_test", || {
+        Ok(test_file_descriptor_registry()?)
+    })];
+
+    libtest_mimic::run(&args, tests).exit();
 }
