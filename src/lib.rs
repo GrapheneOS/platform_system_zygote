@@ -17,8 +17,6 @@
 //!
 //! This library contains the logic used by the Zygote executable.
 
-#![allow(missing_docs)]
-
 #[cfg(any(test, feature = "test"))]
 pub mod test;
 

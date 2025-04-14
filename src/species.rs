@@ -13,6 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! "Species" are an abstraction over the preloaded resources, process
+//! creation details, and control flow transfer mechanism utilized by different
+//! clients of the Zygote process server architecture.
+
 use core::ffi::CStr;
 use std::str::FromStr;
 
@@ -20,6 +24,8 @@ pub mod android_native;
 #[cfg(any(test, feature = "test"))]
 pub mod mock;
 
+/// An entry structure for file allow lists.  This is marked as test-only
+/// because the only current user is the mock testing class.
 #[cfg(any(test, feature = "test"))]
 pub(crate) struct FileAllowListEntry {
     data: &'static CStr,
@@ -29,6 +35,7 @@ pub(crate) struct FileAllowListEntry {
     _reviewed: &'static str,
 }
 
+/// A constructor for [`FileAllowListEntry`] structs
 #[cfg(any(test, feature = "test"))]
 pub(crate) const fn file_entry(
     data: &'static CStr,
@@ -38,6 +45,8 @@ pub(crate) const fn file_entry(
     FileAllowListEntry { data, _reviewer, _reviewed }
 }
 
+/// An entry structure for socket allow lists.  This is marked as test-only
+/// because the only current user is the mock testing class.
 #[cfg(any(test, feature = "test"))]
 pub(crate) struct SocketAllowListEntry {
     data: &'static str,
@@ -47,6 +56,7 @@ pub(crate) struct SocketAllowListEntry {
     _reviewed: &'static str,
 }
 
+/// A constructor for [`SocketAllowListEntry`] structs.
 #[cfg(any(test, feature = "test"))]
 pub(crate) const fn socket_entry(
     data: &'static str,
@@ -56,23 +66,35 @@ pub(crate) const fn socket_entry(
     SocketAllowListEntry { data, _reviewer, _reviewed }
 }
 
+/// A reference type for a statically allocated Species VTable.
 pub type SpeciesRef = &'static (dyn Species + Sync);
 
+/// All production species.
 #[cfg(not(any(test, feature = "test")))]
 const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App];
 
+/// All production and test species.
 #[cfg(any(test, feature = "test"))]
-const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &mock::Mock];
+const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &mock::Turtle];
 
+/// A collection of callbacks implemented by Zygote payloads that determine
+/// runtime behaviors such as preloading, process creation, and transfer
+/// of control flow.
 pub trait Species {
+    /// Returns true if an abstract socket name is allowed to be registered
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
+    /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_is_allowed(&self, name: &str) -> bool;
+    /// Returns the name of the species
     fn name(&self) -> &'static str;
+    /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
+    /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
 
     // Helper functions
 
+    /// A simple test to check of a provided path string is absolute or not.
     fn path_is_absolute(&self, path_str: &str) -> bool {
         path_str.starts_with("/") && !path_str.contains("/../")
     }
@@ -81,6 +103,8 @@ pub trait Species {
 impl FromStr for SpeciesRef {
     type Err = String;
 
+    /// Iterates through [`SPECIES_LIST`] to find a reference to a species with
+    /// the provided name.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         for species in SPECIES_LIST {
             if species.name() == s {

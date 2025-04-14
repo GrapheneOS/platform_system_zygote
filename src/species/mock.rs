@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! A mock species implementation used for testing.
+
 use core::ffi::CStr;
 
 use crate::{
@@ -35,9 +37,12 @@ static ALLOWED_SOCKET_PATHS: [SocketAllowListEntry; 1] = [
     socket_entry(crate::test::SOCKET_PATH_1, "testname", "2025-02-19"),
 ];
 
-pub struct Mock;
+/// Behaviors for testing the Zygote process server.
+///
+/// See: https://en.wikipedia.org/wiki/Mock_Turtle
+pub struct Turtle;
 
-impl Species for Mock {
+impl Species for Turtle {
     fn abstract_socket_is_allowed(&self, name: &str) -> bool {
         ALLOWED_SOCKET_NAMES.iter().any(|entry| entry.data == name)
     }

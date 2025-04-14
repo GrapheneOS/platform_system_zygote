@@ -13,10 +13,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This module provides extern definitions for `libc` functions that are not
+//! defined by the `libc` crate for some platforms.
+
 #[cfg(target_os = "android")]
 use core::ffi::c_int;
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {
+    /// This variant of `dup` is used by
+    /// [`file_descriptor::FileDescriptorEntry::execute`] to ensure that the
+    /// correct flags (e.g. libc::O_CLOEXEC) are set during the duplication
+    /// operation.
+    ///
+    /// See `man dup`
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
 }

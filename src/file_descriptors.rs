@@ -13,6 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This module implements a file descriptor hygiene registry that is used to
+//! ensure that:
+//!   * Every file descriptor opened by the process is registered
+//!   * File descriptors that are opened are allowed to be open
+//!   * File descriptors are either duped or closed appropriate after forking
+
 // TODO: Figure out a strategy for the dynamic allocations currently involved
 //       in string handling.
 
@@ -23,7 +29,6 @@ use core::{
 use std::{
     cmp::Ordering,
     convert::TryFrom,
-    io::Write,
     os::fd::{AsRawFd, RawFd},
 };
 
@@ -32,120 +37,48 @@ use arrayvec::{ArrayString, ArrayVec};
 use zerocopy::IntoBytes;
 
 use crate::{
-    introspection::{self, assert_single_threaded},
+    introspection::{self, assert_single_threaded, get_proc_fd_link_info},
     species::SpeciesRef,
-    sys::{self, AsCStr, CStringBuffer, STRING_BUF_SIZE},
+    sys::{self, AsCStr, CStringBuffer},
 };
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
 const REGISTRY_SIZE: usize = 512;
 
+/// Path to the null character device for Unix-like systems
 pub const DEV_NULL_PATH: &str = "/dev/null";
+/// Path to the null character device for Unix-like systems, represented as a
+/// null-terminated C string.
 pub const DEV_NULL_PATH_C: &CStr = c"/dev/null";
+/// Path to the urandom character device for Unix-like systems
 pub const DEV_URANDOM_PATH: &str = "/dev/urandom";
 
-pub const PROC_PATH_FD_PREFIX: &str = "/proc/self/fd/";
-
+/// File paths used by the Zygote that are allowed to be registered
 static ALLOWED_FILE_PATHS: &[&str] = &[DEV_NULL_PATH, DEV_URANDOM_PATH];
 
+// Socket paths used by the Zygote that are allowed to be registered
 static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum Action {
-    Close,
-    Delay,
-    DupeNull,
-    Ignore,
-    Reopen,
-}
-
-impl Action {
-    fn close_delayed(&self, fd: RawFd) {
-        if *self == Action::Delay {
-            sys::close(fd).unwrap();
-        }
-    }
-
-    fn execute(&self, fd: RawFd, info: &FileDescriptorInfo, dev_null_fd: RawFd) {
-        match self {
-            Action::Close => {
-                sys::close(fd).unwrap();
-            }
-            Action::Delay | Action::Ignore => {
-                // Nothing to see here
-            }
-            Action::DupeNull => {
-                sys::dup3(dev_null_fd, fd, libc::O_CLOEXEC)
-                    .unwrap_or_else(|_| panic!("Failed to dup3 fd {} to /dev/null", fd));
-            }
-            Action::Reopen => match info {
-                FileDescriptorInfo::FileInfo {
-                    path,
-                    fd_flags,
-                    fs_flags_open,
-                    fs_flags_rest,
-                    offset,
-                    ..
-                } => {
-                    let new_fd = sys::open(path.as_cstr(), *fs_flags_open).unwrap_or_else(|_| {
-                        panic!(
-                            "Failed to open new file descriptor to existing path: {:?}",
-                            path.as_cstr()
-                        )
-                    });
-
-                    sys::fcntl_setfd(new_fd, *fd_flags).unwrap_or_else(|errno| {
-                        panic!("Failed to set descriptor flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fd_flags, errno);
-                    });
-
-                    sys::fcntl_setfl(new_fd, *fs_flags_rest).unwrap_or_else(|errno| {
-                        panic!("Failed to set status flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fs_flags_rest, errno);
-                    });
-
-                    sys::lseek64(new_fd, *offset, libc::SEEK_SET).unwrap_or_else(|errno| {
-                        panic!("Failed to set seek head for new file descriptor (path: {:?}, offset: {}): {}", path.as_cstr(), offset, errno);
-                    });
-
-                    // TODO: Move bit-twiddling into a function
-                    let dup_flags = if (fd_flags & libc::FD_CLOEXEC) == libc::FD_CLOEXEC {
-                        libc::O_CLOEXEC
-                    } else {
-                        0
-                    };
-
-                    sys::dup3(new_fd, fd, dup_flags).unwrap_or_else(|errno| {
-                        panic!("Failed to dup3 a new file descriptor to existing descriptor (path: {:?}, existing: {}, new: {:?}): {}", path.as_cstr(), fd, new_fd, errno);
-                    });
-
-                    sys::close(new_fd).unwrap();
-                }
-                _ => {
-                    panic!("Invalid file type ({}) registered with `Reopen` action", info);
-                }
-            },
-        }
-    }
-}
-
-// TODO: This is currently marked public so that it can be called from
-//       integration tests.  Re-evaluate this and see if there is a better
-//       solution.
+/// Information necessary to identify and perform actions for supported file
+/// types.
 #[derive(Eq, PartialEq)]
-pub enum FileDescriptorInfo {
-    AbstractSocketInfo {
+enum FileDescriptorInfo {
+    AbstractSocket {
         name: ArrayString<{ sys::STRING_BUF_SIZE }>,
     },
-    BoundSocketInfo {
+    BoundSocket {
         path: ArrayString<{ sys::STRING_BUF_SIZE }>,
     },
-    FifoInfo,
-    FileInfo {
+    Fifo,
+    File {
         dev: u64,
         inode: u64,
         path: CStringBuffer,
         fd_flags: c_int,
+        /// Flags set via the [`libc::open`] function
         fs_flags_open: c_int,
-        fs_flags_rest: c_int,
+        /// Flags set via the [`libc::fcntl`] function
+        fs_flags_fcntl: c_int,
         offset: libc::off64_t,
     },
 }
@@ -153,14 +86,20 @@ pub enum FileDescriptorInfo {
 impl fmt::Display for FileDescriptorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AbstractSocketInfo { name } => write!(f, "Abstract Socket ({})", name),
-            Self::BoundSocketInfo { path } => write!(f, "Bound Socket ({})", path),
-            Self::FifoInfo => write!(f, "FIFO"),
-            Self::FileInfo { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
+            Self::AbstractSocket { name } => write!(f, "Abstract Socket ({})", name),
+            Self::BoundSocket { path } => write!(f, "Bound Socket ({})", path),
+            Self::Fifo => write!(f, "FIFO"),
+            Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
         }
     }
 }
 
+/// Support construction of FileDescriptorInfo structs from raw file
+/// descriptors.  Supported file types are:
+///   * Regular files
+///   * Character files
+///   * FIFO files
+///   * Sockets
 impl TryFrom<RawFd> for FileDescriptorInfo {
     type Error = anyhow::Error;
 
@@ -174,10 +113,8 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
         // S_ISDIR : Not supported. (We could if we wanted to, but it's unused).
         // S_ISLINK : Not supported.
         // S_ISBLK : Not supported.
-        //
-        // TODO: Move bit-twiddling into a function
-        match (stat.st_mode as libc::mode_t) & libc::S_IFMT {
-            libc::S_IFIFO => Ok(FileDescriptorInfo::FifoInfo),
+        match sys::get_file_type(stat.st_mode as libc::mode_t) {
+            libc::S_IFIFO => Ok(FileDescriptorInfo::Fifo),
             libc::S_IFCHR | libc::S_IFREG => Self::get_file_info(fd, &stat),
             libc::S_IFSOCK => Self::get_socket_info(fd),
             file_type => Err(anyhow!(
@@ -190,13 +127,11 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
 }
 
 impl FileDescriptorInfo {
+    /// Gather information about the provided file descriptor from procfs,
+    /// fcntl, and lseek64.  Combine this new information with the provided
+    /// stat data to build a new FileInfo struct.
     fn get_file_info(fd: RawFd, stat: &libc::stat) -> Result<FileDescriptorInfo> {
-        let mut path_cstr_buff = ArrayVec::<u8, STRING_BUF_SIZE>::new();
-        write!(path_cstr_buff, "{}/{}\0", PROC_PATH_FD_PREFIX, fd)?;
-        let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice()).unwrap();
-
-        let link_path = sys::readlink(path_cstr)
-            .with_context(|| format!("Unable to read procfs symlink for fd {}", fd))?;
+        let link_path = get_proc_fd_link_info(fd)?;
 
         // File descriptor flags : currently on FD_CLOEXEC. We can set these
         // using F_SETFD - we're single threaded at this point of execution so
@@ -227,30 +162,73 @@ impl FileDescriptorInfo {
         let fs_flags_open = fs_flags & fs_flags_open_bitmask;
         let fs_flags_rest = fs_flags & !fs_flags_open_bitmask;
 
-        Ok(FileDescriptorInfo::FileInfo {
+        Ok(FileDescriptorInfo::File {
             dev: stat.st_dev,
             inode: stat.st_ino as _,
             path: link_path,
             fd_flags,
             fs_flags_open,
-            fs_flags_rest,
+            fs_flags_fcntl: fs_flags_rest,
             offset,
         })
     }
 
+    /// Get the socket name and parse it into either a Abstract or Bound
+    /// SocketInfo struct.
     fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
         let (addr, path_len) = sys::getsockname(fd)?;
         let sun_bytes: &[u8] = &addr.sun_path.as_bytes()[..path_len];
 
         match sun_bytes {
-            [0, text @ ..] => Ok(FileDescriptorInfo::AbstractSocketInfo {
+            [0, text @ ..] => Ok(FileDescriptorInfo::AbstractSocket {
                 name: ArrayString::from(CStr::from_bytes_until_nul(text)?.to_str()?).unwrap(),
             }),
-            text => Ok(FileDescriptorInfo::BoundSocketInfo {
+            text => Ok(FileDescriptorInfo::BoundSocket {
                 path: ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
             }),
         }
     }
+}
+
+/// Use `procfs` to assert that a provided file descriptor is open and either
+/// has has a file path equal to `target` or is an abstract socket with
+/// `target` as its name.
+#[cfg(feature = "test")]
+#[track_caller]
+pub fn assert_fd_open_to(fd: RawFd, target: &str) {
+    assert!(crate::introspection::get_proc_fd_path(fd).exists());
+
+    match FileDescriptorInfo::try_from(fd).unwrap() {
+        FileDescriptorInfo::AbstractSocket { name } => assert_eq!(name.as_str(), target),
+        FileDescriptorInfo::BoundSocket { path, .. } => {
+            assert_eq!(path.as_str(), target)
+        }
+        FileDescriptorInfo::File { path, .. } => {
+            assert_eq!(path.as_cstr().unwrap().to_str().unwrap(), target)
+        }
+        _ => panic!(
+            "File descriptor {} refers to kernel object without a file system path",
+            fd.as_raw_fd()
+        ),
+    }
+}
+
+/// Tags used by the registry to specify what operations to perform when
+/// [`FileDescriptorRegistry::execute_actions`] and
+/// [`FileDescriptorRegistry::close_delayed`] are called.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Action {
+    /// Close the file when `execute_action` is called
+    Close,
+    /// Close the file when `close_delayed` is called
+    Delay,
+    /// Use the `dup3` call to make the file descriptor point to /dev/null
+    DupeNull,
+    /// Do nothing with the file descriptor
+    Ignore,
+    /// Re-open the file when `execute_action` is called, thus ensuring that
+    /// child processes point to a unique kernel file structure
+    Reopen,
 }
 
 struct FileDescriptorEntry {
@@ -259,7 +237,86 @@ struct FileDescriptorEntry {
     action: Action,
 }
 
+impl FileDescriptorEntry {
+    /// Close the associated file descriptor if it is registered with the Delay
+    /// action.  This function shall only be called after a fork even in the
+    /// context of the child process.
+    fn close_delayed(&self) {
+        if self.action == Action::Delay {
+            sys::close(self.fd).unwrap();
+        }
+    }
+
+    /// Handle Close, DupeNull, and Reopen actions for the associated file
+    /// descriptor.  This function shall only be called after a fork even in
+    /// the context of the child process.
+    fn execute(&self, dev_null_fd: RawFd) {
+        match self.action {
+            Action::Close => {
+                sys::close(self.fd).unwrap();
+            }
+            Action::Delay | Action::Ignore => {
+                // Nothing to see here
+            }
+            Action::DupeNull => {
+                sys::dup3(dev_null_fd, self.fd, libc::O_CLOEXEC)
+                    .unwrap_or_else(|_| panic!("Failed to dup3 fd {} to /dev/null", self.fd));
+            }
+            Action::Reopen => match &self.info {
+                FileDescriptorInfo::File {
+                    path,
+                    fd_flags,
+                    fs_flags_open,
+                    fs_flags_fcntl: fs_flags_rest,
+                    offset,
+                    ..
+                } => {
+                    let new_fd =
+                        sys::open(path.as_cstr().unwrap(), *fs_flags_open).unwrap_or_else(|_| {
+                            panic!(
+                                "Failed to open new file descriptor to existing path: {:?}",
+                                path.as_cstr()
+                            )
+                        });
+
+                    sys::fcntl_setfd(new_fd, *fd_flags).unwrap_or_else(|errno| {
+                        panic!("Failed to set descriptor flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fd_flags, errno);
+                    });
+
+                    sys::fcntl_setfl(new_fd, *fs_flags_rest).unwrap_or_else(|errno| {
+                        panic!("Failed to set status flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fs_flags_rest, errno);
+                    });
+
+                    sys::lseek64(new_fd, *offset, libc::SEEK_SET).unwrap_or_else(|errno| {
+                        panic!("Failed to set seek head for new file descriptor (path: {:?}, offset: {}): {}", path.as_cstr(), offset, errno);
+                    });
+
+                    // TODO: Move bit-twiddling into a function
+                    let dup_flags = if (fd_flags & libc::FD_CLOEXEC) == libc::FD_CLOEXEC {
+                        libc::O_CLOEXEC
+                    } else {
+                        0
+                    };
+
+                    sys::dup3(new_fd, self.fd, dup_flags).unwrap_or_else(|errno| {
+                        panic!("Failed to dup3 a new file descriptor to existing descriptor (path: {:?}, existing: {}, new: {:?}): {}", path.as_cstr(), self.fd, new_fd, errno);
+                    });
+
+                    sys::close(new_fd).unwrap();
+                }
+                _ => {
+                    panic!("Invalid file type ({}) registered with `Reopen` action", &self.info);
+                }
+            },
+        }
+    }
+}
+
 // TODO: Either arena-allocate the strings or switch to using ArrayString
+
+/// A struct for associating file descriptor information with [`Action`]s.
+/// This can be used to ensure file descriptors are accounted for and handled
+/// appropriately when the Zygote forks a new process.
 pub struct FileDescriptorRegistry {
     species: SpeciesRef,
     data: ArrayVec<FileDescriptorEntry, REGISTRY_SIZE>,
@@ -269,6 +326,8 @@ pub struct FileDescriptorRegistry {
 }
 
 impl FileDescriptorRegistry {
+    /// Construct a new registry for a given species.  The Species reference
+    /// is used to query for species specific allowed files and sockets.
     pub fn new(species: SpeciesRef) -> Self {
         let mut registry = Self {
             species,
@@ -286,23 +345,32 @@ impl FileDescriptorRegistry {
         registry
     }
 
+    /// Queries the Zygote and species abstract socket allow lists
     fn abstract_socket_is_allowed(&self, name: &str) -> bool {
         self.allowed_socket_names.contains(&name.to_owned())
             || self.species.abstract_socket_is_allowed(name)
     }
 
+    /// Adds a file path to the allow list
     pub fn allow_file(&mut self, path: String) {
         self.allowed_file_paths.push(path);
     }
 
+    /// Adds a socket name to the allow list
     pub fn allow_abstract_socket(&mut self, name: String) {
         self.allowed_socket_names.push(name);
     }
 
+    /// Adds a socket path to the allow list
     pub fn allow_bound_socket(&mut self, name: String) {
         self.allowed_socket_paths.push(name);
     }
 
+    /// Iterate over all open file descriptors and compare them to the
+    /// descriptors in the registry.  Panic if:
+    ///   * There are any files open that are not in the registry
+    ///   * There are files descriptors in the registry that are no longer open
+    ///   * A file descriptor's saved state is not equal to the current state
     pub fn audit(&self) {
         assert_single_threaded();
 
@@ -333,36 +401,46 @@ impl FileDescriptorRegistry {
         }
     }
 
+    /// Queries the Zygote and species bound socket allow lists
     fn bound_socket_is_allowed(&self, path: &str) -> bool {
         ALLOWED_SOCKET_PATHS.contains(&path)
             || self.allowed_socket_paths.contains(&path.to_owned())
             || self.species.bound_socket_is_allowed(path)
     }
 
+    /// Close all file descriptors registered with the Delay action.  This
+    /// should occur after the Zygote is done using all management file
+    /// descriptors.
     pub fn close_delayed(&self) {
         assert_single_threaded();
 
         for entry in &self.data {
-            entry.action.close_delayed(entry.fd)
+            entry.close_delayed()
         }
     }
 
+    /// Iterate through the registry and perform all Close, DupeNull, and
+    /// Reopen actions.  This should be performed immediately after a fork
+    /// event.
     pub fn execute_actions(&self) {
         assert_single_threaded();
 
         let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC).unwrap();
 
         for entry in &self.data {
-            entry.action.execute(entry.fd, &entry.info, dev_null_fd);
+            entry.execute(dev_null_fd);
         }
     }
 
+    /// Queries the Zygote and species allowed files lists.
     fn file_is_allowed(&self, path: &CStr) -> bool {
         ALLOWED_FILE_PATHS.contains(&path.to_str().unwrap())
             || self.allowed_file_paths.contains(&path.to_str().unwrap().to_owned())
             || self.species.file_is_allowed(path)
     }
 
+    /// Searches through the sorted list of file descriptors (starting from
+    /// `index_state`) to check if a given descriptor is registered.
     fn is_registered(&self, fd: RawFd, index_state: &mut usize, index_end: usize) -> bool {
         while *index_state < index_end {
             match self.data[*index_state].fd.cmp(&fd) {
@@ -378,6 +456,8 @@ impl FileDescriptorRegistry {
         false
     }
 
+    /// Adds a file descriptor to the registry and associates it with the
+    /// provided action.
     pub fn register(&mut self, fd: impl AsRawFd, action: Action) {
         assert_single_threaded();
 
@@ -401,6 +481,8 @@ impl FileDescriptorRegistry {
         }
     }
 
+    /// Iterate through all open file descriptors and register any unregistered
+    /// descriptors using a default action.
     pub fn register_new(&mut self) {
         assert_single_threaded();
         assert!(self.data.is_sorted_by_key(|entry| entry.fd));
@@ -417,26 +499,28 @@ impl FileDescriptorRegistry {
 
             let info = FileDescriptorInfo::try_from(fd).unwrap();
             let action = match info {
-                FileDescriptorInfo::AbstractSocketInfo { ref name } => {
+                FileDescriptorInfo::AbstractSocket { ref name } => {
                     if self.abstract_socket_is_allowed(name) {
                         Action::DupeNull
                     } else {
                         panic!("Abstract socket name not found in allow list ({}): {}", fd, name);
                     }
                 }
-                FileDescriptorInfo::BoundSocketInfo { ref path, .. } => {
+                FileDescriptorInfo::BoundSocket { ref path, .. } => {
                     if self.bound_socket_is_allowed(path) {
                         Action::DupeNull
                     } else {
                         panic!("Bound socket name not found in allow list ({}): {}", fd, path);
                     }
                 }
-                FileDescriptorInfo::FifoInfo => {
+                FileDescriptorInfo::Fifo => {
                     panic!("Unregistered FIFO fd found: {}", fd);
                 }
-                FileDescriptorInfo::FileInfo { ref path, .. } => {
-                    if self.file_is_allowed(path.as_cstr()) {
-                        self.species.get_file_action(path.as_cstr()).unwrap_or(Action::Reopen)
+                FileDescriptorInfo::File { ref path, .. } => {
+                    if self.file_is_allowed(path.as_cstr().unwrap()) {
+                        self.species
+                            .get_file_action(path.as_cstr().unwrap())
+                            .unwrap_or(Action::Reopen)
                     } else {
                         panic!("File path not found on allow list ({}): {:?}", fd, path);
                     }
@@ -453,6 +537,8 @@ impl FileDescriptorRegistry {
 
     // TODO: This is a debugging/development function and should be deleted
     //       before shipping the native Zygote.
+
+    /// Debugging function
     pub fn scan() {
         assert_single_threaded();
 
@@ -463,6 +549,7 @@ impl FileDescriptorRegistry {
         }
     }
 
+    /// Return the number of registered file descriptors.
     pub fn size(&self) -> usize {
         self.data.len()
     }
@@ -474,7 +561,7 @@ mod test {
 
     use super::FileDescriptorInfo;
     use crate::{
-        introspection::PROC_SELF_EXE_PATH_STR,
+        introspection::get_executable_path,
         sys::{self, AsCStr},
         test::{get_abstract_socket, get_bound_socket, manage_test},
     };
@@ -487,26 +574,26 @@ mod test {
             assert!(
                 matches!(
                     super::FileDescriptorInfo::try_from(0).unwrap(),
-                    super::FileDescriptorInfo::FileInfo { .. } |
-                    super::FileDescriptorInfo::FifoInfo));
+                    super::FileDescriptorInfo::File { .. } |
+                    super::FileDescriptorInfo::Fifo));
 
             // Test FileInfo
-            let exec_path = std::fs::read_link(PROC_SELF_EXE_PATH_STR).unwrap();
+            let exec_path = get_executable_path().unwrap();
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(File::open(&exec_path).unwrap().as_raw_fd()).unwrap(),
-                    FileDescriptorInfo::FileInfo { path, .. } if path.as_cstr().to_str().unwrap() == exec_path.to_str().unwrap()));
+                    FileDescriptorInfo::File { path, .. } if path.as_cstr().unwrap().to_str().unwrap() == exec_path.to_str().unwrap()));
 
             // Test FifoInfo
             let (pipe0, pipe1) = sys::pipe().unwrap();
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(pipe0).unwrap(),
-                    FileDescriptorInfo::FifoInfo));
+                    FileDescriptorInfo::Fifo));
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(pipe1).unwrap(),
-                    FileDescriptorInfo::FifoInfo));
+                    FileDescriptorInfo::Fifo));
 
             // Test AbstractSocket
             let abstract_socket_fd = get_abstract_socket(crate::test::SOCKET_NAME_1).unwrap();
@@ -514,14 +601,14 @@ mod test {
             assert!(
                 matches!(
                     info,
-                    FileDescriptorInfo::AbstractSocketInfo { name } if name.to_string() == crate::test::SOCKET_NAME_1));
+                    FileDescriptorInfo::AbstractSocket { name } if name.to_string() == crate::test::SOCKET_NAME_1));
 
             // Test BoundSocket
             let bound_socket_fd = get_bound_socket(crate::test::SOCKET_PATH_1).unwrap();
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(bound_socket_fd).unwrap(),
-                    FileDescriptorInfo::BoundSocketInfo { path, .. } if path.to_string() == crate::test::SOCKET_PATH_1));
+                    FileDescriptorInfo::BoundSocket { path, .. } if path.to_string() == crate::test::SOCKET_PATH_1));
 
             sys::close(pipe0).unwrap();
             sys::close(pipe1).unwrap();

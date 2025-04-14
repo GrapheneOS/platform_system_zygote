@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This module contains functions and data used by tests.
+
 use core::ffi::CStr;
 use std::{ffi::OsStr, os::fd::RawFd, panic, sync::Mutex};
 
@@ -23,18 +25,28 @@ use crate::sys::{self, bound_socket_address};
 
 pub(crate) static MUTEX: Mutex<()> = Mutex::new(());
 
+/// Path to a file in the system temp directory used for testing
 pub const MOCK_FILE_PATH_1: &CStr = c"/tmp/mock_file_1";
+/// Path to a file in the system temp directory used for testing
 pub const MOCK_FILE_PATH_2: &CStr = c"/tmp/mock_file_2";
+/// Path to a file in the system temp directory used for testing
 pub const MOCK_FILE_PATH_3: &CStr = c"/tmp/mock_file_3";
 
+/// Abstract socket name used for testing
 pub const SOCKET_NAME_1: &str = "test_socket_abstract_1";
+/// Abstract socket name used for testing
 pub const SOCKET_NAME_2: &str = "test_socket_abstract_2";
+/// Abstract socket name used for testing
 pub const SOCKET_NAME_3: &str = "test_socket_abstract_3";
 
+/// Path to a socket in the system temp directory used for testing
 pub const SOCKET_PATH_1: &str = "/tmp/test_socket_bound_1";
+/// Path to a socket in the system temp directory used for testing
 pub const SOCKET_PATH_2: &str = "/tmp/test_socket_bound_2";
+/// Path to a socket in the system temp directory used for testing
 pub const SOCKET_PATH_3: &str = "/tmp/test_socket_bound_3";
 
+/// Ensure that all test resources are removed from the system after a test run
 pub fn cleanup() {
     let test_file_paths = [MOCK_FILE_PATH_1, MOCK_FILE_PATH_2, MOCK_FILE_PATH_3];
 
@@ -44,6 +56,7 @@ pub fn cleanup() {
     close_all(test_socket_paths.iter());
 }
 
+/// Unlink any of the provided file paths if they exist
 fn close_all<T: AsRef<OsStr>>(paths: impl std::iter::Iterator<Item = T>) {
     for path_str in paths {
         let path = std::path::Path::new(&path_str);
@@ -53,6 +66,7 @@ fn close_all<T: AsRef<OsStr>>(paths: impl std::iter::Iterator<Item = T>) {
     }
 }
 
+/// Create a new UNIX domain datagram abstract socket with the provided name
 pub fn get_abstract_socket(name: &str) -> Result<RawFd> {
     let socket_fd = sys::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0)?;
     let socket_addr = sys::abstract_socket_address(name, libc::AF_UNIX as libc::sa_family_t);
@@ -62,6 +76,8 @@ pub fn get_abstract_socket(name: &str) -> Result<RawFd> {
     Ok(socket_fd)
 }
 
+/// Create a new UNIX domain datagram socket and bind it to the provided file
+/// system path
 pub fn get_bound_socket(path: &str) -> Result<RawFd> {
     let socket_fd = sys::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0)?;
     let socket_addr = bound_socket_address(path, libc::AF_UNIX as libc::sa_family_t);
@@ -71,6 +87,9 @@ pub fn get_bound_socket(path: &str) -> Result<RawFd> {
     Ok(socket_fd)
 }
 
+/// Acquire the global test serialization lock before running the provided
+/// test.  This ensures that tests evaluating behavior that requires a serial
+/// environment don't interfere with each other.
 #[track_caller]
 pub fn manage_test<F: FnOnce() + panic::UnwindSafe>(test_body: F) {
     let _guard = serialize_test();
@@ -80,6 +99,7 @@ pub fn manage_test<F: FnOnce() + panic::UnwindSafe>(test_body: F) {
     assert!(unwind_result.is_ok());
 }
 
+/// Acquire the global test serialization lock.
 pub(crate) fn serialize_test<'a>() -> std::sync::MutexGuard<'a, ()> {
     loop {
         match crate::test::MUTEX.lock() {

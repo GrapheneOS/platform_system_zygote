@@ -13,10 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Implementation of the Species trait for Android Native Applications.
+
 use core::ffi::CStr;
 
 use crate::{file_descriptors::Action, species::Species};
 
+/// Behaviors for launching native Android applications.
 pub struct App;
 
 impl Species for App {

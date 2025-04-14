@@ -26,10 +26,9 @@ use std::{
 use rustix::fd::IntoRawFd;
 
 use zygote::{
-    file_descriptors::{self, Action, FileDescriptorInfo, FileDescriptorRegistry},
-    introspection::assert_single_threaded,
-    sys::{self, AsCStr},
-    test,
+    file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry},
+    introspection::{assert_single_threaded, get_proc_fd_path},
+    sys, test,
 };
 
 // Command-line arguments to ignore, because they are not supported by libtest-mimic.
@@ -37,32 +36,7 @@ const IGNORED_ARGS: [&str; 2] = ["-Zunstable-options", "--report-time"];
 
 #[track_caller]
 fn assert_fd_closed(fd: RawFd) {
-    assert!(!std::path::Path::exists(
-        &std::path::Path::new(file_descriptors::PROC_PATH_FD_PREFIX)
-            .join(fd.as_raw_fd().to_string())
-    ));
-}
-
-#[track_caller]
-fn assert_fd_open_to(fd: RawFd, target: &str) {
-    assert!(std::path::Path::exists(
-        &std::path::Path::new(file_descriptors::PROC_PATH_FD_PREFIX)
-            .join(fd.as_raw_fd().to_string())
-    ));
-
-    match FileDescriptorInfo::try_from(fd).unwrap() {
-        FileDescriptorInfo::AbstractSocketInfo { name } => assert_eq!(name.as_str(), target),
-        FileDescriptorInfo::BoundSocketInfo { path, .. } => {
-            assert_eq!(path.as_str(), target)
-        }
-        FileDescriptorInfo::FileInfo { path, .. } => {
-            assert_eq!(path.as_cstr().to_str().unwrap(), target)
-        }
-        _ => panic!(
-            "File descriptor {} refers to kernel object without a file system path",
-            fd.as_raw_fd()
-        ),
-    }
+    assert!(!get_proc_fd_path(fd).exists());
 }
 
 fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
@@ -73,7 +47,7 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
          * Initialize registry
          */
 
-        let mut registry = FileDescriptorRegistry::new(&zygote::species::mock::Mock);
+        let mut registry = FileDescriptorRegistry::new(&zygote::species::mock::Turtle);
         assert_eq!(registry.size(), 3);
         registry.audit();
 

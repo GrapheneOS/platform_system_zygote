@@ -13,36 +13,62 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::{debug_assert, iter::Iterator};
-use std::{fs::File, io::Read, os::fd::RawFd, path::Path};
+//! This module provides support for querying the `/proc/` file system for
+//! information about the current process.
+
+use core::{debug_assert, ffi::CStr, iter::Iterator};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::fd::RawFd,
+    path::Path,
+};
 
 use anyhow::{anyhow, Context, Result};
 use arrayvec::ArrayVec;
 
 use crate::sys;
 
-pub const PROC_SELF_FDS_PATH_CSTR: &std::ffi::CStr = c"/proc/self/fd";
-pub const PROC_SELF_EXE_PATH_STR: &str = "/proc/self/exe";
+/// Prefix to the /proc/ directory containing information about open file
+/// descriptors.
+///
+/// See: `man proc_pid_fd`
+const PROC_SELF_FD_DIR_STR: &str = "/proc/self/fd";
+const PROC_SELF_FD_DIR_CSTR: &std::ffi::CStr = c"/proc/self/fd";
 
+#[cfg(test)]
+const PROC_SELF_EXE: &str = "/proc/self/exe";
+
+/// Panic if there is more than one thread in the current process.
 #[track_caller]
 pub fn assert_single_threaded() {
     assert_eq!(ProcStat::get().unwrap().num_threads, 1);
 }
 
+/// Query procfs for the path of the current executable
+#[cfg(test)]
+pub(crate) fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
+    std::fs::read_link(PROC_SELF_EXE)
+}
+
 // TODO: Update to return an iterator
+
+/// Read the contents of the /proc/self/fd directory to get a list of open
+/// file descriptors.
 pub(crate) fn get_open_file_descriptors() -> Result<Vec<RawFd>> {
-    let proc_self_fds_path = Path::new(PROC_SELF_FDS_PATH_CSTR.to_str()?);
+    let proc_self_fds_path = Path::new(PROC_SELF_FD_DIR_CSTR.to_str()?);
     assert!(proc_self_fds_path.exists());
 
     // The `std::fs::read_dir` function will open two file descriptors when
     // called and there is no way to gain access to their values.  Manually
     // opening and iterating over the directory allows us to avoid adding
     // transient file descriptor to the registry.
-    let proc_self_fds_dir = sys::opendir(PROC_SELF_FDS_PATH_CSTR)?;
+    let proc_self_fds_dir = sys::opendir(PROC_SELF_FD_DIR_CSTR)?;
     let proc_self_fds_fd = sys::dirfd(&proc_self_fds_dir)?;
 
     let mut fd_vec = Vec::<RawFd>::new();
     while let Some(dir_entry) = sys::readdir(&proc_self_fds_dir) {
+        // TODO: Provide a safe abstraction via the sys module
         // SAFETY: Libc guarantees that the dir_entry->d_name member contains
         //         a valid C string.
         let dir_entry_str =
@@ -74,26 +100,56 @@ pub(crate) fn get_open_file_descriptors() -> Result<Vec<RawFd>> {
     Ok(fd_vec)
 }
 
+/// Read file descriptor information from procfs into a CStringBuffer.
+pub(crate) fn get_proc_fd_link_info(fd: RawFd) -> Result<sys::CStringBuffer> {
+    let mut path_cstr_buff = ArrayVec::<u8, { sys::STRING_BUF_SIZE }>::new();
+    write!(path_cstr_buff, "{}/{}\0", PROC_SELF_FD_DIR_STR, fd)?;
+    let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice()).unwrap();
+
+    sys::readlink(path_cstr).with_context(|| format!("Unable to read procfs symlink for fd {}", fd))
+}
+
+/// Construct PathBuf pointing to an entry in /proc/self/fd.  The entry may or
+/// may not exist.
+#[cfg(feature = "test")]
+pub fn get_proc_fd_path(fd: RawFd) -> std::path::PathBuf {
+    std::path::Path::new(PROC_SELF_FD_DIR_STR).join(fd.to_string())
+}
+
+/// Information gathered from /proc/self/stat.
+///
+/// See: `man proc_pid_stat`
 pub struct ProcStat {
+    /// Process ID
     pub pid: u32,
+    /// Process group ID
     pub pgrp: u32,
+    /// Number of minor faults
     pub minflt: u64,
+    /// Number of minor faults in waited-for children
     pub cminflt: u64,
+    /// Number of major faults
     pub majflt: u64,
+    /// Number of major faults in waited-for children
     pub cmajflt: u64,
+    /// User time
     pub utime: u64,
+    /// System time
     pub stime: u64,
+    /// Number of threads in the process
     pub num_threads: u64,
+    /// Virtual memory size in bytes
     pub vsize: u64,
+    /// Resident set size in number of pages
     pub rss: u64,
 }
 
-// See `man proc_pid_stat` for details.
 impl ProcStat {
     const PROC_STAT_BUFFER_SIZE: usize = 512;
     const PROC_STAT_PATH_STR: &str = "/proc/self/stat";
     const PROC_STAT_NUM_ENTRIES: usize = 52;
 
+    /// Query procfs for statistics on the current process.
     #[rustfmt::skip]
     pub fn get() -> Result<Self> {
         let mut proc_file = File::open(Self::PROC_STAT_PATH_STR)?;
