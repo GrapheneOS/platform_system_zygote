@@ -67,20 +67,14 @@ impl AsCStr for &[u8] {
 }
 
 /// Wrapper struct for UNIX-like error numbers
+#[derive(Eq, PartialEq)]
 pub struct Errno {
     code: c_int,
 }
 
-/// Obtain the location of the `errno` variable from `libc` and dereference it
-pub(crate) fn errno() -> Errno {
-    Errno {
-        #[cfg(not(target_os = "android"))]
-        // SAFETY: Reads from the thread's errno address should never fail
-        code: unsafe { *libc::__errno_location() },
-
-        #[cfg(target_os = "android")]
-        // SAFETY: Reads from the thread's errno address should never fail
-        code: unsafe { *libc::__errno() },
+impl Errno {
+    fn is(&self, query_code: c_int) -> bool {
+        self.code == query_code
     }
 }
 
@@ -99,6 +93,19 @@ impl Debug for Errno {
 }
 
 impl std::error::Error for Errno {}
+
+/// Obtain the location of the `errno` variable from `libc` and dereference it
+pub(crate) fn errno() -> Errno {
+    Errno {
+        #[cfg(not(target_os = "android"))]
+        // SAFETY: Reads from the thread's errno address should never fail
+        code: unsafe { *libc::__errno_location() },
+
+        #[cfg(target_os = "android")]
+        // SAFETY: Reads from the thread's errno address should never fail
+        code: unsafe { *libc::__errno() },
+    }
+}
 
 /// A Result type that uses Errno for the Error type
 pub type LibcResult<T> = std::result::Result<T, Errno>;
@@ -157,6 +164,22 @@ pub fn libc_result_from_ptr<T, U, C: Fn(NonNull<T>) -> U>(
 /*
  * Libc helpers
  */
+
+/// A macro for retrying libc calls that result in an EINTR errno.
+macro_rules! retry_eintr {
+    ($libc_call:expr) => {
+        loop {
+            match $libc_call {
+                Err(errno) if errno.is(libc::EINTR) => {
+                    continue;
+                }
+                result => {
+                    break result;
+                }
+            }
+        }
+    };
+}
 
 /// Construct an abstract socket name inside a [`libc::sockaddr_un`] struct
 /// from the provided name and family.
@@ -251,12 +274,16 @@ pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> LibcResult<()> {
     #[cfg(not(target_os = "android"))]
     // SAFETY: Invalid arguments will result in an error code being returned
     //         that will be wrapped by a LibcResult.
-    return libc_result_from_int_with_void(unsafe { libc::dup3(old_fd, new_fd, flags) });
+    return retry_eintr!(libc_result_from_int_with_void(unsafe {
+        libc::dup3(old_fd, new_fd, flags)
+    }));
 
     #[cfg(target_os = "android")]
     // SAFETY: Invalid arguments will result in an error code being returned
     //         that will be wrapped by a LibcResult.
-    return libc_result_from_int_with_void(unsafe { libc_fill::dup3(old_fd, new_fd, flags) });
+    return retry_eintr!(libc_result_from_int_with_void(unsafe {
+        libc_fill::dup3(old_fd, new_fd, flags)
+    }));
 }
 
 /// A safe wrapper around [`libc::fcntl`], passing [`libc::F_GETFD`] as the
@@ -369,7 +396,7 @@ pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> LibcResult<li
 pub fn open(path: &CStr, flags: c_int) -> LibcResult<RawFd> {
     // SAFETY: Path points to a valid, null-terminated C string and the return
     //         value is checked and wrapped in a LibcResult type.
-    libc_result_from_int(unsafe { libc::open(path.as_ptr().cast(), flags) })
+    retry_eintr!(libc_result_from_int(unsafe { libc::open(path.as_ptr().cast(), flags) }))
 }
 
 /// A safe wrapper around [`libc::opendir`].
