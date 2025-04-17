@@ -216,8 +216,6 @@ pub fn get_file_type(mode: libc::mode_t) -> libc::mode_t {
  * Libc wrappers
  */
 
-// TODO: Handle EINTR
-
 /// A safe wrapper around [`libc::bind`].
 ///
 /// See: `man bind`
