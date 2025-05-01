@@ -21,22 +21,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::config::Config;
-use zygote::file_descriptors::FileDescriptorRegistry;
-
-struct Zygote {
-    _registry: FileDescriptorRegistry,
-}
-
-impl Zygote {
-    fn new(config: &Config) -> Self {
-        // TODO: Only enable for device builds?
-        // NOTE: Operation not permitted on gLinux machines
-        // linux::process::nice(-19).expect("Unable to set Zygote nice level");
-
-        Self { _registry: FileDescriptorRegistry::new(config.species) }
-    }
-}
+use zygote::{config::Config, file_descriptors::FileDescriptorRegistry, server::Server};
 
 fn main() -> Result<()> {
     // Planning List:
@@ -51,7 +36,8 @@ fn main() -> Result<()> {
     //   * ...
 
     let config = Config::parse();
-    let _zygote = Zygote::new(&config);
+
+    let _server = Server::new(&config);
 
     FileDescriptorRegistry::scan();
 

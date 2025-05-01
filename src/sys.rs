@@ -376,8 +376,8 @@ pub fn create_bound_socket(path: &str, protocol: c_int) -> Result<RawFd> {
 }
 
 /// Select the file-type bits from the `mode` value
-pub fn get_file_type(mode: libc::mode_t) -> libc::mode_t {
-    mode & libc::S_IFMT
+pub fn get_file_type(stat: libc::stat) -> libc::mode_t {
+    (stat.st_mode as libc::mode_t) & libc::S_IFMT
 }
 
 /// Attempt to read `size_of::<T>()` bytes.  If the correct number of bytes

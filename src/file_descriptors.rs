@@ -32,7 +32,7 @@ use std::{
     os::fd::{AsRawFd, RawFd},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
 use zerocopy::IntoBytes;
 
@@ -113,7 +113,7 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
         // S_ISDIR : Not supported. (We could if we wanted to, but it's unused).
         // S_ISLINK : Not supported.
         // S_ISBLK : Not supported.
-        match sys::get_file_type(stat.st_mode as libc::mode_t) {
+        match sys::get_file_type(stat) {
             libc::S_IFIFO => Ok(FileDescriptorInfo::Fifo),
             libc::S_IFCHR | libc::S_IFREG => Self::get_file_info(fd, &stat),
             libc::S_IFSOCK => Self::get_socket_info(fd),
@@ -458,7 +458,7 @@ impl FileDescriptorRegistry {
 
     /// Adds a file descriptor to the registry and associates it with the
     /// provided action.
-    pub fn register(&mut self, fd: impl AsRawFd, action: Action) {
+    pub fn register(&mut self, fd: RawFd, action: Action) {
         assert_single_threaded();
 
         match self.data.binary_search_by(|entry| entry.fd.cmp(&fd.as_raw_fd())) {
@@ -479,6 +479,18 @@ impl FileDescriptorRegistry {
                 );
             }
         }
+    }
+
+    /// Remove the given file descriptor from the registry
+    pub fn remove(&mut self, fd: RawFd) -> Result<()> {
+        self.data.remove(
+            self.data
+                .as_slice()
+                .binary_search_by(|entry| entry.fd.cmp(&fd))
+                .or_else(|_| bail!("File descriptor is not registered: {}", fd))?,
+        );
+
+        Ok(())
     }
 
     /// Iterate through all open file descriptors and register any unregistered
@@ -562,8 +574,8 @@ mod test {
     use super::FileDescriptorInfo;
     use crate::{
         introspection::get_executable_path,
-        sys::{self, AsCStr},
-        test::{get_abstract_socket, get_bound_socket, manage_test},
+        sys::{self, create_abstract_socket, create_bound_socket, AsCStr},
+        test::manage_test,
     };
 
     #[test]
@@ -596,7 +608,7 @@ mod test {
                     FileDescriptorInfo::Fifo));
 
             // Test AbstractSocket
-            let abstract_socket_fd = get_abstract_socket(crate::test::SOCKET_NAME_1).unwrap();
+            let abstract_socket_fd = create_abstract_socket(crate::test::SOCKET_NAME_1, libc::SOCK_DGRAM).unwrap();
             let info = FileDescriptorInfo::try_from(abstract_socket_fd).unwrap();
             assert!(
                 matches!(
@@ -604,7 +616,7 @@ mod test {
                     FileDescriptorInfo::AbstractSocket { name } if name.to_string() == crate::test::SOCKET_NAME_1));
 
             // Test BoundSocket
-            let bound_socket_fd = get_bound_socket(crate::test::SOCKET_PATH_1).unwrap();
+            let bound_socket_fd = create_bound_socket(crate::test::SOCKET_PATH_1, libc::SOCK_DGRAM).unwrap();
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(bound_socket_fd).unwrap(),

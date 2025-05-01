@@ -16,12 +16,7 @@
 //! This module contains functions and data used by tests.
 
 use core::ffi::CStr;
-use std::{ffi::OsStr, os::fd::RawFd, panic, sync::Mutex};
-
-use anyhow::Result;
-use libc;
-
-use crate::sys::{self, bound_socket_address};
+use std::{ffi::OsStr, panic, sync::Mutex};
 
 pub(crate) static MUTEX: Mutex<()> = Mutex::new(());
 
@@ -64,27 +59,6 @@ fn close_all<T: AsRef<OsStr>>(paths: impl std::iter::Iterator<Item = T>) {
             std::fs::remove_file(path).unwrap();
         }
     }
-}
-
-/// Create a new UNIX domain datagram abstract socket with the provided name
-pub fn get_abstract_socket(name: &str) -> Result<RawFd> {
-    let socket_fd = sys::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0)?;
-    let socket_addr = sys::abstract_socket_address(name, libc::AF_UNIX as libc::sa_family_t);
-
-    sys::bind(socket_fd, &socket_addr)?;
-
-    Ok(socket_fd)
-}
-
-/// Create a new UNIX domain datagram socket and bind it to the provided file
-/// system path
-pub fn get_bound_socket(path: &str) -> Result<RawFd> {
-    let socket_fd = sys::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0)?;
-    let socket_addr = bound_socket_address(path, libc::AF_UNIX as libc::sa_family_t);
-
-    sys::bind(socket_fd, &socket_addr)?;
-
-    Ok(socket_fd)
 }
 
 /// Acquire the global test serialization lock before running the provided

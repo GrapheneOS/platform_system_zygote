@@ -1,0 +1,20 @@
+// Zygote management commands
+
+table Spawn {
+    name: string (required);
+}
+
+table Exit {}
+table Stat {}
+
+union Command {
+    Spawn,
+    Exit,
+    Stat,
+}
+
+table Message {
+    command: Command;
+}
+
+root_type Message;

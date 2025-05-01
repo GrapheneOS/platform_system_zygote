@@ -13,18 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Implementation of a fully native Zygote architecture.
-//!
-//! This library contains the logic used by the Zygote executable.
+//! Generated Rust bindings for the Flatbuffer schema defined in `schemas/messages.fbs`
 
-#[cfg(any(test, feature = "test"))]
-pub mod test;
+#![allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
 
-pub mod config;
-pub mod file_descriptors;
-pub mod introspection;
-pub mod libc_fill;
-pub mod messages;
-pub mod server;
-pub mod species;
-pub mod sys;
+include!(concat!(env!("OUT_DIR"), "/messages.rs"));

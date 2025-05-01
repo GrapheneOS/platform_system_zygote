@@ -9,6 +9,7 @@ See b/411209346 to track the high-level development progress for this project.
 * [ ] Standalone Zygote server for host testing
   * In production `init` will construct the socket for the Zygote; in testing we need to either create the socket before launching the test or teach the Zygote to create its own socket when it isn't provided with one
 * [ ] Library/CLI for issuing commands to standalone Zygote
+* [ ] Add proper logging
 
 ## Lessons from Managed Zygote
 

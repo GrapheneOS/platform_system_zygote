@@ -18,26 +18,18 @@
 //! open during execution.
 
 use core::{assert_eq, ops::Deref};
-use std::{
-    fs::File,
-    os::fd::{AsRawFd, RawFd},
-};
+use std::{fs::File, os::fd::AsRawFd};
 
 use rustix::fd::IntoRawFd;
 
 use zygote::{
     file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry},
-    introspection::{assert_single_threaded, get_proc_fd_path},
+    introspection::{assert_fd_closed, assert_single_threaded},
     sys, test,
 };
 
 // Command-line arguments to ignore, because they are not supported by libtest-mimic.
 const IGNORED_ARGS: [&str; 2] = ["-Zunstable-options", "--report-time"];
-
-#[track_caller]
-fn assert_fd_closed(fd: RawFd) {
-    assert!(!get_proc_fd_path(fd).exists());
-}
 
 fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
     assert_single_threaded();
@@ -71,25 +63,31 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
         registry.allow_file(test::MOCK_FILE_PATH_2.to_str().unwrap().to_owned());
 
         // Test automatic registration and species bound socket allow list
-        let bound_socket_1 = test::get_bound_socket(test::SOCKET_PATH_1).unwrap();
+        let bound_socket_1 =
+            sys::create_bound_socket(test::SOCKET_PATH_1, libc::SOCK_DGRAM).unwrap();
 
         // Test automatic registration and dynamic bound socket allow list
-        let bound_socket_2 = test::get_bound_socket(test::SOCKET_PATH_2).unwrap();
+        let bound_socket_2 =
+            sys::create_bound_socket(test::SOCKET_PATH_2, libc::SOCK_DGRAM).unwrap();
         registry.allow_bound_socket(test::SOCKET_PATH_2.into());
 
         // Test automatic registration and species abstract socket allow list
-        let abstract_socket_1 = test::get_abstract_socket(test::SOCKET_NAME_1).unwrap();
+        let abstract_socket_1 =
+            sys::create_abstract_socket(test::SOCKET_NAME_1, libc::SOCK_DGRAM).unwrap();
 
         // Test automatic registration and dynamic abstract socket allow list
-        let abstract_socket_2 = test::get_abstract_socket(test::SOCKET_NAME_2).unwrap();
+        let abstract_socket_2 =
+            sys::create_abstract_socket(test::SOCKET_NAME_2, libc::SOCK_DGRAM).unwrap();
         registry.allow_abstract_socket(test::SOCKET_NAME_2.into());
 
         // Manually register a file for testing the Delay action
-        let bound_socket_3 = test::get_bound_socket(test::SOCKET_PATH_3).unwrap();
+        let bound_socket_3 =
+            sys::create_bound_socket(test::SOCKET_PATH_3, libc::SOCK_DGRAM).unwrap();
         registry.register(bound_socket_3.as_raw_fd(), Action::Delay);
 
         // Manually register an abstract socket for testing the Ignore action
-        let abstract_socket_3 = test::get_abstract_socket(test::SOCKET_NAME_3).unwrap();
+        let abstract_socket_3 =
+            sys::create_abstract_socket(test::SOCKET_NAME_3, libc::SOCK_DGRAM).unwrap();
         registry.register(abstract_socket_3.as_raw_fd(), Action::Ignore);
 
         // Test automatic registration of new file descriptors.

@@ -17,6 +17,18 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+genrule {
+    name: "libzygote_schemas",
+    tools: ["flatc"],
+    cmd: "$(location flatc) --rust --filename-suffix '' -o $$(dirname $(out)) $(in)",
+    srcs: [
+        "schemas/messages.fbs",
+    ],
+    out: [
+        "src/messages.rs",
+    ],
+}
+
 rust_library {
     name: "libzygote",
     crate_name: "zygote",
@@ -24,11 +36,13 @@ rust_library {
     edition: "2024",
     srcs: [
         "src/lib.rs",
+        ":libzygote_schemas",
     ],
     rustlibs: [
         "libanyhow",
         "libarrayvec",
         "libclap",
+        "libflatbuffers",
         "liblibc",
         "libstatic_assertions",
         "libzerocopy",
@@ -45,11 +59,13 @@ rust_library {
     ],
     srcs: [
         "src/lib.rs",
+        ":libzygote_schemas",
     ],
     rustlibs: [
         "libanyhow",
         "libarrayvec",
         "libclap",
+        "libflatbuffers",
         "liblibc",
         "libstatic_assertions",
         "libzerocopy",
@@ -78,11 +94,13 @@ rust_test_host {
     ],
     srcs: [
         "src/lib.rs",
+        ":libzygote_schemas",
     ],
     rustlibs: [
         "libanyhow",
         "libarrayvec",
         "libclap",
+        "libflatbuffers",
         "liblibc",
         "libstatic_assertions",
         "libzerocopy",
@@ -104,6 +122,7 @@ rust_test_host {
     ],
     rustlibs: [
         "librustix",
+        "liblibc",
         "liblibtest_mimic",
         "libzygote_test",
     ],

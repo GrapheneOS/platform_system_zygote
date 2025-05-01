@@ -45,6 +45,20 @@ pub fn assert_single_threaded() {
     assert_eq!(ProcStat::get().unwrap().num_threads, 1);
 }
 
+/// Panic if a given file descriptor *IS NOT* open
+#[cfg(feature = "test")]
+#[track_caller]
+pub fn assert_fd_open(fd: RawFd) {
+    assert!(get_proc_fd_path(fd).exists());
+}
+
+/// Panic if a given file descriptor *IS* open
+#[cfg(feature = "test")]
+#[track_caller]
+pub fn assert_fd_closed(fd: RawFd) {
+    assert!(!get_proc_fd_path(fd).exists());
+}
+
 /// Query procfs for the path of the current executable
 #[cfg(test)]
 pub(crate) fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
@@ -111,7 +125,6 @@ pub(crate) fn get_proc_fd_link_info(fd: RawFd) -> Result<sys::CStringBuffer> {
 
 /// Construct PathBuf pointing to an entry in /proc/self/fd.  The entry may or
 /// may not exist.
-#[cfg(feature = "test")]
 pub fn get_proc_fd_path(fd: RawFd) -> std::path::PathBuf {
     std::path::Path::new(PROC_SELF_FD_DIR_STR).join(fd.to_string())
 }
