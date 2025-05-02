@@ -189,6 +189,10 @@ macro_rules! from_bytes_c {
 
 from_bytes_c!(libc::ucred, libc::signalfd_siginfo);
 
+// SAFETY: Passing raw byte arrays to `libc` calls is safe.  This leaves the
+//         safety of casting to and from bytes up to the caller.
+unsafe impl<const N: usize> LibcFromBytes for [u8; N] {}
+
 /// Convert an integer return value from a `libc` call into a [`LibcResult`]
 /// type.  If the return value is -1 the Error type will contain the resulting
 /// `errno` value.
