@@ -23,6 +23,7 @@ use std::{os::fd::RawFd, path::Path};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use flatbuffers;
+use log::{info, warn};
 
 use crate::{
     config::Config,
@@ -177,7 +178,7 @@ impl<'a> Server<'a> {
                         match message.command_type() {
                             Command::Spawn => {
                                 let spawn_cmd = message.command_as_spawn().unwrap();
-                                println!("Received command: (Spawn {})", spawn_cmd.name());
+                                info!("Received command: (Spawn {})", spawn_cmd.name());
 
                                 LoopStatus::Continue
                             }
@@ -187,17 +188,19 @@ impl<'a> Server<'a> {
                                     sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED)
                                         .unwrap();
 
-                                println!("Received command: (Exit {})", creds.pid);
+                                info!("Received command: (Exit {})", creds.pid);
 
                                 LoopStatus::Break(())
                             }
                             Command::Stat => {
-                                println!("Received command: (Stat)");
+                                info!("Received command: (Stat)");
 
                                 LoopStatus::Continue
                             }
                             Command(tag) => {
-                                panic!("Invalid command variant encountered: {}", tag)
+                                warn!("Invalid command variant encountered: {}", tag);
+
+                                LoopStatus::Continue
                             }
                         }
                     },
@@ -264,7 +267,7 @@ impl<'a> Server<'a> {
                     &mut |siginfo: libc::signalfd_siginfo| {
                         match siginfo.ssi_signo as i32 {
                             libc::SIGCHLD => {
-                                println!(
+                                info!(
                                     "Received SIGCHLD from PID {} with status {}",
                                     siginfo.ssi_pid, siginfo.ssi_status
                                 );
@@ -273,7 +276,7 @@ impl<'a> Server<'a> {
                                 LoopStatus::Continue
                             }
                             libc::SIGTERM => {
-                                println!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
+                                info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
 
                                 // Terminate early
                                 LoopStatus::Break(libc::SIGTERM)

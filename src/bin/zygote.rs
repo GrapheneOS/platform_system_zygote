@@ -20,6 +20,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use log::info;
 
 use zygote::{config::Config, file_descriptors::FileDescriptorRegistry, server::Server};
 
@@ -37,11 +38,17 @@ fn main() -> Result<()> {
 
     let config = Config::parse();
 
+    logger::init(
+        logger::Config::default()
+            .with_tag_on_device(config.name.clone())
+            .with_max_level(config.log_level),
+    );
+
     let _server = Server::new(&config);
 
     FileDescriptorRegistry::scan();
 
-    println!("Selected species: {}", config.species.name());
+    info!("Selected species: {}", config.species.name());
 
     Ok(())
 }

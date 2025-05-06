@@ -16,8 +16,9 @@
 //! This module provides classes and functions for configuring a Zygote
 //! process.
 
-use anyhow::Result;
-use clap::{ArgAction, Parser};
+use anyhow::{bail, Result};
+use clap::Parser;
+use log::LevelFilter;
 
 use crate::species::SpeciesRef;
 
@@ -31,6 +32,10 @@ pub struct Config {
     #[arg(short, long, default_value = "zygote")]
     pub name: String,
 
+    /// Controls verbosity of logging; defaults to Warn
+    #[arg(long, alias = "verbose", short_alias = 'v', default_value = "2", default_missing_value = "4", value_parser = log_level_parser)]
+    pub log_level: LevelFilter,
+
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket
     #[arg(long, default_value = "default", value_parser = socket_arg_parser)]
@@ -40,10 +45,18 @@ pub struct Config {
     /// implementations.
     #[arg(long)]
     pub species: SpeciesRef,
+}
 
-    /// A flag controlling logging levels.
-    #[arg(short, long, action = ArgAction::SetTrue)]
-    pub verbose: bool,
+fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
+    match parse_arg.parse::<usize>()? {
+        0 => Ok(LevelFilter::Off),
+        1 => Ok(LevelFilter::Error),
+        2 => Ok(LevelFilter::Warn),
+        3 => Ok(LevelFilter::Info),
+        4 => Ok(LevelFilter::Debug),
+        5 => Ok(LevelFilter::Trace),
+        _ => bail!("Invalid log level"),
+    }
 }
 
 fn socket_arg_parser(parse_arg: &str) -> Result<String> {

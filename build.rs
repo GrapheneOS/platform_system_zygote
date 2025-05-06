@@ -30,4 +30,5 @@ fn main() {
         .unwrap();
 
     println!("cargo::rerun-if-changed={}", SCHEMA_PATH);
+    println!("cargo::rustc-check-cfg=cfg(soong)");
 }
