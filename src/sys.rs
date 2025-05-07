@@ -56,6 +56,11 @@ const MSGHDR_ZERO_INIT: libc::msghdr = libc::msghdr {
     msg_control: std::ptr::null_mut(),
     msg_controllen: 0,
     msg_flags: 0,
+
+    #[cfg(target_env = "musl")]
+    __pad1: 0,
+    #[cfg(target_env = "musl")]
+    __pad2: 0,
 };
 
 /// Helper trait for converting types into `CStr`s
