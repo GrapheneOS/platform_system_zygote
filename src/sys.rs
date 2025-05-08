@@ -17,7 +17,7 @@
 
 use core::{
     ffi::{c_char, c_int, c_short, c_void, CStr},
-    mem::offset_of,
+    mem::{self, offset_of},
 };
 use std::{
     fmt::{self, Debug, Display, Formatter},
@@ -47,21 +47,6 @@ const_assert!(
 /// Buffers used for static string allocations
 pub type CStringBuffer = [u8; STRING_BUF_SIZE];
 const CSTRING_BUFFER_INIT: CStringBuffer = [0u8; STRING_BUF_SIZE];
-
-const MSGHDR_ZERO_INIT: libc::msghdr = libc::msghdr {
-    msg_name: std::ptr::null_mut(),
-    msg_namelen: 0,
-    msg_iov: std::ptr::null_mut(),
-    msg_iovlen: 0,
-    msg_control: std::ptr::null_mut(),
-    msg_controllen: 0,
-    msg_flags: 0,
-
-    #[cfg(target_env = "musl")]
-    __pad1: 0,
-    #[cfg(target_env = "musl")]
-    __pad2: 0,
-};
 
 /// Helper trait for converting types into `CStr`s
 pub trait AsCStr {
@@ -735,7 +720,12 @@ pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
 pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(usize, [u8; BUFFER_SIZE])> {
     let mut buffer = [0; BUFFER_SIZE];
 
-    let mut msghdr = MSGHDR_ZERO_INIT;
+    // Usage of `mem::zeroed()` is required as implementations of `msghdr`
+    // can include private fields (e.g. aarch64-musl).
+    //
+    // SAFETY: The man page for recvmsg specifies that it is valid to zero-
+    //         initialize a msghdr struct.
+    let mut msghdr: libc::msghdr = unsafe { mem::zeroed() };
 
     let mut io_vec =
         libc::iovec { iov_base: buffer.as_mut_ptr() as *mut c_void, iov_len: buffer.len() };
@@ -757,7 +747,12 @@ pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(usize, [u8; B
 ///
 /// See: `man sendmsg`
 pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
-    let mut msghdr = MSGHDR_ZERO_INIT;
+    // Usage of `mem::zeroed()` is required as implementations of `msghdr`
+    // can include private fields (e.g. aarch64-musl).
+    //
+    // SAFETY: The man page for sndmsg specifies that it is valid to zero-
+    //         initialize a msghdr struct.
+    let mut msghdr: libc::msghdr = unsafe { mem::zeroed() };
 
     let mut io_vec =
         libc::iovec { iov_base: buffer.as_ptr() as *mut c_void, iov_len: buffer.len() };
