@@ -20,23 +20,11 @@
 
 use anyhow::Result;
 use clap::Parser;
-use log::info;
 
-use zygote::{config::Config, file_descriptors::FileDescriptorRegistry, server::Server};
+use zygote::{config, server};
 
 fn main() -> Result<()> {
-    // Planning List:
-    //
-    // * Parse arguments
-    // * Initialize Zygote process state
-    // * Preload libraries for species
-    // * Initialize process for species
-    // * Enter server loop
-    //   * Clean up after children
-    //   * Spawn new process
-    //   * ...
-
-    let config = Config::parse();
+    let config = config::Server::parse();
 
     logger::init(
         logger::Config::default()
@@ -44,11 +32,8 @@ fn main() -> Result<()> {
             .with_max_level(config.log_level),
     );
 
-    let _server = Server::new(&config);
-
-    FileDescriptorRegistry::scan();
-
-    info!("Selected species: {}", config.species.name());
+    let mut server = server::Server::new(&config);
+    server.serve();
 
     Ok(())
 }

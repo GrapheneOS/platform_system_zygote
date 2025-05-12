@@ -53,10 +53,13 @@ pub const DEV_NULL_PATH_C: &CStr = c"/dev/null";
 /// Path to the urandom character device for Unix-like systems
 pub const DEV_URANDOM_PATH: &str = "/dev/urandom";
 
+/// Metadata string reported via Proc for SignalFDs
+const PROC_METADATA_SIGNALFD: &CStr = c"anon_inode:[signalfd]";
+
 /// File paths used by the Zygote that are allowed to be registered
 static ALLOWED_FILE_PATHS: &[&str] = &[DEV_NULL_PATH, DEV_URANDOM_PATH];
 
-// Socket paths used by the Zygote that are allowed to be registered
+/// Socket paths used by the Zygote that are allowed to be registered
 static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 
 /// Information necessary to identify and perform actions for supported file
@@ -81,6 +84,7 @@ enum FileDescriptorInfo {
         fs_flags_fcntl: c_int,
         offset: libc::off64_t,
     },
+    SignalFd,
 }
 
 impl fmt::Display for FileDescriptorInfo {
@@ -90,6 +94,7 @@ impl fmt::Display for FileDescriptorInfo {
             Self::BoundSocket { path } => write!(f, "Bound Socket ({})", path),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
+            Self::SignalFd => write!(f, "SignalFD"),
         }
     }
 }
@@ -117,11 +122,21 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
             libc::S_IFIFO => Ok(FileDescriptorInfo::Fifo),
             libc::S_IFCHR | libc::S_IFREG => Self::get_file_info(fd, &stat),
             libc::S_IFSOCK => Self::get_socket_info(fd),
-            file_type => Err(anyhow!(
-                "Unable to generate info for file descriptor {}. File type: {:?}",
-                fd,
-                file_type
-            )),
+            file_type => {
+                let proc_metadata_buffer = get_proc_fd_link_info(fd).unwrap();
+                let proc_metadata_cstr = proc_metadata_buffer.as_cstr().unwrap();
+
+                if proc_metadata_cstr == PROC_METADATA_SIGNALFD {
+                    Ok(FileDescriptorInfo::SignalFd)
+                } else {
+                    Err(anyhow!(
+                        "Unable to generate info for file descriptor {}. Type: '{:?}' Metadata: '{:?}'",
+                        fd,
+                        file_type,
+                        proc_metadata_cstr,
+                    ))
+                }
+            }
         }
     }
 }
@@ -536,6 +551,9 @@ impl FileDescriptorRegistry {
                     } else {
                         panic!("File path not found on allow list ({}): {:?}", fd, path);
                     }
+                }
+                FileDescriptorInfo::SignalFd => {
+                    panic!("Unregistered signal fd found: {}", fd);
                 }
             };
 

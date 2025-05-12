@@ -24,21 +24,21 @@ use crate::species::SpeciesRef;
 
 const ENV_VAR_SOCKET: &str = "ZYGOTE_SOCKET";
 
-/// Configuration values used to determine the runtime behavior of a Zygote.
-/// Parsing implementations are derived using the `clap` crate.
+/// Configuration values used to determine the runtime behavior of a Zygote
+/// server.  Parsing implementations are derived using the `clap` crate.
 #[derive(Parser)]
-pub struct Config {
+pub struct Server {
     /// Process name for the Zygote
-    #[arg(short, long, default_value = "zygote")]
+    #[arg(short, long, default_value("zygote"))]
     pub name: String,
 
     /// Controls verbosity of logging; defaults to Warn
-    #[arg(long, alias = "verbose", short_alias = 'v', default_value = "2", default_missing_value = "4", value_parser = log_level_parser)]
+    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
     pub log_level: LevelFilter,
 
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket
-    #[arg(long, default_value = "default", value_parser = socket_arg_parser)]
+    #[arg(long, default_value = "default", value_parser(socket_arg_parser))]
     pub socket: String,
 
     /// A runtime-defined reference to Species-specific behavior

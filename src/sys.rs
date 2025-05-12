@@ -79,17 +79,21 @@ impl Errno {
     }
 }
 
-// TODO: use strerror_r to retrieve the error code
-impl Display for Errno {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Errno: {}", self.code)
+impl From<Errno> for std::fmt::Error {
+    fn from(_: Errno) -> std::fmt::Error {
+        std::fmt::Error
     }
 }
 
-// TODO: use strerror_r to retrieve the error code
+impl Display for Errno {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Errno: {:?}", strerror(self.code)?.as_cstr())
+    }
+}
+
 impl Debug for Errno {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        f.debug_struct("Errno").field("code", &self.code).finish()
+        f.debug_struct("Errno").field("code", &strerror(self.code)?.as_cstr()).finish()
     }
 }
 
@@ -111,39 +115,46 @@ pub(crate) fn errno() -> Errno {
 /// A Result type that uses Errno for the Error type
 pub type LibcResult<T> = std::result::Result<T, Errno>;
 
-/// This trait provides additional functionality for the [`libc::pollfd`] type.
-pub trait PollFdExt {
-    /// Initialize a new [`libc::pollfd`] struct with the provided file
-    /// descriptor and events.
-    fn new(fd: RawFd, events: c_short) -> Self;
-    /// This function will:
-    ///   1. Return Err if any of POLLHUP, POLLERR, or POLLNVAL are set
-    ///   2. Return Ok(None) if `event` is not set
-    ///   3. Return Ok(Some(handler(fd)))
-    fn handle_event<T>(
-        &self,
-        event: c_short,
-        handler: impl FnMut(RawFd) -> T,
-    ) -> Result<Option<T>, c_short>;
-}
+/// A wrapper struct for [`libc::pollfd`] that ensures error codes are checked
+/// before events are handled.
+#[repr(transparent)]
+pub struct PollFd(libc::pollfd);
 
-impl PollFdExt for libc::pollfd {
-    fn new(fd: RawFd, events: c_short) -> Self {
-        libc::pollfd { fd, events, revents: 0 }
+impl PollFd {
+    /// Initialize a new [`libc::pollfd`] wrapper struct with the provided file
+    /// descriptor and events.
+    pub fn new(fd: RawFd, events: c_short) -> Self {
+        Self(libc::pollfd { fd, events, revents: 0 })
     }
 
-    fn handle_event<T>(
+    /// Returns `Err` in the presence of errors, else `Some(PollFdChecked)`.
+    pub fn check(&self) -> Result<PollFdChecked<'_>, (RawFd, c_short)> {
+        const ERROR_MASK: c_short = libc::POLLERR | libc::POLLNVAL;
+        if self.0.revents & ERROR_MASK != 0 {
+            Err((self.0.fd, self.0.revents & ERROR_MASK))
+        } else {
+            Ok(PollFdChecked(&self.0))
+        }
+    }
+}
+
+/// A struct used to wrap a [`libc::pollfd`] struct that has been checked for
+/// errors.
+#[repr(transparent)]
+pub struct PollFdChecked<'a>(&'a libc::pollfd);
+
+impl PollFdChecked<'_> {
+    /// If the specified event occurred the result of calling the handler will
+    /// be returned; otherwise, None.
+    pub fn handle_event<T>(
         &self,
         event: c_short,
         mut handler: impl FnMut(RawFd) -> T,
-    ) -> Result<Option<T>, c_short> {
-        const ERROR_MASK: c_short = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
-        if self.revents & ERROR_MASK != 0 {
-            Err(self.revents)
-        } else if self.revents & event != event {
-            Ok(None)
+    ) -> Option<T> {
+        if self.0.revents & event == event {
+            Some(handler(self.0.fd))
         } else {
-            Ok(Some(handler(self.fd)))
+            None
         }
     }
 }
@@ -374,6 +385,11 @@ pub fn get_file_type(stat: libc::stat) -> libc::mode_t {
     (stat.st_mode as libc::mode_t) & libc::S_IFMT
 }
 
+/// Get the PID, UID, and GID for the remote end of a UNIX domain socket.
+pub fn get_socket_creds(fd: RawFd) -> LibcResult<libc::ucred> {
+    getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED)
+}
+
 /// Attempt to read `size_of::<T>()` bytes.  If the correct number of bytes
 /// were read the function returns `Ok(T)`, otherwise an `Err(Errno)` is
 /// returned with the `code` set to 0.
@@ -438,6 +454,22 @@ pub fn closedir(dir: LibcDir) -> LibcResult<()> {
     //         pointer then `libc` will return `-1` and a LibcResult::Err value
     //         will be returned wrapping `errno`.
     libc_result_from_int_with_void(unsafe { libc::closedir(dir.inner.as_ptr()) })
+}
+
+/// A safe wrapper around [`libc::connect`].
+///
+/// See: `man connect`
+pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> {
+    // SAFETY: The pointer argument to `libc::connect` is guaranteed to reference
+    //         allocated memory and the return value is checked and wrapped in
+    //         a LibcResult.
+    libc_result_from_int_with_void(unsafe {
+        libc::connect(
+            fd,
+            (sockaddr as *const SockAddrType) as *const libc::sockaddr,
+            std::mem::size_of::<SockAddrType>() as libc::socklen_t,
+        )
+    })
 }
 
 /// A safe wrapper around [`libc::dirfd`].
@@ -648,13 +680,20 @@ pub fn pipe() -> LibcResult<(RawFd, RawFd)> {
 /// A safe wrapper around [`libc::poll`].
 ///
 /// See `man poll`
-pub fn poll(pollfds: &mut [libc::pollfd], timeout: c_int) -> LibcResult<c_int> {
+pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> LibcResult<c_int> {
     // SAFETY: The `pollfds` pointer is valid because it is derived from a
     //         a valid slice reference and the length argument is obtained from
     //         the provided slice.  The return value is checked and wrapped in
     //         a LibcResult.
+    //
+    //         The cast between `*mut PollFd` and `*mut libc::pollfd` is safe
+    //         due to the use of `#[repr(transparent)]` on PollFd.
     libc_result_from_int(unsafe {
-        libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, timeout)
+        libc::poll(
+            pollfds.as_mut_ptr() as *mut libc::pollfd,
+            pollfds.len() as libc::nfds_t,
+            timeout,
+        )
     })
 }
 
@@ -717,7 +756,7 @@ pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
 /// a UNIX-domain datagram session socket.
 ///
 /// See `man recvmsg` and `man readv`
-pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(usize, [u8; BUFFER_SIZE])> {
+pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; BUFFER_SIZE])> {
     let mut buffer = [0; BUFFER_SIZE];
 
     // Usage of `mem::zeroed()` is required as implementations of `msghdr`
@@ -737,7 +776,7 @@ pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(usize, [u8; B
     //         allocated inside this function.  The return value is checked and
     //         wrapped in a LibcResult.
     retry_eintr!(libc_result_from_int(unsafe { libc::recvmsg(fd, &mut msghdr, 0) }))
-        .and_then(|retval| Ok((retval as usize, buffer)))
+        .and_then(|retval| Ok((retval, buffer)))
 }
 
 /// A limited wrapper around [`libc::sendmsg`].
@@ -826,4 +865,22 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
     //         by `libc::socket`.  The return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
+}
+
+/// A safe wrapper around [`libc::strerror_r`].
+///
+/// This function uses `strerror_r` because `strerror` is not thread-safe.
+///
+/// See: `man strerror`
+pub fn strerror(code: c_int) -> LibcResult<CStringBuffer> {
+    let mut buffer: CStringBuffer = CSTRING_BUFFER_INIT;
+
+    // SAFETY: The pointer argument refers to memory allocated in this function.
+    let retval = unsafe { libc::strerror_r(code, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+    if retval == 0 {
+        Ok(buffer)
+    } else {
+        Err(Errno { code: retval })
+    }
 }
