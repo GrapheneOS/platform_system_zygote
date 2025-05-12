@@ -135,3 +135,14 @@ rust_test_host {
         "libzygote_test",
     ],
 }
+
+phony {
+    name: "zygote_all",
+    required: [
+        "libzygote",
+        "libzygote_test",
+        "zygote_next",
+        "zygote_next_unit_tests",
+        "zygote_next_integration_test_fd_no_panic",
+    ],
+}
