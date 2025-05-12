@@ -33,7 +33,7 @@ rust_library {
     name: "libzygote",
     crate_name: "zygote",
     host_supported: true,
-    edition: "2024",
+    edition: "2021",
     srcs: [
         "src/lib.rs",
         ":libzygote_schemas",
@@ -55,7 +55,7 @@ rust_library {
     name: "libzygote_test",
     crate_name: "zygote",
     host_supported: true,
-    edition: "2024",
+    edition: "2021",
     features: [
         "test",
     ],
@@ -79,7 +79,7 @@ rust_library {
 rust_binary {
     name: "zygote_next",
     host_supported: true,
-    edition: "2024",
+    edition: "2021",
     srcs: [
         "src/bin/zygote.rs",
     ],
@@ -92,9 +92,27 @@ rust_binary {
     ],
 }
 
+rust_binary {
+    name: "zygote_cli",
+    host_supported: true,
+    edition: "2021",
+    srcs: [
+        "src/bin/zygote_cli.rs",
+    ],
+    rustlibs: [
+        "libanyhow",
+        "libclap",
+        "libflatbuffers",
+        "liblibc",
+        "liblogger",
+        "liblog_rust",
+        "libzygote",
+    ],
+}
+
 rust_test_host {
     name: "zygote_next_unit_tests",
-    edition: "2024",
+    edition: "2021",
     features: [
         "test",
     ],
@@ -117,7 +135,7 @@ rust_test_host {
 
 rust_test_host {
     name: "zygote_next_integration_test_fd_no_panic",
-    edition: "2024",
+    edition: "2021",
     test_harness: false,
     cfgs: [
         "test",
@@ -141,6 +159,7 @@ phony {
     required: [
         "libzygote",
         "libzygote_test",
+        "zygote_cli",
         "zygote_next",
         "zygote_next_unit_tests",
         "zygote_next_integration_test_fd_no_panic",

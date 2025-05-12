@@ -24,6 +24,27 @@ use crate::species::SpeciesRef;
 
 const ENV_VAR_SOCKET: &str = "ZYGOTE_SOCKET";
 
+/// Configuration values used by the Zygote command line interface.  This API
+/// is temporary as the message types evolve.
+#[derive(Parser)]
+pub struct Cli {
+    /// Controls verbosity of logging; defaults to Warn
+    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
+    pub log_level: LevelFilter,
+
+    /// A path to the target Zygote's server socket; Abstract sockets are not
+    /// currently supported.
+    #[arg(long, short, required(true))]
+    pub socket: String,
+
+    /// Name of command to send; accepted values: exit, spawn, stat
+    #[arg(required(true))]
+    pub command_name: String,
+
+    /// Additional arguments that might be used by the command
+    pub command_args: Vec<String>,
+}
+
 /// Configuration values used to determine the runtime behavior of a Zygote
 /// server.  Parsing implementations are derived using the `clap` crate.
 #[derive(Parser)]
