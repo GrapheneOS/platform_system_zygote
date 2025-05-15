@@ -543,6 +543,20 @@ pub fn fcntl_setfl(fd: RawFd, flags: c_int) -> LibcResult<()> {
     libc_result_from_int_with_void(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) })
 }
 
+/// A safe wrapper around [`libc::fork`].
+///
+/// # Safety
+/// This function results in undefined behavior if it is called from a process
+/// with multiple threads.  The calling process *MUST* be single threaded for
+/// calls to this function to be safe.
+///
+/// See: `man fork`
+pub unsafe fn fork() -> LibcResult<libc::pid_t> {
+    // SAFETY: The `libc::fork` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int(unsafe { libc::fork() })
+}
+
 /// A safe wrapper around [`libc::fstat`].
 ///
 /// See: `man fstat`
