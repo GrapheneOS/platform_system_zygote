@@ -59,6 +59,13 @@ impl Species for Turtle {
         ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
     }
 
+    fn gestate(&self, message_buffer: crate::server::MessageBuffer) -> ! {
+        let message = flatbuffers::root::<crate::messages::Message>(&message_buffer).unwrap();
+        let spawn_cmd = message.command_as_spawn().unwrap();
+        println!("Hello from the child process.  My name is {}", spawn_cmd.name());
+        std::process::exit(0)
+    }
+
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
         None
     }

@@ -28,8 +28,9 @@ use log::{error, info};
 use crate::{
     config,
     file_descriptors::{self, FileDescriptorRegistry},
-    introspection::get_proc_fd_path,
+    introspection::{debug_assert_single_threaded, get_proc_fd_path},
     messages::{Command, Message},
+    species::SpeciesRef,
     sys::{self, LoopExit, LoopStatus, PollFd},
 };
 
@@ -76,17 +77,36 @@ impl<'a> Partition<'a> for PollBuffer {
 }
 
 const MESSAGE_BUFFER_SIZE: usize = 512;
-type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
+/// Statically allocated arrays used for receiving messages.
+pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
-#[derive(Debug, Eq, PartialEq)]
-enum ServerStatus {
+#[derive(Debug)]
+enum ServerStatus<T> {
     Continue,
     Exit,
+    Trampoline(T),
+}
+
+impl<T> ServerStatus<T> {
+    #[allow(dead_code)]
+    pub fn is_continue(&self) -> bool {
+        matches!(self, ServerStatus::Continue)
+    }
+
+    pub fn is_exit(&self) -> bool {
+        matches!(self, ServerStatus::Exit)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_trampoline(&self) -> bool {
+        matches!(self, ServerStatus::Trampoline(_))
+    }
 }
 
 /// The main data structure for the Zygote process server.
 pub struct Server {
     registry: FileDescriptorRegistry,
+    species: SpeciesRef,
 
     signal_fd: RawFd,
     server_socket: RawFd,
@@ -117,6 +137,7 @@ impl Server {
 
         Self {
             registry,
+            species: config.species,
 
             signal_fd,
             server_socket,
@@ -176,16 +197,70 @@ impl Server {
     ///
     /// The function's return value indicates if the server should terminate
     /// after this call.
-    fn handle_poll_event(&mut self, partition: PollPartition<'_>) -> ServerStatus {
-        if self.handle_signalfd(&partition) == ServerStatus::Exit {
+    fn handle_poll_events(
+        &mut self,
+        partition: PollPartition<'_>,
+    ) -> ServerStatus<impl FnOnce() + use<>> {
+        if self.handle_events_signalfd(&partition).is_exit() {
             return ServerStatus::Exit;
         }
 
-        self.handle_server_socket(&partition);
-        self.handle_command_sockets(&partition)
+        self.handle_events_server_socket(&partition);
+        self.handle_events_command_sockets(&partition)
     }
 
-    fn handle_command_sockets(&mut self, partition: &PollPartition<'_>) -> ServerStatus {
+    fn handle_command_exit(&mut self, fd: RawFd) {
+        info!("Received command: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
+    }
+
+    fn handle_command_spawn(
+        &mut self,
+        message_buffer: MessageBuffer,
+    ) -> Option<impl FnOnce() + use<>> {
+        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
+        let spawn_cmd = message.command_as_spawn().unwrap();
+        info!("Received command: (Spawn {})", spawn_cmd.name());
+
+        debug_assert_single_threaded();
+        // SAFETY: The server never spawns any threads directly and none of the
+        //         used libraries should spawn threads either.  The above debug
+        //         assertion is used to verify this property.
+        //
+        //         The `fork()` function can produce the following errors:
+        //         EAGAIN, ENOMEM, ENOSYS, ERESTARTNOINTR.
+        //
+        //         The Zygote can not recover from EAGAIN or ENOMEM.  ENOSYS
+        //         will not trigger as the Zygote is designed for systems that
+        //         provide `fork()`.  ERESTARTNOINTR will not trigger during
+        //         normal operations as signals are handled via a signalfd and
+        //         not asynchronous signal handlers.
+        let new_pid = unsafe { sys::fork() }.unwrap();
+
+        if new_pid == 0 {
+            // Child process
+
+            // Creating this local variable avoids capturing a reference to
+            // self.
+            let species = self.species;
+            Some(move || {
+                species.gestate(message_buffer);
+            })
+        } else {
+            // Server process
+            info!("Spawned process {}", new_pid);
+
+            None
+        }
+    }
+
+    fn handle_command_stat(&mut self) {
+        info!("Received command: (Stat)");
+    }
+
+    fn handle_events_command_sockets(
+        &mut self,
+        partition: &PollPartition<'_>,
+    ) -> ServerStatus<impl FnOnce() + use<>> {
         for command_pollfd in partition.command {
             match command_pollfd.check() {
                 Ok(checked_pollfd) => {
@@ -202,22 +277,23 @@ impl Server {
 
                                 match message.command_type() {
                                     Command::Spawn => {
-                                        let spawn_cmd = message.command_as_spawn().unwrap();
-                                        info!("Received command: (Spawn {})", spawn_cmd.name());
-
-                                        LoopStatus::Continue
+                                        if let Some(thunk) =
+                                            self.handle_command_spawn(message_buffer)
+                                        {
+                                            LoopStatus::Break(LoopStatus::Break(
+                                                ServerStatus::Trampoline(thunk),
+                                            ))
+                                        } else {
+                                            LoopStatus::Continue
+                                        }
                                     }
                                     Command::Exit => {
-                                        let _ = message.command_as_exit().unwrap();
-                                        info!(
-                                            "Received command: (Exit {})",
-                                            sys::get_socket_creds(fd).unwrap().pid
-                                        );
+                                        self.handle_command_exit(fd);
 
-                                        LoopStatus::Break(LoopStatus::Break(()))
+                                        LoopStatus::Break(LoopStatus::Break(ServerStatus::Exit))
                                     }
                                     Command::Stat => {
-                                        info!("Received command: (Stat)");
+                                        self.handle_command_stat();
 
                                         LoopStatus::Continue
                                     }
@@ -242,9 +318,11 @@ impl Server {
                         Some(LoopExit::Early(LoopStatus::Continue)) => {
                             // Zero-length read from socket, continue and wait for SIGHUP
                         }
-                        Some(LoopExit::Early(LoopStatus::Break(_))) => {
-                            // Messages were read until we received a shutdown command
-                            return ServerStatus::Exit;
+                        Some(LoopExit::Early(LoopStatus::Break(server_status))) => {
+                            // Either messages were read until we received a
+                            // shutdown command or we received a spawn command
+                            // and are in the child process.
+                            return server_status;
                         }
                     }
 
@@ -269,7 +347,7 @@ impl Server {
         ServerStatus::Continue
     }
 
-    fn handle_server_socket(&mut self, partition: &PollPartition<'_>) {
+    fn handle_events_server_socket(&mut self, partition: &PollPartition<'_>) {
         match partition.server.check() {
             Ok(checked_pollfd) => {
                 // No need to check for POLLHUP as it should never occur for a
@@ -303,7 +381,7 @@ impl Server {
         }
     }
 
-    fn handle_signalfd(&mut self, partition: &PollPartition<'_>) -> ServerStatus {
+    fn handle_events_signalfd(&mut self, partition: &PollPartition<'_>) -> ServerStatus<fn()> {
         match partition.signal.check() {
             Ok(checked_pollfd) => {
                 checked_pollfd
@@ -360,16 +438,21 @@ impl Server {
 
     /// Execute the main server loop until the server receives a SIGTERM or
     /// [`crate::messages::Exit`] message.
-    pub fn serve(&mut self) {
+    pub fn serve(&mut self) -> Option<impl FnOnce()> {
         loop {
             let mut poll_array = PollBuffer::from(&mut *self);
 
             // Discard the number of ready file descriptors for now.
             sys::poll(&mut poll_array, -1).unwrap();
 
-            if self.handle_poll_event(poll_array.partition()) == ServerStatus::Exit {
-                print!("Received shutdown command/signal");
-                return;
+            match self.handle_poll_events(poll_array.partition()) {
+                ServerStatus::Continue => {}
+                ServerStatus::Exit => {
+                    return None;
+                }
+                ServerStatus::Trampoline(thunk) => {
+                    return Some(thunk);
+                }
             }
         }
     }

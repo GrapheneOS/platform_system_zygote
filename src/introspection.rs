@@ -45,6 +45,12 @@ pub fn assert_single_threaded() {
     assert_eq!(ProcStat::get().unwrap().num_threads, 1);
 }
 
+/// Panic if there is more than one thread in the current process.
+#[track_caller]
+pub fn debug_assert_single_threaded() {
+    debug_assert_eq!(ProcStat::get().unwrap().num_threads, 1);
+}
+
 /// Panic if a given file descriptor *IS NOT* open
 #[cfg(feature = "test")]
 #[track_caller]

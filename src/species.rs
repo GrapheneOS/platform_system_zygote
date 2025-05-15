@@ -89,6 +89,8 @@ pub trait Species {
     fn name(&self) -> &'static str;
     /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
+    /// Take over control flow for the new process
+    fn gestate(&self, message_buffer: crate::server::MessageBuffer) -> !;
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
 

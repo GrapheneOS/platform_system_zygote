@@ -33,7 +33,10 @@ fn main() -> Result<()> {
     );
 
     let mut server = server::Server::new(&config);
-    server.serve();
+
+    if let Some(thunk) = server.serve() {
+        thunk()
+    }
 
     Ok(())
 }
