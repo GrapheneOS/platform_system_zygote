@@ -24,6 +24,14 @@ use clap::Parser;
 use zygote::{config, server};
 
 fn main() -> Result<()> {
+    if let Some(thunk) = run_server() {
+        thunk()
+    }
+
+    Ok(())
+}
+
+fn run_server() -> Option<impl FnOnce()> {
     let config = config::Server::parse();
 
     logger::init(
@@ -33,10 +41,5 @@ fn main() -> Result<()> {
     );
 
     let mut server = server::Server::new(&config);
-
-    if let Some(thunk) = server.serve() {
-        thunk()
-    }
-
-    Ok(())
+    server.serve()
 }

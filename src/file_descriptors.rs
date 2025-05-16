@@ -37,7 +37,7 @@ use arrayvec::{ArrayString, ArrayVec};
 use zerocopy::IntoBytes;
 
 use crate::{
-    introspection::{self, assert_single_threaded, get_proc_fd_link_info},
+    introspection::{self, debug_assert_single_threaded, get_proc_fd_link_info},
     species::SpeciesRef,
     sys::{self, AsCStr, CStringBuffer},
 };
@@ -229,14 +229,11 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
 }
 
 /// Tags used by the registry to specify what operations to perform when
-/// [`FileDescriptorRegistry::execute_actions`] and
-/// [`FileDescriptorRegistry::close_delayed`] are called.
+/// [`FileDescriptorRegistry::execute_actions`] is called.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Action {
     /// Close the file when `execute_action` is called
     Close,
-    /// Close the file when `close_delayed` is called
-    Delay,
     /// Use the `dup3` call to make the file descriptor point to /dev/null
     DupeNull,
     /// Do nothing with the file descriptor
@@ -253,15 +250,6 @@ struct FileDescriptorEntry {
 }
 
 impl FileDescriptorEntry {
-    /// Close the associated file descriptor if it is registered with the Delay
-    /// action.  This function shall only be called after a fork even in the
-    /// context of the child process.
-    fn close_delayed(&self) {
-        if self.action == Action::Delay {
-            sys::close(self.fd).unwrap();
-        }
-    }
-
     /// Handle Close, DupeNull, and Reopen actions for the associated file
     /// descriptor.  This function shall only be called after a fork even in
     /// the context of the child process.
@@ -270,12 +258,12 @@ impl FileDescriptorEntry {
             Action::Close => {
                 sys::close(self.fd).unwrap();
             }
-            Action::Delay | Action::Ignore => {
-                // Nothing to see here
-            }
             Action::DupeNull => {
                 sys::dup3(dev_null_fd, self.fd, libc::O_CLOEXEC)
                     .unwrap_or_else(|_| panic!("Failed to dup3 fd {} to /dev/null", self.fd));
+            }
+            Action::Ignore => {
+                // Nothing to see here
             }
             Action::Reopen => match &self.info {
                 FileDescriptorInfo::File {
@@ -323,6 +311,19 @@ impl FileDescriptorEntry {
                     panic!("Invalid file type ({}) registered with `Reopen` action", &self.info);
                 }
             },
+        }
+    }
+
+    /// Close the file descriptor if it is registered with `DupeNull`, `Close`,
+    /// or `Reopen` actions.
+    fn override_and_close(&mut self) {
+        match self.action {
+            Action::Close | Action::DupeNull | Action::Reopen => {
+                sys::close(self.fd).unwrap();
+            }
+            Action::Ignore => {
+                // Nothing to do here
+            }
         }
     }
 }
@@ -382,22 +383,26 @@ impl FileDescriptorRegistry {
     }
 
     /// Iterate over all open file descriptors and compare them to the
-    /// descriptors in the registry.  Panic if:
+    /// descriptors in the registry.  Return [`Err`] if:
     ///   * There are any files open that are not in the registry
     ///   * There are files descriptors in the registry that are no longer open
     ///   * A file descriptor's saved state is not equal to the current state
-    pub fn audit(&self) {
-        assert_single_threaded();
+    ///
+    /// If the audit is successful the function returns the number of open
+    /// file descriptors.
+    pub fn audit(&self) -> Result<usize> {
+        debug_assert_single_threaded();
 
         let open_fds: Vec<RawFd> = introspection::get_open_file_descriptors().unwrap();
         for index in 0..std::cmp::max(self.data.len(), open_fds.len()) {
             if open_fds.len() <= index || self.data[index].fd < open_fds[index] {
-                panic!(
+                bail!(
                     "File descriptor {} ({}) was CLOSED unexpectedly.",
-                    self.data[index].fd, self.data[index].info
+                    self.data[index].fd,
+                    self.data[index].info
                 );
             } else if self.data.len() <= index || self.data[index].fd > open_fds[index] {
-                panic!(
+                bail!(
                     "File descriptor {} ({}) was OPENED unexpectedly.",
                     open_fds[index],
                     FileDescriptorInfo::try_from(open_fds[index]).unwrap()
@@ -407,13 +412,16 @@ impl FileDescriptorRegistry {
             {
                 let current_info = FileDescriptorInfo::try_from(open_fds[index]).unwrap();
                 if self.data[index].info != current_info {
-                    panic!(
+                    bail!(
                         "File descriptor {} ({}) has been REOPENED or MODIFIED",
-                        self.data[index].fd, self.data[index].info
+                        self.data[index].fd,
+                        self.data[index].info
                     );
                 }
             }
         }
+
+        Ok(self.data.len())
     }
 
     /// Queries the Zygote and species bound socket allow lists
@@ -423,22 +431,11 @@ impl FileDescriptorRegistry {
             || self.species.bound_socket_is_allowed(path)
     }
 
-    /// Close all file descriptors registered with the Delay action.  This
-    /// should occur after the Zygote is done using all management file
-    /// descriptors.
-    pub fn close_delayed(&self) {
-        assert_single_threaded();
-
-        for entry in &self.data {
-            entry.close_delayed()
-        }
-    }
-
     /// Iterate through the registry and perform all Close, DupeNull, and
     /// Reopen actions.  This should be performed immediately after a fork
     /// event.
     pub fn execute_actions(&self) {
-        assert_single_threaded();
+        debug_assert_single_threaded();
 
         let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC).unwrap();
 
@@ -471,10 +468,20 @@ impl FileDescriptorRegistry {
         false
     }
 
+    /// Close all file descriptors registered with `DupeNull`, `Close`, and
+    /// `Reopen` actions.
+    pub fn override_and_close(&mut self) {
+        debug_assert_single_threaded();
+
+        for entry in &mut self.data {
+            entry.override_and_close();
+        }
+    }
+
     /// Adds a file descriptor to the registry and associates it with the
     /// provided action.
     pub fn register(&mut self, fd: RawFd, action: Action) {
-        assert_single_threaded();
+        debug_assert_single_threaded();
 
         match self.data.binary_search_by(|entry| entry.fd.cmp(&fd.as_raw_fd())) {
             Ok(_) => {
@@ -511,7 +518,7 @@ impl FileDescriptorRegistry {
     /// Iterate through all open file descriptors and register any unregistered
     /// descriptors using a default action.
     pub fn register_new(&mut self) {
-        assert_single_threaded();
+        debug_assert_single_threaded();
         assert!(self.data.is_sorted_by_key(|entry| entry.fd));
 
         let mut registry_index: usize = 0;
@@ -570,7 +577,7 @@ impl FileDescriptorRegistry {
 
     /// Debugging function
     pub fn scan() {
-        assert_single_threaded();
+        debug_assert_single_threaded();
 
         println!("Scanning open file descriptors:");
 

@@ -23,6 +23,7 @@ use std::{fs::File, os::fd::AsRawFd};
 use rustix::fd::IntoRawFd;
 
 use zygote::{
+    assert_ok,
     file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry},
     introspection::{assert_fd_closed, assert_single_threaded},
     sys, test,
@@ -41,7 +42,7 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
 
         let mut registry = FileDescriptorRegistry::new(&zygote::species::mock::Turtle);
         assert_eq!(registry.size(), 3);
-        registry.audit();
+        assert_ok!(registry.audit());
 
         /*
          * Create and register resources
@@ -80,11 +81,6 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
             sys::create_abstract_socket(test::SOCKET_NAME_2, libc::SOCK_DGRAM).unwrap();
         registry.allow_abstract_socket(test::SOCKET_NAME_2.into());
 
-        // Manually register a file for testing the Delay action
-        let bound_socket_3 =
-            sys::create_bound_socket(test::SOCKET_PATH_3, libc::SOCK_DGRAM).unwrap();
-        registry.register(bound_socket_3.as_raw_fd(), Action::Delay);
-
         // Manually register an abstract socket for testing the Ignore action
         let abstract_socket_3 =
             sys::create_abstract_socket(test::SOCKET_NAME_3, libc::SOCK_DGRAM).unwrap();
@@ -114,21 +110,6 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
         assert_fd_open_to(bound_socket_2, file_descriptors::DEV_NULL_PATH);
         assert_fd_open_to(abstract_socket_1, file_descriptors::DEV_NULL_PATH);
         assert_fd_open_to(abstract_socket_2, file_descriptors::DEV_NULL_PATH);
-
-        // Test that bound_socket_3 is still open and refers to the correct path
-        assert_fd_open_to(bound_socket_3, test::SOCKET_PATH_3);
-
-        // Test that abstract_socket_3 is still open
-        assert_fd_open_to(abstract_socket_3, test::SOCKET_NAME_3);
-
-        /*
-         * Test delayed action handling
-         */
-
-        registry.close_delayed();
-
-        // Test that bound_socket_3 has been closed
-        assert_fd_closed(bound_socket_3);
 
         // Test that abstract_socket_3 is still open
         assert_fd_open_to(abstract_socket_3, test::SOCKET_NAME_3);
