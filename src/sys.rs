@@ -575,6 +575,14 @@ pub fn fstat(fd: RawFd) -> LibcResult<libc::stat> {
     )
 }
 
+/// A safe wrapper around [`libc::getpid`].
+///
+/// See: `man getpid`
+pub fn getpid() -> libc::pid_t {
+    // SAFETY: The `libc::getpid` function can not fail.
+    unsafe { libc::getpid() }
+}
+
 /// A safe wrapper around [`libc::getsockopt`].
 ///
 /// See: `man getsockopt`
