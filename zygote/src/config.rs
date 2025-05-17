@@ -42,6 +42,7 @@ pub struct Cli {
     pub command_name: String,
 
     /// Additional arguments that might be used by the command
+    #[arg(trailing_var_arg(true))]
     pub command_args: Vec<String>,
 }
 
@@ -50,7 +51,7 @@ pub struct Cli {
 #[derive(Parser)]
 pub struct Server {
     /// Process name for the Zygote
-    #[arg(short, long, default_value("zygote"))]
+    #[arg(long, short, default_value("zygote"))]
     pub name: String,
 
     /// Controls verbosity of logging; defaults to Warn

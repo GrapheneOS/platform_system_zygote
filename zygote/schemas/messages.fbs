@@ -1,15 +1,26 @@
 // Zygote management commands
 
-table Spawn {
+table Exit {}
+
+table SpawnAndroidNative {
+    package: string (required);
+}
+
+table SpawnMock {
     name: string (required);
 }
 
-table Exit {}
+table SpawnLibApp {
+    path: string (required);
+}
+
 table Stat {}
 
 union Command {
-    Spawn,
     Exit,
+    SpawnAndroidNative,
+    SpawnLibApp,
+    SpawnMock,
     Stat,
 }
 

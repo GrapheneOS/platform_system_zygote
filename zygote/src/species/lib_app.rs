@@ -13,7 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Implementation of the Species trait for Android Native Applications.
+//! Implementation of the Species trait for LibApp.  This species will locate,
+//! load, and enter a shared library that correctly define the `zygote_entry`
+//! function.
 
 use core::ffi::CStr;
 
@@ -32,11 +34,11 @@ impl Species for App {
     }
 
     fn command_type_spawn(&self) -> crate::messages::Command {
-        crate::messages::Command::SpawnAndroidNative
+        crate::messages::Command::SpawnLibApp
     }
 
     fn name(&self) -> &'static str {
-        "android-native-app"
+        "lib-app"
     }
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
@@ -45,8 +47,8 @@ impl Species for App {
 
     fn gestate(&self, message_buffer: crate::server::MessageBuffer) -> ! {
         let message = flatbuffers::root::<crate::messages::Message>(&message_buffer).unwrap();
-        let spawn_cmd = message.command_as_spawn_android_native().unwrap();
-        println!("Hello from the child process.  My name is {}", spawn_cmd.package());
+        let spawn_cmd = message.command_as_spawn_lib_app().unwrap();
+        println!("Path to library application: {}", spawn_cmd.path());
         std::process::exit(0)
     }
 

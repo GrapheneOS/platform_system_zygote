@@ -21,6 +21,7 @@ use core::ffi::CStr;
 use std::str::FromStr;
 
 pub mod android_native;
+pub mod lib_app;
 #[cfg(any(test, feature = "test"))]
 pub mod mock;
 
@@ -71,11 +72,11 @@ pub type SpeciesRef = &'static (dyn Species + Sync);
 
 /// All production species.
 #[cfg(not(any(test, feature = "test")))]
-const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App];
+const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &lib_app::App];
 
 /// All production and test species.
 #[cfg(any(test, feature = "test"))]
-const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &mock::Turtle];
+const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &lib_app::App, &mock::Turtle];
 
 /// A collection of callbacks implemented by Zygote payloads that determine
 /// runtime behaviors such as preloading, process creation, and transfer
@@ -85,6 +86,9 @@ pub trait Species {
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_is_allowed(&self, name: &str) -> bool;
+    /// Return the [`crate::messages::Command`] tag corresponding to this
+    /// species' Spawn command
+    fn command_type_spawn(&self) -> crate::messages::Command;
     /// Returns the name of the species
     fn name(&self) -> &'static str;
     /// Returns true if the file is allowed to be registered

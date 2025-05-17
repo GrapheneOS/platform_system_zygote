@@ -15,22 +15,26 @@
 
 //! Command line interface tool for issuing commands to a Zygote
 
-use anyhow::bail;
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use flatbuffers::FlatBufferBuilder;
-use log::error;
 
-use zygote::{config, messages, sys};
+use zygote::{
+    config,
+    messages::{self, ToFlatbuffer},
+    sys,
+};
 
 fn main() -> anyhow::Result<()> {
     let config = config::Cli::parse();
 
     logger::init(
-        logger::Config::default().with_tag_on_device("zyogte_cli").with_max_level(config.log_level),
+        logger::Config::default().with_tag_on_device("zygote_cli").with_max_level(config.log_level),
     );
 
-    let socket_path = std::path::Path::new(&config.socket);
+    let finished_builder = build_message(&config).context("Invalid message type or arguments.")?;
 
+    let socket_path = std::path::Path::new(&config.socket);
     let client_socket = if socket_path.exists() {
         let client_socket = sys::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0)?;
         let socket_addr =
@@ -43,59 +47,25 @@ fn main() -> anyhow::Result<()> {
         bail!("Zygote server socket path does not exist");
     };
 
-    let mut builder = FlatBufferBuilder::with_capacity(1024);
+    sys::sendmsg(client_socket, finished_builder.finished_data())?;
+    sys::close(client_socket)?;
 
-    if let Some(msg_args) = build_message_args(config, &mut builder) {
-        let message = messages::Message::create(&mut builder, &msg_args);
-        builder.finish(message, None);
-
-        sys::sendmsg(client_socket, builder.finished_data())?;
-        sys::close(client_socket)?;
-
-        Ok(())
-    } else {
-        bail!("Invalid message type or arguments.")
-    }
+    Ok(())
 }
 
-fn build_message_args(
-    config: config::Cli,
-    builder: &mut FlatBufferBuilder<'_>,
-) -> Option<messages::MessageArgs> {
-    match config.command_name.as_str() {
-        "exit" => Some(messages::MessageArgs {
-            command: Some(messages::Exit::create(builder, &messages::ExitArgs {}).as_union_value()),
-            command_type: messages::Command::Exit,
-        }),
-        "spawn" => {
-            if config.command_args.len() == 1 {
-                let packed_name = builder.create_string(config.command_args[0].as_str());
+fn build_message(config: &config::Cli) -> Result<FlatBufferBuilder> {
+    let extra_args_iter = std::iter::once(&config.command_name).chain(config.command_args.iter());
 
-                Some(messages::MessageArgs {
-                    command: Some(
-                        messages::Spawn::create(
-                            builder,
-                            &messages::SpawnArgs { name: Some(packed_name) },
-                        )
-                        .as_union_value(),
-                    ),
-                    command_type: messages::Command::Spawn,
-                })
-            } else {
-                error!(
-                    "Invalid number of arguments for spawn command: {}",
-                    config.command_args.len()
-                );
-                None
-            }
+    match config.command_name.as_str() {
+        "Exit" => Ok(messages::ExitParser::try_parse_from(extra_args_iter)?.build()),
+        "SpawnAndroidNative" => {
+            Ok(messages::SpawnAndroidNativeParser::try_parse_from(extra_args_iter)?.build())
         }
-        "stat" => Some(messages::MessageArgs {
-            command: Some(messages::Stat::create(builder, &messages::StatArgs {}).as_union_value()),
-            command_type: messages::Command::Stat,
-        }),
-        invalid => {
-            println!("Invalid command received: {}", invalid);
-            None
+        "SpawnLibApp" => Ok(messages::SpawnLibAppParser::try_parse_from(extra_args_iter)?.build()),
+        "SpawnMock" => Ok(messages::SpawnMockParser::try_parse_from(extra_args_iter)?.build()),
+        "Stat" => Ok(messages::StatParser::try_parse_from(extra_args_iter)?.build()),
+        _ => {
+            bail!("Invalid command type: {}", config.command_name)
         }
     }
 }

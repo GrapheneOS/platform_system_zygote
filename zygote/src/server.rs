@@ -216,178 +216,171 @@ impl Server {
         partition: &PollPartition<'_>,
     ) -> ServerStatus<impl FnOnce() + use<>> {
         for command_pollfd in partition.command {
-            match command_pollfd.check() {
-                Ok(checked_pollfd) => {
-                    let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
-                        sys::call_until_would_block(
-                            || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
-                            &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
-                                if readlen == 0 {
-                                    return LoopStatus::Break(LoopStatus::Continue);
+            // POLLERR and POLLNVAL should never occur for a command socket.
+            let checked_pollfd = command_pollfd.check().unwrap_or_else(|(fd, error_events)| {
+                panic!("Received polling error for command socket {}: {:?}", fd, error_events)
+            });
+
+            let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
+                sys::call_until_would_block(
+                    || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
+                    &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
+                        if readlen == 0 {
+                            return LoopStatus::Break(LoopStatus::Continue);
+                        }
+
+                        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
+
+                        match message.command_type() {
+                            Command::Exit => {
+                                self.handle_command_exit(fd);
+
+                                LoopStatus::Break(LoopStatus::Break(ServerStatus::Exit))
+                            }
+                            Command::Stat => {
+                                self.handle_command_stat();
+
+                                LoopStatus::Continue
+                            }
+                            cmd @ Command(_) if cmd == self.species.command_type_spawn() => {
+                                if let Some(thunk) = self.handle_command_spawn(message_buffer) {
+                                    LoopStatus::Break(LoopStatus::Break(ServerStatus::Trampoline(
+                                        thunk,
+                                    )))
+                                } else {
+                                    LoopStatus::Continue
                                 }
+                            }
+                            cmd @ Command(tag) if tag < Command::ENUM_MAX => {
+                                error!(
+                                    "Command not supported by this species: {}",
+                                    cmd.variant_name().unwrap()
+                                );
 
-                                let message =
-                                    flatbuffers::root::<Message>(&message_buffer).unwrap();
+                                LoopStatus::Continue
+                            }
+                            Command(tag) => {
+                                error!("Invalid command variant encountered: {}", tag);
 
-                                match message.command_type() {
-                                    Command::Spawn => {
-                                        if let Some(thunk) =
-                                            self.handle_command_spawn(message_buffer)
-                                        {
-                                            LoopStatus::Break(LoopStatus::Break(
-                                                ServerStatus::Trampoline(thunk),
-                                            ))
-                                        } else {
-                                            LoopStatus::Continue
-                                        }
-                                    }
-                                    Command::Exit => {
-                                        self.handle_command_exit(fd);
-
-                                        LoopStatus::Break(LoopStatus::Break(ServerStatus::Exit))
-                                    }
-                                    Command::Stat => {
-                                        self.handle_command_stat();
-
-                                        LoopStatus::Continue
-                                    }
-                                    Command(tag) => {
-                                        error!("Invalid command variant encountered: {}", tag);
-
-                                        LoopStatus::Continue
-                                    }
-                                }
-                            },
-                        )
-                        .unwrap()
-                    });
-
-                    match pollin_result {
-                        None => {
-                            // No event was registered for this file descriptor
+                                LoopStatus::Continue
+                            }
                         }
-                        Some(LoopExit::WouldBlock) => {
-                            // All available messages were read from the socket
-                        }
-                        Some(LoopExit::Early(LoopStatus::Continue)) => {
-                            // Zero-length read from socket, continue and wait for SIGHUP
-                        }
-                        Some(LoopExit::Early(LoopStatus::Break(server_status))) => {
-                            // Either messages were read until we received a
-                            // shutdown command or we received a spawn command
-                            // and are in the child process.
-                            return server_status;
-                        }
-                    }
+                    },
+                )
+                .unwrap()
+            });
 
-                    let _ = checked_pollfd.handle_event(libc::POLLHUP, |fd| {
-                        self.registry.remove(fd).unwrap();
-                        self.command_sockets.remove(
-                            self.command_sockets
-                                .iter()
-                                .position(|&search_fd| search_fd == fd)
-                                .unwrap(),
-                        );
-                        sys::close(fd).unwrap();
-                    });
+            match pollin_result {
+                None => {
+                    // No event was registered for this file descriptor
                 }
-                Err((fd, error_events)) => {
-                    // POLLERR and POLLNVAL should never occur for a command socket.
-                    panic!("Received polling error for command socket {}: {:?}", fd, error_events);
+                Some(LoopExit::WouldBlock) => {
+                    // All available messages were read from the socket
+                }
+                Some(LoopExit::Early(LoopStatus::Continue)) => {
+                    // Zero-length read from socket, continue and wait for SIGHUP
+                }
+                Some(LoopExit::Early(LoopStatus::Break(server_status))) => {
+                    // Either messages were read until we received a
+                    // shutdown command or we received a spawn command
+                    // and are in the child process.
+                    return server_status;
                 }
             }
+
+            let _ = checked_pollfd.handle_event(libc::POLLHUP, |fd| {
+                self.registry.remove(fd).unwrap();
+                self.command_sockets.remove(
+                    self.command_sockets.iter().position(|&search_fd| search_fd == fd).unwrap(),
+                );
+                sys::close(fd).unwrap();
+            });
         }
 
         ServerStatus::Continue
     }
 
     fn check_server_socket_events(&mut self, partition: &PollPartition<'_>) {
-        match partition.server.check() {
-            Ok(checked_pollfd) => {
-                // No need to check for POLLHUP as it should never occur for a
-                // listen socket.
+        // POLLERR and POLLNVAL should never occur for the server socket.
+        let checked_pollfd = partition.server.check().unwrap_or_else(|(_, error_events)| {
+            panic!("Received polling error for server socket: {:?}", error_events);
+        });
 
-                checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
-                    sys::call_until_would_block(|| sys::accept(fd), &mut |new_command_fd| {
-                        info!(
-                            "Accepted new command socket connection from PID {}",
-                            sys::get_socket_creds(new_command_fd).unwrap().pid
-                        );
+        checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
+            sys::call_until_would_block(|| sys::accept(fd), &mut |new_command_fd| {
+                info!(
+                    "Accepted new command socket connection from PID {}",
+                    sys::get_socket_creds(new_command_fd).unwrap().pid
+                );
 
-                        sys::fcntl_setfl(new_command_fd, libc::O_NONBLOCK).unwrap();
+                sys::fcntl_setfl(new_command_fd, libc::O_NONBLOCK).unwrap();
 
-                        self.command_sockets.push(new_command_fd);
-                        self.registry.register(new_command_fd, file_descriptors::Action::Close);
+                self.command_sockets.push(new_command_fd);
+                self.registry.register(new_command_fd, file_descriptors::Action::Close);
 
-                        // Continue reading
-                        LoopStatus::<()>::Continue
-                    })
-                    .unwrap();
-                });
+                // Continue reading
+                LoopStatus::<()>::Continue
+            })
+            .unwrap();
+        });
 
-                // We don't need to check to see if an event was handled as not
-                // receiving any new connections is valid.
-            }
-            Err((_, error_events)) => {
-                // POLLERR and POLLNVAL should never occur for the server socket.
-                panic!("Received polling error for server socket: {:?}", error_events);
-            }
-        }
+        // We don't need to check to see if a POLLIN event was handled as not
+        // receiving any new connections is valid.
+
+        // No need to check for POLLHUP as it should never occur for a
+        // listen socket.
     }
 
     fn check_signalfd_events(&mut self, partition: &PollPartition<'_>) -> ServerStatus<fn()> {
-        match partition.signal.check() {
-            Ok(checked_pollfd) => {
-                checked_pollfd
-                    .handle_event(libc::POLLIN, &mut |fd| {
-                        sys::call_until_would_block(
-                            || sys::read_exact::<libc::signalfd_siginfo>(fd),
-                            &mut |siginfo: libc::signalfd_siginfo| {
-                                match siginfo.ssi_signo as i32 {
-                                    libc::SIGCHLD => {
-                                        info!(
-                                            "Received SIGCHLD from PID {} with status {}",
-                                            siginfo.ssi_pid, siginfo.ssi_status
-                                        );
+        // POLLERR and POLLNVAL should never occur for a signalfd.
+        let checked_pollfd = partition.signal.check().unwrap_or_else(|(_, error_events)| {
+            panic!("Received polling error for signalfd: {:?}", error_events);
+        });
 
-                                        // Continue reading
-                                        LoopStatus::Continue
-                                    }
-                                    libc::SIGINT => {
-                                        info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
+        checked_pollfd
+            .handle_event(libc::POLLIN, &mut |fd| {
+                sys::call_until_would_block(
+                    || sys::read_exact::<libc::signalfd_siginfo>(fd),
+                    &mut |siginfo: libc::signalfd_siginfo| {
+                        match siginfo.ssi_signo as i32 {
+                            libc::SIGCHLD => {
+                                info!(
+                                    "Received SIGCHLD from PID {} with status {}",
+                                    siginfo.ssi_pid, siginfo.ssi_status
+                                );
 
-                                        // Terminate early
-                                        LoopStatus::Break(libc::SIGINT)
-                                    }
-                                    libc::SIGTERM => {
-                                        info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
+                                // Continue reading
+                                LoopStatus::Continue
+                            }
+                            libc::SIGINT => {
+                                info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
 
-                                        // Terminate early
-                                        LoopStatus::Break(libc::SIGTERM)
-                                    }
-                                    signo => {
-                                        // This should never happen as only SIGCHLD,
-                                        // SIGINT, and SIGTERM are added to the signalfd's
-                                        // mask.
-                                        panic!("Unhandled signal received: {}", signo);
-                                    }
-                                }
-                            },
-                        )
-                        .unwrap()
-                    })
-                    // The server should exit early iff the handler exited
-                    // early due to receiving a SIGINT or SIGTERM.
-                    .map_or(ServerStatus::Continue, |loop_status| match loop_status {
-                        LoopExit::Early(_) => ServerStatus::Exit,
-                        LoopExit::WouldBlock => ServerStatus::Continue,
-                    })
-            }
-            Err((_, error_events)) => {
-                // POLLERR and POLLNVAL should never occur for a signalfd.
-                panic!("Received polling error for signalfd: {:?}", error_events);
-            }
-        }
+                                // Terminate early
+                                LoopStatus::Break(libc::SIGINT)
+                            }
+                            libc::SIGTERM => {
+                                info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
+
+                                // Terminate early
+                                LoopStatus::Break(libc::SIGTERM)
+                            }
+                            signo => {
+                                // This should never happen as only SIGCHLD,
+                                // SIGINT, and SIGTERM are added to the signalfd's
+                                // mask.
+                                panic!("Unhandled signal received: {}", signo);
+                            }
+                        }
+                    },
+                )
+                .unwrap()
+            })
+            // The server should exit early iff the handler exited
+            // early due to receiving a SIGINT or SIGTERM.
+            .map_or(ServerStatus::Continue, |loop_status| match loop_status {
+                LoopExit::Early(_) => ServerStatus::Exit,
+                LoopExit::WouldBlock => ServerStatus::Continue,
+            })
     }
 
     fn handle_command_exit(&mut self, fd: RawFd) {
@@ -399,8 +392,7 @@ impl Server {
         message_buffer: MessageBuffer,
     ) -> Option<impl FnOnce() + use<>> {
         let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
-        let spawn_cmd = message.command_as_spawn().unwrap();
-        info!("Received command: (Spawn {})", spawn_cmd.name());
+        info!("Received command: ({:?})", message.command_type());
 
         debug_assert_ok!(self.registry.audit());
 
