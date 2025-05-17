@@ -157,6 +157,7 @@ rust_test_host {
 phony {
     name: "zygote_all",
     required: [
+        "libmemmark",
         "libzygote",
         "libzygote_test",
         "zygote_cli",
