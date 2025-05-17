@@ -1,0 +1,46 @@
+[package]
+name = "zygote"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["test"]
+test = []
+
+[dependencies]
+anyhow = "1.0.97"
+arrayvec = "0.7.6"
+clap = { version = "4.5.0", features = ["derive"] }
+flatbuffers = "25.1.24"
+libc = "0.2.161"
+log = { version = "0.4", features = ["std"] }
+logger = { path = "../../logging/rust" }
+static_assertions = "1.1.0"
+zerocopy = "0.8.21"
+
+[build-dependencies]
+which = "7.0.3"
+
+[dev-dependencies]
+libtest-mimic = "0.8.1"
+rustix = { version = "1.0.2", features = [
+    "alloc",
+    "event",
+    "fs",
+    "libc",
+    "libc_errno",
+    "mm",
+    "std",
+    "use-libc",
+    "use-libc-auxv",
+] }
+which = "7.0.3"
+
+[[test]]
+name = "file_descriptor_tests_no_panic"
+path = "tests/file_descriptors/calm.rs"
+test = true
+bench = false
+doc = false
+harness = false
+required-features = ["test"]
