@@ -235,19 +235,37 @@ impl Server {
                             Command::Exit => {
                                 self.handle_command_exit(fd);
 
-                                LoopStatus::Break(LoopStatus::Break(ServerStatus::Exit))
+                                // Break out of the `recvmsg` loop
+                                LoopStatus::Break(
+                                    // Break out of the PollFd loop
+                                    LoopStatus::Break(
+                                        // Exit the server
+                                        ServerStatus::Exit,
+                                    ),
+                                )
                             }
                             Command::Stat => {
                                 self.handle_command_stat();
 
+                                // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
-                            cmd @ Command(_) if cmd == self.species.command_type_spawn() => {
+                            cmd if cmd == self.species.command_type_spawn() => {
                                 if let Some(thunk) = self.handle_command_spawn(message_buffer) {
-                                    LoopStatus::Break(LoopStatus::Break(ServerStatus::Trampoline(
-                                        thunk,
-                                    )))
+                                    // Child process
+
+                                    // Break out of the `recvmsg` loop
+                                    LoopStatus::Break(
+                                        // Break out of the PollFd loop
+                                        LoopStatus::Break(
+                                            // Launch the new application
+                                            ServerStatus::Trampoline(thunk),
+                                        ),
+                                    )
                                 } else {
+                                    // Server process
+
+                                    // Continue the `recvmsg` loop
                                     LoopStatus::Continue
                                 }
                             }
@@ -257,11 +275,13 @@ impl Server {
                                     cmd.variant_name().unwrap()
                                 );
 
+                                // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
                             Command(tag) => {
                                 error!("Invalid command variant encountered: {}", tag);
 
+                                // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
                         }
@@ -297,6 +317,7 @@ impl Server {
             });
         }
 
+        // Continue the server loop
         ServerStatus::Continue
     }
 

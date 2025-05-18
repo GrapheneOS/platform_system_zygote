@@ -19,6 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
+    messages::{Command, Message},
     species::{file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, Species},
 };
 
@@ -51,8 +52,8 @@ impl Species for Turtle {
         ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
-    fn command_type_spawn(&self) -> crate::messages::Command {
-        crate::messages::Command::SpawnMock
+    fn command_type_spawn(&self) -> Command {
+        Command::SpawnMock
     }
 
     fn name(&self) -> &'static str {
@@ -64,7 +65,7 @@ impl Species for Turtle {
     }
 
     fn gestate(&self, message_buffer: crate::server::MessageBuffer) -> ! {
-        let message = flatbuffers::root::<crate::messages::Message>(&message_buffer).unwrap();
+        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
         let spawn_cmd = message.command_as_spawn_mock().unwrap();
         println!("Hello from the child process.  My name is {}", spawn_cmd.name());
         std::process::exit(0)

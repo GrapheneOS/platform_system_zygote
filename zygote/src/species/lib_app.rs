@@ -19,7 +19,11 @@
 
 use core::ffi::CStr;
 
-use crate::{file_descriptors::Action, species::Species};
+use crate::{
+    file_descriptors::Action,
+    messages::{Command, Message},
+    species::Species,
+};
 
 /// Behaviors for launching native Android applications.
 pub struct App;
@@ -33,8 +37,8 @@ impl Species for App {
         false
     }
 
-    fn command_type_spawn(&self) -> crate::messages::Command {
-        crate::messages::Command::SpawnLibApp
+    fn command_type_spawn(&self) -> Command {
+        Command::SpawnLibApp
     }
 
     fn name(&self) -> &'static str {
@@ -46,7 +50,7 @@ impl Species for App {
     }
 
     fn gestate(&self, message_buffer: crate::server::MessageBuffer) -> ! {
-        let message = flatbuffers::root::<crate::messages::Message>(&message_buffer).unwrap();
+        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
         let spawn_cmd = message.command_as_spawn_lib_app().unwrap();
         println!("Path to library application: {}", spawn_cmd.path());
         std::process::exit(0)
