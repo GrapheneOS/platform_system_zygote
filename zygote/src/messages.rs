@@ -90,6 +90,9 @@ impl ToFlatBuffer for SpawnAndroidNativeParser {
 pub struct SpawnLibAppParser {
     #[arg(required(true))]
     path: String,
+
+    #[arg(trailing_var_arg(true))]
+    pub args: Vec<String>,
 }
 
 impl ToFlatBuffer for SpawnLibAppParser {
@@ -98,11 +101,17 @@ impl ToFlatBuffer for SpawnLibAppParser {
         builder: &mut flatbuffers::FlatBufferBuilder,
     ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
         let packed_path = builder.create_string(self.path.as_str());
+        let packed_args_strings: Vec<_> =
+            self.args.iter().map(|arg| builder.create_string(arg.as_str())).collect();
+        let packed_args_vector = builder.create_vector(&packed_args_strings);
 
         (
             Command::SpawnLibApp,
-            SpawnLibApp::create(builder, &SpawnLibAppArgs { path: Some(packed_path) })
-                .as_union_value(),
+            SpawnLibApp::create(
+                builder,
+                &SpawnLibAppArgs { path: Some(packed_path), args: Some(packed_args_vector) },
+            )
+            .as_union_value(),
         )
     }
 }

@@ -12,6 +12,7 @@ table SpawnMock {
 
 table SpawnLibApp {
     path: string (required);
+    args: [string] (required);
 }
 
 table Stat {}

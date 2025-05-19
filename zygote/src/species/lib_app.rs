@@ -62,6 +62,8 @@ impl Species for App {
         let library_path_str = spawn_cmd.path();
         let library_path = std::path::Path::new(library_path_str);
 
+        let library_args = spawn_cmd.args().iter().map(|arg| arg.to_owned()).collect();
+
         if !library_path.exists() {
             error!("No library found at the specified path: {}", spawn_cmd.path());
             std::process::exit(1);
@@ -80,7 +82,7 @@ impl Species for App {
             });
 
         info!("Successfully loaded shared library");
-        let entry_function: Symbol<unsafe fn() -> i32> =
+        let entry_function: Symbol<unsafe fn(Vec<String>) -> i32> =
             // SAFETY: The symbol name is part of the API for LibApps.
             unsafe { library.get(LIBAPP_ENTRY_SYMBOL_NAME.to_bytes()) }.unwrap_or_else(|err| {
                 error!("Symbol `zygote_entry` not found in shared library: {}", err);
@@ -91,7 +93,7 @@ impl Species for App {
         //         improper signature will result in undefined behavior.  From
         //         this point forward the library may execute arbitrary code.
         unsafe {
-            std::process::exit(entry_function());
+            std::process::exit(entry_function(library_args));
         }
     }
 
