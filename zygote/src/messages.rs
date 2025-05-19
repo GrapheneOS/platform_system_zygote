@@ -19,20 +19,23 @@
 
 include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use flatbuffers::UnionWIPOffset;
 
-pub const DEFAULT_BUFFER_SIZE: usize = 1024;
+/// Default size for all message parsing and passing.
+pub const MESSAGE_BUFFER_SIZE: usize = 512;
+/// Statically allocated arrays used for receiving messages.
+pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
-pub trait ToFlatbuffer {
+pub trait ToFlatBuffer {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
     ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>);
 
     fn build<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
-        let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(DEFAULT_BUFFER_SIZE);
+        let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
 
         let (command_type, command) = self.build_command(&mut builder);
 
@@ -48,7 +51,7 @@ pub trait ToFlatbuffer {
 #[derive(Debug, Parser)]
 pub struct ExitParser;
 
-impl ToFlatbuffer for ExitParser {
+impl ToFlatBuffer for ExitParser {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -63,7 +66,7 @@ pub struct SpawnAndroidNativeParser {
     package: String,
 }
 
-impl ToFlatbuffer for SpawnAndroidNativeParser {
+impl ToFlatBuffer for SpawnAndroidNativeParser {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -87,7 +90,7 @@ pub struct SpawnLibAppParser {
     path: String,
 }
 
-impl ToFlatbuffer for SpawnLibAppParser {
+impl ToFlatBuffer for SpawnLibAppParser {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -108,7 +111,7 @@ pub struct SpawnMockParser {
     name: String,
 }
 
-impl ToFlatbuffer for SpawnMockParser {
+impl ToFlatBuffer for SpawnMockParser {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -125,11 +128,38 @@ impl ToFlatbuffer for SpawnMockParser {
 #[derive(Debug, Parser)]
 pub struct StatParser;
 
-impl ToFlatbuffer for StatParser {
+impl ToFlatBuffer for StatParser {
     fn build_command(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
     ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
         (Command::Stat, Stat::create(builder, &StatArgs {}).as_union_value())
+    }
+}
+
+/// A wrapper class used to ensure that the process server and species code
+/// document the invariants and safety checks that they rely upon when handling
+/// spawn messages.
+#[repr(transparent)]
+pub struct SpawnMessage {
+    buffer: MessageBuffer,
+}
+
+impl SpawnMessage {
+    /// Constructor
+    ///
+    /// # Safety
+    /// Once consumed, the contents of the MessageBuffer can be used to access
+    /// file system resources and execute code.  For this reason, the contents
+    /// of the MessageBuffer must come from a trusted source that is authorized
+    /// to execute commands in the current process's context.
+    pub unsafe fn new(message_buffer: MessageBuffer) -> SpawnMessage {
+        SpawnMessage { buffer: message_buffer }
+    }
+}
+
+impl AsRef<MessageBuffer> for SpawnMessage {
+    fn as_ref(&self) -> &MessageBuffer {
+        &self.buffer
     }
 }

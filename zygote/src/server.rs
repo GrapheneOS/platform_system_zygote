@@ -29,7 +29,7 @@ use crate::{
     assert_ok, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{Command, Message},
+    messages::{self, Command, Message, MessageBuffer, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{self, LoopExit, LoopStatus, PollFd},
 };
@@ -75,10 +75,6 @@ impl<'a> Partition<'a> for PollBuffer {
         }
     }
 }
-
-const MESSAGE_BUFFER_SIZE: usize = 512;
-/// Statically allocated arrays used for receiving messages.
-pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
 #[derive(Debug)]
 enum ServerStatus<T> {
@@ -435,11 +431,23 @@ impl Server {
         if new_pid == 0 {
             // Child process
 
+            // SAFETY: The contents of this message were received from a bound
+            //         UNIX Domain socket.  Processes with permission to read
+            //         and write to this socket are considered authorized to
+            //         spawn processes from this server.
+            //
+            //         The message data will only be read in the child process
+            //         once the server and configuration structs are dropped.
+            //         This ensures that all file descriptor registry actions
+            //         are taken before control is passed to the species code.
+            let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
+
             // Creating this local variable avoids capturing a reference to
             // self.
             let species: SpeciesRef = self.species;
+
             Some(move || {
-                species.gestate(message_buffer);
+                species.gestate(spawn_message);
             })
         } else {
             // Server process
@@ -455,6 +463,11 @@ impl Server {
 
     /// Execute the main server loop until the server receives a SIGTERM or
     /// [`crate::messages::Exit`] message.
+    ///
+    /// The child process thunk is returned to allow the caller to drop the
+    /// server before control flow is transferred to the species-specific
+    /// code.  This allows resources to be cleaned up and possibly sensitive
+    /// data to be deallocated.
     pub fn serve(&mut self) -> Option<impl FnOnce()> {
         loop {
             let mut poll_array = PollBuffer::from(&mut *self);

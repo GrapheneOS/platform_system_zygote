@@ -31,6 +31,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Parse configuration values, instantiate the server, and run it.
+///
+/// The server is constructed in, and the child-side thunk returned from, this
+/// frame to ensure that the configuration and server resources are dropped
+/// before the thunk is evaluated.
 fn run_server() -> Option<impl FnOnce()> {
     let config = config::Server::parse();
 

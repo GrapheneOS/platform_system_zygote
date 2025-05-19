@@ -13,6 +13,7 @@ arrayvec = "0.7.6"
 clap = { version = "4.5.0", features = ["derive"] }
 flatbuffers = "25.1.24"
 libc = "0.2.161"
+libloading = "0.8.6"
 log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
 static_assertions = "1.1.0"

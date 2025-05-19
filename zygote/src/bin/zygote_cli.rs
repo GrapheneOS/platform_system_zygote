@@ -21,7 +21,7 @@ use flatbuffers::FlatBufferBuilder;
 
 use zygote::{
     config,
-    messages::{self, ToFlatbuffer},
+    messages::{self, ToFlatBuffer},
     sys,
 };
 

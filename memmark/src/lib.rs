@@ -18,8 +18,8 @@
 
 /// Entry point for the MemMark Zygote LibApp.
 #[no_mangle]
-pub fn zygote_entry() {
-    print!("Hello from MemMark!");
+pub fn zygote_entry() -> i32 {
+    println!("Hello from MemMark!");
 
-    std::process::exit(0);
+    0
 }
