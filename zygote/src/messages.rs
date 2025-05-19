@@ -25,6 +25,8 @@ use flatbuffers::UnionWIPOffset;
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
+/// Zero-initialized message buffer
+pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SIZE];
 /// Statically allocated arrays used for receiving messages.
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
@@ -161,5 +163,25 @@ impl SpawnMessage {
 impl AsRef<MessageBuffer> for SpawnMessage {
     fn as_ref(&self) -> &MessageBuffer {
         &self.buffer
+    }
+}
+
+pub fn build_message<'a>(
+    command_name: &'a String,
+    command_args: &'a [String],
+) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
+    let extra_args_iter = std::iter::once(command_name).chain(command_args.iter());
+
+    match command_name.as_str() {
+        "Exit" => Ok(ExitParser::try_parse_from(extra_args_iter)?.build()),
+        "SpawnAndroidNative" => {
+            Ok(SpawnAndroidNativeParser::try_parse_from(extra_args_iter)?.build())
+        }
+        "SpawnLibApp" => Ok(SpawnLibAppParser::try_parse_from(extra_args_iter)?.build()),
+        "SpawnMock" => Ok(SpawnMockParser::try_parse_from(extra_args_iter)?.build()),
+        "Stat" => Ok(StatParser::try_parse_from(extra_args_iter)?.build()),
+        _ => {
+            bail!("Invalid command type: {}", command_name)
+        }
     }
 }

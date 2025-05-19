@@ -46,6 +46,24 @@ pub struct Cli {
     pub command_args: Vec<String>,
 }
 
+/// Configuration values used by the Zygote launch utility.  This API is
+/// temporary as the message types evolve.
+#[derive(Parser)]
+pub struct Launch {
+    /// Controls verbosity of logging; defaults to Warn
+    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
+    pub log_level: LevelFilter,
+
+    /// Additional arguments that might be used by the command
+    #[arg(trailing_var_arg(true))]
+    pub spawn_args: Vec<String>,
+
+    /// A runtime-defined reference to Species-specific behavior
+    /// implementations.
+    #[arg(long)]
+    pub species: SpeciesRef,
+}
+
 /// Configuration values used to determine the runtime behavior of a Zygote
 /// server.  Parsing implementations are derived using the `clap` crate.
 #[derive(Parser)]

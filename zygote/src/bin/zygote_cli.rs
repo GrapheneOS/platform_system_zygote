@@ -15,15 +15,10 @@
 
 //! Command line interface tool for issuing commands to a Zygote
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context};
 use clap::Parser;
-use flatbuffers::FlatBufferBuilder;
 
-use zygote::{
-    config,
-    messages::{self, ToFlatBuffer},
-    sys,
-};
+use zygote::{config, messages::build_message, sys};
 
 fn main() -> anyhow::Result<()> {
     let config = config::Cli::parse();
@@ -32,7 +27,8 @@ fn main() -> anyhow::Result<()> {
         logger::Config::default().with_tag_on_device("zygote_cli").with_max_level(config.log_level),
     );
 
-    let finished_builder = build_message(&config).context("Invalid message type or arguments.")?;
+    let finished_builder = build_message(&config.command_name, &config.command_args)
+        .context("Invalid message type or arguments.")?;
 
     let socket_path = std::path::Path::new(&config.socket);
     let client_socket = if socket_path.exists() {
@@ -51,21 +47,4 @@ fn main() -> anyhow::Result<()> {
     sys::close(client_socket)?;
 
     Ok(())
-}
-
-fn build_message(config: &config::Cli) -> Result<FlatBufferBuilder> {
-    let extra_args_iter = std::iter::once(&config.command_name).chain(config.command_args.iter());
-
-    match config.command_name.as_str() {
-        "Exit" => Ok(messages::ExitParser::try_parse_from(extra_args_iter)?.build()),
-        "SpawnAndroidNative" => {
-            Ok(messages::SpawnAndroidNativeParser::try_parse_from(extra_args_iter)?.build())
-        }
-        "SpawnLibApp" => Ok(messages::SpawnLibAppParser::try_parse_from(extra_args_iter)?.build()),
-        "SpawnMock" => Ok(messages::SpawnMockParser::try_parse_from(extra_args_iter)?.build()),
-        "Stat" => Ok(messages::StatParser::try_parse_from(extra_args_iter)?.build()),
-        _ => {
-            bail!("Invalid command type: {}", config.command_name)
-        }
-    }
 }

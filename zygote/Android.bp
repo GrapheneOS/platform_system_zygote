@@ -113,6 +113,25 @@ rust_binary {
     ],
 }
 
+rust_binary {
+    name: "zygote_launch",
+    host_supported: true,
+    edition: "2021",
+    srcs: [
+        "src/bin/zygote_launch.rs",
+    ],
+    rustlibs: [
+        "libanyhow",
+        "libclap",
+        "libflatbuffers",
+        "liblibc",
+        "liblibloading",
+        "liblogger",
+        "liblog_rust",
+        "libzygote",
+    ],
+}
+
 rust_test_host {
     name: "zygote_next_unit_tests",
     edition: "2021",
@@ -165,6 +184,7 @@ phony {
         "libzygote",
         "libzygote_test",
         "zygote_cli",
+        "zygote_launch",
         "zygote_next",
         "zygote_next_unit_tests",
         "zygote_next_integration_test_fd_no_panic",
