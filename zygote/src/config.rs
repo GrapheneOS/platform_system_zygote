@@ -85,17 +85,21 @@ pub struct Server {
     /// implementations.
     #[arg(long)]
     pub species: SpeciesRef,
+
+    /// Libraries to be preloaded by the server
+    #[arg(long("preload-library"), short('l'), action(clap::ArgAction::Append))]
+    pub preload_libraries: Vec<String>,
 }
 
 fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
-    match parse_arg.parse::<usize>()? {
-        0 => Ok(LevelFilter::Off),
-        1 => Ok(LevelFilter::Error),
-        2 => Ok(LevelFilter::Warn),
-        3 => Ok(LevelFilter::Info),
-        4 => Ok(LevelFilter::Debug),
-        5 => Ok(LevelFilter::Trace),
-        _ => bail!("Invalid log level"),
+    match parse_arg {
+        "0" => Ok(LevelFilter::Off),
+        "1" => Ok(LevelFilter::Error),
+        "2" => Ok(LevelFilter::Warn),
+        "3" => Ok(LevelFilter::Info),
+        "4" => Ok(LevelFilter::Debug),
+        "5" => Ok(LevelFilter::Trace),
+        level => bail!("Invalid log level: {}", level),
     }
 }
 

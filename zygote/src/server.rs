@@ -18,11 +18,13 @@
 //! This executable can be used to preload and initialize resources before
 //! forking child processes.
 
+use std::ffi::OsStr;
 use std::{os::fd::RawFd, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use flatbuffers;
+use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info};
 
 use crate::{
@@ -132,7 +134,7 @@ impl Server {
         let signal_fd = sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).unwrap();
         registry.register(signal_fd, file_descriptors::Action::Close);
 
-        Self {
+        let server = Self {
             registry,
             species: config.species,
             pid: sys::getpid(),
@@ -142,7 +144,11 @@ impl Server {
             command_sockets: ArrayVec::new(),
 
             server_socket_path,
-        }
+        };
+
+        server.preload(&config.preload_libraries);
+
+        server
     }
 
     fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
@@ -459,6 +465,33 @@ impl Server {
 
     fn handle_command_stat(&mut self) {
         info!("Received command: (Stat)");
+    }
+
+    fn preload<T: AsRef<OsStr>>(&self, libraries: &Vec<T>) {
+        for library_path in libraries {
+            // SAFETY: The Zygote process-server is designed to load and
+            //         execute code from shared libraries.  If a Zygote process
+            //         is launched with permissions to access these files and
+            //         the user has specified them in the preload set then the
+            //         user acknowledges that the object will be loaded, static
+            //         initializers will be called, and the contained functions
+            //         may be called.
+            let dlopen_result =
+                unsafe { Library::open(Some(library_path), RTLD_GLOBAL | RTLD_NOW) };
+
+            match dlopen_result {
+                Ok(library) => {
+                    info!("Preloaded library SUCCESS: {:?}", library_path.as_ref());
+
+                    // Extract to contained handle to prevent the library from
+                    // being closed as we exit the current scope.
+                    let _ = library.into_raw();
+                }
+                Err(err) => {
+                    error!("Preload library FAILURE: {:?} : {}", library_path.as_ref(), err);
+                }
+            };
+        }
     }
 
     /// Execute the main server loop until the server receives a SIGTERM or
