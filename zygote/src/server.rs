@@ -146,6 +146,16 @@ impl Server {
             server_socket_path,
         };
 
+        // Create a new process group for this Zygote server process and its
+        // children.  The following list contains the possible error codes
+        // returned and why they are not applicable to this call site:
+        //  * EACCESS: Not possible; calling on self
+        //  * EINVAL: Both arguments are literals >= 0
+        //  * EPERM: Not applicable; we're creating a new process group, not
+        //           moving between existing ones
+        //  * EPERM: Not applicable; calling on self
+        sys::setpgid(0, 0).unwrap();
+
         server.preload(&config.preload_libraries);
 
         server
