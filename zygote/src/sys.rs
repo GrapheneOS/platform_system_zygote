@@ -575,6 +575,30 @@ pub fn fstat(fd: RawFd) -> LibcResult<libc::stat> {
     )
 }
 
+/// A safe wrapper around [`libc::getegid`].
+///
+/// See `man getegid`
+pub fn getegid() -> libc::gid_t {
+    // SAFETY: The `libc::getegid` function can not fail.
+    unsafe { libc::getegid() }
+}
+
+/// A safe wrapper around [`libc::geteuid`].
+///
+/// See `man geteuid`
+pub fn geteuid() -> libc::uid_t {
+    // SAFETY: The `libc::geteuid` function can not fail.
+    unsafe { libc::geteuid() }
+}
+
+/// A safe wrapper around [`libc::getgid`].
+///
+/// See `man getgid`
+pub fn getgid() -> libc::gid_t {
+    // SAFETY: The `libc::getgid` function can not fail.
+    unsafe { libc::getgid() }
+}
+
 /// A safe wrapper around [`libc::getpid`].
 ///
 /// See: `man getpid`
@@ -647,7 +671,15 @@ pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
     Ok((addr, path_len))
 }
 
-/// A safe wrapper round [`libc::listen`].
+/// A safe wrapper around [`libc::getuid`].
+///
+/// See: `man getuid`
+pub fn getuid() -> libc::uid_t {
+    // SAFETY: The `libc::getuid` function can not fail.
+    unsafe { libc::getuid() }
+}
+
+/// A safe wrapper around [`libc::listen`].
 ///
 /// See: `man listen`
 pub fn listen(fd: RawFd, backlog: c_int) -> LibcResult<()> {
@@ -825,6 +857,33 @@ pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
     //         allocated inside this function.  The return value is checked and
     //         wrapped in a LibcResult.
     libc_result_from_int(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) })
+}
+
+/// A safe wrapper around [`libc::setpgid`].
+///
+/// See: `man setpgid`
+pub fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> LibcResult<()> {
+    // SAFETY: The `libc::setpgid` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setpgid(pid, pgid) })
+}
+
+/// A safe wrapper around [`libc::setregid`]
+///
+/// See: `man setregid`
+pub fn setregid(rgid: libc::gid_t, egid: libc::gid_t) -> LibcResult<()> {
+    // SAFETY: The `libc::setregid` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setregid(rgid, egid) })
+}
+
+/// A safe wrapper around [`libc::setreuid`]
+///
+/// See : `man setreuid`
+pub fn setreuid(ruid: libc::uid_t, euid: libc::uid_t) -> LibcResult<()> {
+    // SAFETY: The `libc::setreuid` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setreuid(ruid, euid) })
 }
 
 /// A safe wrapper around [`libc::sigaddset`]
