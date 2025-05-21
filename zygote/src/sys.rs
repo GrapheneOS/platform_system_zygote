@@ -751,6 +751,21 @@ pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> LibcResult<c_int> {
     })
 }
 
+/// A safe wrapper around the [`libc::prctl`] `PR_SET_NAME` operation.
+///
+/// See: `man PR_SET_NAME`
+pub fn prctl_set_name<S: AsRef<[u8]>>(name: &S) {
+    let mut name_buffer = [0u8; 16];
+    let copy_len = std::cmp::min(name.as_ref().len(), name_buffer.len() - 1);
+    name_buffer[..copy_len].copy_from_slice(&name.as_ref()[..copy_len]);
+
+    // SAFETY: The only error that can be returned by the `libc::prctl`
+    //         `PR_SET_NAME` operation is `EINVAL`.  This error can not occur
+    //         for this operation as the pointer argument refers to a 16-byte
+    //         buffer allocated in this stack frame.
+    unsafe { libc::prctl(libc::PR_SET_NAME, name_buffer.as_ptr() as *const c_void) };
+}
+
 /// A safe wrapper around [`libc::read`].
 ///
 /// See: `man read`

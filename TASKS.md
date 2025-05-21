@@ -13,9 +13,10 @@ See b/411209346 to track the high-level development progress for this project.
 * [ ] Support ABI query messages
 * [ ] Load Zygote server configuration from file (Serde?)
 * [X] Create new process group when launching the server
-* [ ] Add option to set process name
+* [X] Add option to set process name
 * [ ] Add an option to set server process priority
 * [ ] Add an option to set the child process priority
 * [ ] Add new "preload-list" argument to Zygote server
+* [ ] Take `cgroup` as argument in spawn messages
 * [ ] Add support for secondary uid/gid to be used during preloading
   * This can be used to prevent static initializers from executing with elevated privileges

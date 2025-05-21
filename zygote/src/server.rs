@@ -146,6 +146,8 @@ impl Server {
             server_socket_path,
         };
 
+        sys::prctl_set_name(&config.name);
+
         // Create a new process group for this Zygote server process and its
         // children.  The following list contains the possible error codes
         // returned and why they are not applicable to this call site:

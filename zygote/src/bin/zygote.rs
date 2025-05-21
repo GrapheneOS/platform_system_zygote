@@ -21,7 +21,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::{config, server};
+use zygote::{config, server, sys};
 
 fn main() -> Result<()> {
     if let Some(thunk) = run_server() {
@@ -44,6 +44,8 @@ fn run_server() -> Option<impl FnOnce()> {
             .with_tag_on_device(config.name.clone())
             .with_max_level(config.log_level),
     );
+
+    log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
 
     let mut server = server::Server::new(&config);
     server.serve()
