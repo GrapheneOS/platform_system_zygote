@@ -33,6 +33,18 @@ use zerocopy::FromBytes;
 #[cfg(target_os = "android")]
 use crate::libc_fill;
 
+/// Platform-dependent type alias for use with [`libc::getpriority`] and
+/// [`libc::setpriority`].
+#[allow(non_camel_case_types)]
+#[cfg(not(target_os = "android"))]
+pub type which_t = core::ffi::c_uint;
+
+/// Platform-dependent type alias for use with [`libc::getpriority`] and
+/// [`libc::setpriority`].
+#[allow(non_camel_case_types)]
+#[cfg(target_os = "android")]
+pub type which_t = c_int;
+
 /// Number of bytes to allocate for string buffers.  The value 512 was selected
 /// because it was large enough to fit all strings that were observed during
 /// testing.  Testing should be performed to see if a smaller value can be
@@ -109,6 +121,21 @@ pub(crate) fn errno() -> Errno {
         #[cfg(target_os = "android")]
         // SAFETY: Reads from the thread's errno address should never fail
         code: unsafe { *libc::__errno() },
+    }
+}
+
+/// Write 0 to the `errno` `libc` global
+fn errno_clear() {
+    #[cfg(not(target_os = "android"))]
+    // SAFETY: Writes to the thread's errno address should never fail
+    unsafe {
+        *libc::__errno_location() = 0
+    }
+
+    #[cfg(target_os = "android")]
+    // SAFETY: Writes to the thread's errno address should never fail
+    unsafe {
+        *libc::__errno() = 0
     }
 }
 
@@ -577,7 +604,7 @@ pub fn fstat(fd: RawFd) -> LibcResult<libc::stat> {
 
 /// A safe wrapper around [`libc::getegid`].
 ///
-/// See `man getegid`
+/// See: `man getegid`
 pub fn getegid() -> libc::gid_t {
     // SAFETY: The `libc::getegid` function can not fail.
     unsafe { libc::getegid() }
@@ -585,10 +612,26 @@ pub fn getegid() -> libc::gid_t {
 
 /// A safe wrapper around [`libc::geteuid`].
 ///
-/// See `man geteuid`
+/// See: `man geteuid`
 pub fn geteuid() -> libc::uid_t {
     // SAFETY: The `libc::geteuid` function can not fail.
     unsafe { libc::geteuid() }
+}
+
+/// A safe wrapper around [`libc::getpriority`]
+///
+/// See: `man getpriority`
+pub fn getpriority(which: which_t, who: libc::id_t) -> LibcResult<c_int> {
+    errno_clear();
+
+    // SAFETY: `errno` is cleared before calling the function and checked upon
+    //         return.
+    let result: c_int = unsafe { libc::getpriority(which, who) };
+    if errno().code == 0 {
+        Ok(result)
+    } else {
+        Err(errno())
+    }
 }
 
 /// A safe wrapper around [`libc::getgid`].
@@ -881,6 +924,22 @@ pub fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> LibcResult<()> {
     // SAFETY: The `libc::setpgid` function takes no pointers and the return
     //         value is checked and wrapped in a LibcResult.
     libc_result_from_int_with_void(unsafe { libc::setpgid(pid, pgid) })
+}
+
+/// A safe wrapper around [`libc::setpriority`]
+///
+/// See: `man setpriority`
+pub fn setpriority(which: which_t, who: libc::id_t, prio: c_int) -> LibcResult<c_int> {
+    errno_clear();
+
+    // SAFETY: `errno` is cleared before calling the function and checked upon
+    //         return.
+    let result: c_int = unsafe { libc::setpriority(which, who, prio) };
+    if errno().code == 0 {
+        Ok(result)
+    } else {
+        Err(errno())
+    }
 }
 
 /// A safe wrapper around [`libc::setregid`]
