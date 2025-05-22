@@ -430,6 +430,57 @@ pub fn read_exact<T: LibcFromBytes>(fd: RawFd) -> LibcResult<T> {
     })
 }
 
+pub(crate) struct EffectiveIdContext {
+    ruid: libc::uid_t,
+    rgid: libc::gid_t,
+
+    euid: Option<libc::uid_t>,
+    egid: Option<libc::gid_t>,
+}
+
+impl EffectiveIdContext {
+    pub fn enter(
+        euid: Option<libc::uid_t>,
+        egid: Option<libc::gid_t>,
+    ) -> Result<EffectiveIdContext> {
+        if let Some(euid) = euid {
+            // Pass the bit pattern of twos-complement `-1` as the real UID to
+            // leave it unchanged.
+            setreuid(-1i32 as libc::uid_t, euid)?;
+        }
+
+        if let Some(egid) = egid {
+            // Pass the bit pattern of twos-complement `-1` as the real GID to
+            // leave it unchanged.
+            setregid(-1i32 as libc::gid_t, egid)?;
+        }
+
+        Ok(EffectiveIdContext { ruid: getuid(), rgid: getgid(), euid, egid })
+    }
+
+    pub fn exit(&self) -> Result<()> {
+        if self.euid.is_some() {
+            // Pass the bit pattern of twos-complement `-1` as the real UID to
+            // leave it unchanged.
+            setreuid(-1i32 as libc::uid_t, self.ruid)?;
+        }
+
+        if self.egid.is_some() {
+            // Pass the bit pattern of twos-complement `-1` as the real GID to
+            // leave it unchanged.
+            setregid(-1i32 as libc::gid_t, self.rgid)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for EffectiveIdContext {
+    fn drop(&mut self) {
+        self.exit().unwrap()
+    }
+}
+
 /*
  * Libc wrappers
  */

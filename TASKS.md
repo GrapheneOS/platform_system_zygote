@@ -14,9 +14,8 @@ See b/411209346 to track the high-level development progress for this project.
 * [ ] Load Zygote server configuration from file (Serde?)
 * [X] Create new process group when launching the server
 * [X] Add option to set process name
-* [X] Add an option to set child process priority
-* [ ] Add an option to set the child process priority
+* [X] Add an option to set the child process priority
 * [ ] Add new "preload-list" argument to Zygote server
+* [X] Add support for secondary uid/gid to be used during preloading
 * [ ] Take `cgroup` as argument in spawn messages
-* [ ] Add support for secondary uid/gid to be used during preloading
-  * This can be used to prevent static initializers from executing with elevated privileges
+* [ ] Purge memory allocator after preloading

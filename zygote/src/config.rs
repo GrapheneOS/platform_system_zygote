@@ -76,9 +76,17 @@ pub struct Server {
     #[arg(long, short, default_value("zygote"))]
     pub name: String,
 
+    /// Effective GID to use when preloading shared libraries
+    #[arg(long, value_parser(clap::value_parser!(libc::gid_t).range(0..)))]
+    pub preload_gid: Option<libc::gid_t>,
+
     /// Libraries to be preloaded by the server
     #[arg(long("preload-library"), short('l'), action(clap::ArgAction::Append))]
     pub preload_libraries: Vec<String>,
+
+    /// Effective UID to use when preloading shared libraries
+    #[arg(long, value_parser(clap::value_parser!(libc::uid_t).range(0..)))]
+    pub preload_uid: Option<libc::uid_t>,
 
     /// Scheduling priority for the Zygote server process
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]

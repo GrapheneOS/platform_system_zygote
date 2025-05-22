@@ -113,6 +113,9 @@ pub struct Server {
 
     child_priority: Option<i32>,
     server_socket_path: Option<String>,
+
+    preload_uid: Option<libc::uid_t>,
+    preload_gid: Option<libc::gid_t>,
 }
 
 impl Server {
@@ -142,6 +145,9 @@ impl Server {
 
             child_priority: config.child_priority,
             server_socket_path,
+
+            preload_uid: config.preload_uid,
+            preload_gid: config.preload_gid,
         };
 
         sys::prctl_set_name(&config.name);
@@ -154,7 +160,10 @@ impl Server {
         //  * EPERM: Not applicable; we're creating a new process group, not
         //           moving between existing ones
         //  * EPERM: Not applicable; calling on self
-        sys::setpgid(0, 0).unwrap();
+        if let Err(errno) = sys::setpgid(0, 0) {
+            error!("Failed to create process group for Zygote server: {}", errno);
+            std::process::exit(1);
+        }
 
         server.preload(&config.preload_libraries);
 
@@ -486,6 +495,15 @@ impl Server {
     }
 
     fn preload<T: AsRef<OsStr>>(&self, libraries: &Vec<T>) {
+        let _eid_context = sys::EffectiveIdContext::enter(self.preload_uid, self.preload_gid)
+            .unwrap_or_else(|errno| {
+                error!(
+                    "Failed to set effective UID/GID ({:?}/{:?}): {}",
+                    self.preload_uid, self.preload_gid, errno
+                );
+                std::process::exit(1);
+            });
+
         for library_path in libraries {
             // SAFETY: The Zygote process-server is designed to load and
             //         execute code from shared libraries.  If a Zygote process
