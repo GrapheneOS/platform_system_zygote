@@ -25,7 +25,7 @@ use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use flatbuffers;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::{
     assert_ok, config, debug_assert_ok,
@@ -111,6 +111,7 @@ pub struct Server {
     server_socket: RawFd,
     command_sockets: ArrayVec<RawFd, COMMAND_SOCKET_BUFFER_SIZE>,
 
+    child_priority: Option<i32>,
     server_socket_path: Option<String>,
 }
 
@@ -120,10 +121,6 @@ impl Server {
     ///
     /// Add a destructor to clean up the socket if we create it.
     pub fn new(config: &config::Server) -> Self {
-        // TODO: Only enable for device builds?
-        // NOTE: Operation not permitted on gLinux machines
-        // linux::process::nice(-19).expect("Unable to set Zygote nice level");
-
         let mut registry = FileDescriptorRegistry::new(config.species);
 
         let (server_socket, server_socket_path) = Server::get_server_socket(config).unwrap();
@@ -143,6 +140,7 @@ impl Server {
             server_socket,
             command_sockets: ArrayVec::new(),
 
+            child_priority: config.child_priority,
             server_socket_path,
         };
 
@@ -448,6 +446,14 @@ impl Server {
 
         if new_pid == 0 {
             // Child process
+
+            if let Some(priority) = self.child_priority {
+                if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
+                    // EINVAL, EPERM, and ESRCH only apply when setting the
+                    // priority of other processes.
+                    warn!("Insufficient permissions to set priority: {}", priority);
+                }
+            }
 
             // SAFETY: The contents of this message were received from a bound
             //         UNIX Domain socket.  Processes with permission to read

@@ -68,13 +68,21 @@ pub struct Launch {
 /// server.  Parsing implementations are derived using the `clap` crate.
 #[derive(Parser)]
 pub struct Server {
+    /// Controls verbosity of logging; defaults to Warn
+    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
+    pub log_level: LevelFilter,
+
     /// Process name for the Zygote
     #[arg(long, short, default_value("zygote"))]
     pub name: String,
 
-    /// Controls verbosity of logging; defaults to Warn
-    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
-    pub log_level: LevelFilter,
+    /// Libraries to be preloaded by the server
+    #[arg(long("preload-library"), short('l'), action(clap::ArgAction::Append))]
+    pub preload_libraries: Vec<String>,
+
+    /// Scheduling priority for the Zygote server process
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub child_priority: Option<i32>,
 
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket
@@ -85,10 +93,6 @@ pub struct Server {
     /// implementations.
     #[arg(long)]
     pub species: SpeciesRef,
-
-    /// Libraries to be preloaded by the server
-    #[arg(long("preload-library"), short('l'), action(clap::ArgAction::Append))]
-    pub preload_libraries: Vec<String>,
 }
 
 fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
