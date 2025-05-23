@@ -791,6 +791,22 @@ pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> LibcResult<li
     libc_result_from_int(unsafe { libc::lseek64(fd, offset, whence) })
 }
 
+/// A safe wrapper around [`libc::mallopt`].
+///
+/// See: `man mallopt`
+pub fn mallopt(cmd: c_int, arg: c_int) -> LibcResult<()> {
+    // SAFETY: This function takes no pointer arguments and the return value
+    //         is checked and wrapped in a LibcResult.
+    let retval = unsafe { libc::mallopt(cmd, arg) };
+
+    // This function returns 1 on success and 0 on error.
+    if retval == 0 {
+        Err(errno())
+    } else {
+        Ok(())
+    }
+}
+
 /// A safe wrapper around [`libc::open`].
 ///
 /// See: `man open`
