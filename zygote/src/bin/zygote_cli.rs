@@ -56,6 +56,13 @@ fn main() -> anyhow::Result<()> {
         Message::Ack => {
             log::info!("Message acknowledged");
         }
+        Message::IdentityQueryResponse => {
+            let identity_query_response = parcel
+                .message_as_identity_query_response()
+                .ok_or(anyhow!("Could not unpack IdentityQueryResponse"))?;
+            log::info!("Identity query successful: {:?}", identity_query_response);
+            println!("{:?}", identity_query_response);
+        }
         Message::SpawnResponse => {
             let spawn_response = parcel
                 .message_as_spawn_response()

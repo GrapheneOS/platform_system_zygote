@@ -103,9 +103,11 @@ impl<T> ServerStatus<T> {
 
 /// The main data structure for the Zygote process server.
 pub struct Server {
-    registry: FileDescriptorRegistry,
+    name: String,
     species: SpeciesRef,
     pid: libc::pid_t,
+
+    registry: FileDescriptorRegistry,
 
     signal_fd: RawFd,
     server_socket: RawFd,
@@ -123,10 +125,10 @@ impl Server {
     /// reference.
     ///
     /// Add a destructor to clean up the socket if we create it.
-    pub fn new(config: &config::Server) -> Self {
+    pub fn new(config: config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let (server_socket, server_socket_path) = Server::get_server_socket(config).unwrap();
+        let (server_socket, server_socket_path) = Server::get_server_socket(&config).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
 
         let sigset = sys::build_sigset(&[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]).unwrap();
@@ -135,9 +137,11 @@ impl Server {
         registry.register(signal_fd, file_descriptors::Action::Close);
 
         let server = Self {
-            registry,
+            name: config.name,
             species: config.species,
             pid: sys::getpid(),
+
+            registry,
 
             signal_fd,
             server_socket,
@@ -150,7 +154,7 @@ impl Server {
             preload_gid: config.preload_gid,
         };
 
-        sys::prctl_set_name(&config.name);
+        sys::prctl_set_name(&server.name);
 
         // Create a new process group for this Zygote server process and its
         // children.  The following list contains the possible error codes
@@ -259,7 +263,7 @@ impl Server {
 
                         match parcel.message_type() {
                             Message::Exit => {
-                                self.handle_command_exit(fd);
+                                self.handle_message_exit(fd);
 
                                 // Break out of the `recvmsg` loop
                                 LoopStatus::Break(
@@ -270,14 +274,20 @@ impl Server {
                                     ),
                                 )
                             }
+                            Message::IdentityQuery => {
+                                self.handle_message_identity_query(fd);
+
+                                // Continue the `recvmsg` loop
+                                LoopStatus::Continue
+                            }
                             Message::Stat => {
-                                self.handle_command_stat(fd);
+                                self.handle_message_stat(fd);
 
                                 // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
                             msg if msg == self.species.message_type_spawn() => {
-                                if let Some(thunk) = self.handle_command_spawn(fd, message_buffer) {
+                                if let Some(thunk) = self.handle_message_spawn(fd, message_buffer) {
                                     // Child process
 
                                     // Break out of the `recvmsg` loop
@@ -430,7 +440,7 @@ impl Server {
             })
     }
 
-    fn handle_command_exit(&mut self, fd: RawFd) {
+    fn handle_message_exit(&mut self, fd: RawFd) {
         info!("Received command: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
 
         let ack_msg = messages::AckBuilder {}.build();
@@ -439,7 +449,22 @@ impl Server {
         }
     }
 
-    fn handle_command_spawn(
+    fn handle_message_identity_query(&self, fd: RawFd) {
+        info!("Received command: (IdentityQuery {})", sys::get_socket_creds(fd).unwrap().pid);
+
+        let response = messages::IdentityQueryResponseBuilder {
+            name: &self.name,
+            species: self.species.name(),
+            arch: std::env::consts::ARCH,
+        }
+        .build();
+
+        if let Err(errno) = sys::sendmsg(fd, response.finished_data()) {
+            error!("Failed to send identity query response on fd {}: {}", fd, errno);
+        }
+    }
+
+    fn handle_message_spawn(
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
@@ -505,7 +530,7 @@ impl Server {
         }
     }
 
-    fn handle_command_stat(&mut self, fd: RawFd) {
+    fn handle_message_stat(&mut self, fd: RawFd) {
         info!("Received command: (Stat)");
 
         let ack_msg = messages::AckBuilder {}.build();

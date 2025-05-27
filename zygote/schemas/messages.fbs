@@ -4,6 +4,14 @@ table Ack {}
 
 table Exit {}
 
+table IdentityQuery {}
+
+table IdentityQueryResponse {
+    name: string (required);
+    species: string (required);
+    arch: string (required);
+}
+
 table SpawnAndroidNative {
     package: string (required);
 }
@@ -26,6 +34,8 @@ table Stat {}
 union Message {
     Ack,
     Exit,
+    IdentityQuery,
+    IdentityQueryResponse,
     SpawnAndroidNative,
     SpawnLibApp,
     SpawnMock,

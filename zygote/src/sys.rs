@@ -968,7 +968,7 @@ pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
     // Usage of `mem::zeroed()` is required as implementations of `msghdr`
     // can include private fields (e.g. aarch64-musl).
     //
-    // SAFETY: The man page for sndmsg specifies that it is valid to zero-
+    // SAFETY: The man page for sendmsg specifies that it is valid to zero-
     //         initialize a msghdr struct.
     let mut msghdr: libc::msghdr = unsafe { mem::zeroed() };
 

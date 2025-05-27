@@ -33,7 +33,8 @@ pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
 // Export types from the inner module.
 pub use inner::{
-    Ack, AckArgs, Exit, ExitArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative,
+    Ack, AckArgs, Exit, ExitArgs, IdentityQuery, IdentityQueryArgs, IdentityQueryResponse,
+    IdentityQueryResponseArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative,
     SpawnAndroidNativeArgs, SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs, SpawnResponse,
     SpawnResponseArgs, Stat, StatArgs,
 };
@@ -84,6 +85,57 @@ impl ToFlatBuffer for ExitBuilder {
         builder: &mut flatbuffers::FlatBufferBuilder,
     ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
         (Message::Exit, Exit::create(builder, &ExitArgs {}).as_union_value())
+    }
+}
+
+/// Helper struct for constructing IdentityQuery messages.
+#[derive(Debug)]
+pub struct IdentityQueryBuilder;
+
+impl ToFlatBuffer for IdentityQueryBuilder {
+    fn build_message(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder,
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        (
+            Message::IdentityQuery,
+            IdentityQuery::create(builder, &IdentityQueryArgs {}).as_union_value(),
+        )
+    }
+}
+
+/// Helper struct for constructing IdentityQueryResponse messages.
+#[derive(Debug)]
+pub struct IdentityQueryResponseBuilder<'a> {
+    /// Name of the Zygote server process
+    pub name: &'a String,
+    /// Name of the Zygote server's species
+    pub species: &'static str,
+    /// Name of the Zygote server's architecture
+    pub arch: &'static str,
+}
+
+impl ToFlatBuffer for IdentityQueryResponseBuilder<'_> {
+    fn build_message(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder,
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        let packed_name = builder.create_string(self.name.as_str());
+        let packed_species = builder.create_string(self.species);
+        let packed_arch = builder.create_string(self.arch);
+
+        (
+            Message::IdentityQueryResponse,
+            IdentityQueryResponse::create(
+                builder,
+                &IdentityQueryResponseArgs {
+                    name: Some(packed_name),
+                    species: Some(packed_species),
+                    arch: Some(packed_arch),
+                },
+            )
+            .as_union_value(),
+        )
     }
 }
 
@@ -232,6 +284,7 @@ pub fn build_message<'a>(
 
     match message_name.as_str() {
         "Exit" => Ok(ExitBuilder {}.build()),
+        "IdentityQuery" => Ok(IdentityQueryBuilder {}.build()),
         "SpawnAndroidNative" => {
             Ok(SpawnAndroidNativeBuilder::try_parse_from(extra_args_iter)?.build())
         }
