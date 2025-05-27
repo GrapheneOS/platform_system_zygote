@@ -15,9 +15,10 @@
 
 //! Generated Rust bindings for the Flatbuffer schema defined in `schemas/messages.fbs`
 
-#![allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
-
-include!(concat!(env!("OUT_DIR"), "/messages.rs"));
+#[allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
+mod inner {
+    include!(concat!(env!("OUT_DIR"), "/messages.rs"));
+}
 
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -30,12 +31,21 @@ pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SI
 /// Statically allocated arrays used for receiving messages.
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
+// Export types from the inner module.
+pub use inner::{
+    Exit, ExitArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative, SpawnAndroidNativeArgs,
+    SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs, Stat, StatArgs,
+};
+
+/// Trait for types that can be serialized to a FlatBuffer message.
 pub trait ToFlatBuffer {
+    /// Serialize a message into the provided FlatBufferBuilder.
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
     ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>);
 
+    /// Build a flatbuffer message.
     fn build<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
         let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
 
@@ -50,6 +60,7 @@ pub trait ToFlatBuffer {
     }
 }
 
+/// Helper struct for constructing Exit messages.
 #[derive(Debug, Parser)]
 pub struct ExitParser;
 
@@ -62,6 +73,7 @@ impl ToFlatBuffer for ExitParser {
     }
 }
 
+/// Helper struct for constructing SpawnAndroidNative messages.
 #[derive(Debug, Parser)]
 pub struct SpawnAndroidNativeParser {
     #[arg(required(true))]
@@ -86,13 +98,14 @@ impl ToFlatBuffer for SpawnAndroidNativeParser {
     }
 }
 
+/// Helper struct for constructing SpawnLibApp messages.
 #[derive(Debug, Parser)]
 pub struct SpawnLibAppParser {
     #[arg(required(true))]
     path: String,
 
     #[arg(trailing_var_arg(true))]
-    pub args: Vec<String>,
+    args: Vec<String>,
 }
 
 impl ToFlatBuffer for SpawnLibAppParser {
@@ -116,6 +129,7 @@ impl ToFlatBuffer for SpawnLibAppParser {
     }
 }
 
+/// Helper struct for constructing SpawnMock messages.
 #[derive(Debug, Parser)]
 pub struct SpawnMockParser {
     #[arg(required(true))]
@@ -136,6 +150,7 @@ impl ToFlatBuffer for SpawnMockParser {
     }
 }
 
+/// Helper struct for constructing Stat messages.
 #[derive(Debug, Parser)]
 pub struct StatParser;
 
@@ -175,6 +190,7 @@ impl AsRef<MessageBuffer> for SpawnMessage {
     }
 }
 
+/// Build a flatbuffer message from a message name and arguments.
 pub fn build_message<'a>(
     message_name: &'a String,
     message_args: &'a [String],
