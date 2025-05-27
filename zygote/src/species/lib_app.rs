@@ -24,7 +24,7 @@ use log::{error, info};
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, Command},
+    messages::{self, Message},
     species::Species,
 };
 
@@ -43,8 +43,8 @@ impl Species for App {
         false
     }
 
-    fn command_type_spawn(&self) -> Command {
-        Command::SpawnLibApp
+    fn message_type_spawn(&self) -> Message {
+        Message::SpawnLibApp
     }
 
     fn name(&self) -> &'static str {
@@ -56,8 +56,8 @@ impl Species for App {
     }
 
     fn gestate(&self, spawn_message: messages::SpawnMessage) -> ! {
-        let message = flatbuffers::root::<messages::Message>(spawn_message.as_ref()).unwrap();
-        let spawn_cmd = message.command_as_spawn_lib_app().unwrap();
+        let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
+        let spawn_cmd = parcel.message_as_spawn_lib_app().unwrap();
 
         let library_path_str = spawn_cmd.path();
         let library_path = std::path::Path::new(library_path_str);

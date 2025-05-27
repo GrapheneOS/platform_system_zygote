@@ -31,7 +31,7 @@ use crate::{
     assert_ok, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Command, Message, MessageBuffer, MESSAGE_BUFFER_SIZE},
+    messages::{self, Message, MessageBuffer, Parcel, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{self, LoopExit, LoopStatus, PollFd},
 };
@@ -250,10 +250,10 @@ impl Server {
                             return LoopStatus::Break(LoopStatus::Continue);
                         }
 
-                        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
+                        let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
 
-                        match message.command_type() {
-                            Command::Exit => {
+                        match parcel.message_type() {
+                            Message::Exit => {
                                 self.handle_command_exit(fd);
 
                                 // Break out of the `recvmsg` loop
@@ -265,13 +265,13 @@ impl Server {
                                     ),
                                 )
                             }
-                            Command::Stat => {
+                            Message::Stat => {
                                 self.handle_command_stat();
 
                                 // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
-                            cmd if cmd == self.species.command_type_spawn() => {
+                            cmd if cmd == self.species.message_type_spawn() => {
                                 if let Some(thunk) = self.handle_command_spawn(message_buffer) {
                                     // Child process
 
@@ -290,17 +290,17 @@ impl Server {
                                     LoopStatus::Continue
                                 }
                             }
-                            cmd @ Command(tag) if tag < Command::ENUM_MAX => {
+                            cmd @ Message(tag) if tag < Message::ENUM_MAX => {
                                 error!(
-                                    "Command not supported by this species: {}",
+                                    "Message not supported by this species: {}",
                                     cmd.variant_name().unwrap()
                                 );
 
                                 // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
-                            Command(tag) => {
-                                error!("Invalid command variant encountered: {}", tag);
+                            Message(tag) => {
+                                error!("Invalid message variant encountered: {}", tag);
 
                                 // Continue the `recvmsg` loop
                                 LoopStatus::Continue
@@ -433,8 +433,8 @@ impl Server {
         &mut self,
         message_buffer: MessageBuffer,
     ) -> Option<impl FnOnce() + use<>> {
-        let message = flatbuffers::root::<Message>(&message_buffer).unwrap();
-        info!("Received command: ({:?})", message.command_type());
+        let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
+        info!("Received message: ({:?})", parcel.message_type());
 
         debug_assert_ok!(self.registry.audit());
 

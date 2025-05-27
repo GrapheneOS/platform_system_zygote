@@ -28,7 +28,7 @@ fn main() {
             .with_max_level(config.log_level),
     );
 
-    let command_name = config.species.command_type_spawn().variant_name().unwrap().to_string();
+    let command_name = config.species.message_type_spawn().variant_name().unwrap().to_string();
     let spawn_message = messages::build_message(&command_name, &config.spawn_args).unwrap();
 
     let mut message_buffer = messages::MESSAGE_BUFFER_INIT;

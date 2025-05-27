@@ -31,20 +31,20 @@ pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SI
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
 pub trait ToFlatBuffer {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>);
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>);
 
     fn build<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
         let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
 
-        let (command_type, command) = self.build_command(&mut builder);
+        let (message_type, message) = self.build_message(&mut builder);
 
-        let message =
-            Message::create(&mut builder, &MessageArgs { command_type, command: Some(command) });
+        let parcel =
+            Parcel::create(&mut builder, &ParcelArgs { message_type, message: Some(message) });
 
-        builder.finish(message, None);
+        builder.finish(parcel, None);
 
         builder
     }
@@ -54,11 +54,11 @@ pub trait ToFlatBuffer {
 pub struct ExitParser;
 
 impl ToFlatBuffer for ExitParser {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (Command::Exit, Exit::create(builder, &ExitArgs {}).as_union_value())
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        (Message::Exit, Exit::create(builder, &ExitArgs {}).as_union_value())
     }
 }
 
@@ -69,14 +69,14 @@ pub struct SpawnAndroidNativeParser {
 }
 
 impl ToFlatBuffer for SpawnAndroidNativeParser {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
         let packed_package = builder.create_string(self.package.as_str());
 
         (
-            Command::SpawnAndroidNative,
+            Message::SpawnAndroidNative,
             SpawnAndroidNative::create(
                 builder,
                 &SpawnAndroidNativeArgs { package: Some(packed_package) },
@@ -96,17 +96,17 @@ pub struct SpawnLibAppParser {
 }
 
 impl ToFlatBuffer for SpawnLibAppParser {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
         let packed_path = builder.create_string(self.path.as_str());
         let packed_args_strings: Vec<_> =
             self.args.iter().map(|arg| builder.create_string(arg.as_str())).collect();
         let packed_args_vector = builder.create_vector(&packed_args_strings);
 
         (
-            Command::SpawnLibApp,
+            Message::SpawnLibApp,
             SpawnLibApp::create(
                 builder,
                 &SpawnLibAppArgs { path: Some(packed_path), args: Some(packed_args_vector) },
@@ -123,14 +123,14 @@ pub struct SpawnMockParser {
 }
 
 impl ToFlatBuffer for SpawnMockParser {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
         let packed_name = builder.create_string(self.name.as_str());
 
         (
-            Command::SpawnMock,
+            Message::SpawnMock,
             SpawnMock::create(builder, &SpawnMockArgs { name: Some(packed_name) }).as_union_value(),
         )
     }
@@ -140,11 +140,11 @@ impl ToFlatBuffer for SpawnMockParser {
 pub struct StatParser;
 
 impl ToFlatBuffer for StatParser {
-    fn build_command(
+    fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Command, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (Command::Stat, Stat::create(builder, &StatArgs {}).as_union_value())
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        (Message::Stat, Stat::create(builder, &StatArgs {}).as_union_value())
     }
 }
 
@@ -176,12 +176,12 @@ impl AsRef<MessageBuffer> for SpawnMessage {
 }
 
 pub fn build_message<'a>(
-    command_name: &'a String,
-    command_args: &'a [String],
+    message_name: &'a String,
+    message_args: &'a [String],
 ) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
-    let extra_args_iter = std::iter::once(command_name).chain(command_args.iter());
+    let extra_args_iter = std::iter::once(message_name).chain(message_args.iter());
 
-    match command_name.as_str() {
+    match message_name.as_str() {
         "Exit" => Ok(ExitParser::try_parse_from(extra_args_iter)?.build()),
         "SpawnAndroidNative" => {
             Ok(SpawnAndroidNativeParser::try_parse_from(extra_args_iter)?.build())
@@ -190,7 +190,7 @@ pub fn build_message<'a>(
         "SpawnMock" => Ok(SpawnMockParser::try_parse_from(extra_args_iter)?.build()),
         "Stat" => Ok(StatParser::try_parse_from(extra_args_iter)?.build()),
         _ => {
-            bail!("Invalid command type: {}", command_name)
+            bail!("Invalid message type: {}", message_name)
         }
     }
 }

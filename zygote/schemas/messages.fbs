@@ -17,7 +17,7 @@ table SpawnLibApp {
 
 table Stat {}
 
-union Command {
+union Message {
     Exit,
     SpawnAndroidNative,
     SpawnLibApp,
@@ -25,8 +25,8 @@ union Command {
     Stat,
 }
 
-table Message {
-    command: Command;
+table Parcel {
+    message: Message;
 }
 
-root_type Message;
+root_type Parcel;
