@@ -31,7 +31,7 @@ use crate::{
     assert_ok, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Message, MessageBuffer, Parcel, MESSAGE_BUFFER_SIZE},
+    messages::{self, Message, MessageBuffer, Parcel, ToFlatBuffer, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{self, LoopExit, LoopStatus, PollFd},
 };
@@ -271,13 +271,13 @@ impl Server {
                                 )
                             }
                             Message::Stat => {
-                                self.handle_command_stat();
+                                self.handle_command_stat(fd);
 
                                 // Continue the `recvmsg` loop
                                 LoopStatus::Continue
                             }
-                            cmd if cmd == self.species.message_type_spawn() => {
-                                if let Some(thunk) = self.handle_command_spawn(message_buffer) {
+                            msg if msg == self.species.message_type_spawn() => {
+                                if let Some(thunk) = self.handle_command_spawn(fd, message_buffer) {
                                     // Child process
 
                                     // Break out of the `recvmsg` loop
@@ -295,10 +295,10 @@ impl Server {
                                     LoopStatus::Continue
                                 }
                             }
-                            cmd @ Message(tag) if tag < Message::ENUM_MAX => {
+                            msg @ Message(tag) if tag < Message::ENUM_MAX => {
                                 error!(
                                     "Message not supported by this species: {}",
-                                    cmd.variant_name().unwrap()
+                                    msg.variant_name().unwrap()
                                 );
 
                                 // Continue the `recvmsg` loop
@@ -432,10 +432,16 @@ impl Server {
 
     fn handle_command_exit(&mut self, fd: RawFd) {
         info!("Received command: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
+
+        let ack_msg = messages::AckBuilder {}.build();
+        if let Err(errno) = sys::sendmsg(fd, ack_msg.finished_data()) {
+            error!("Failed to send Exit response on fd {}: {}", fd, errno);
+        }
     }
 
     fn handle_command_spawn(
         &mut self,
+        fd: RawFd,
         message_buffer: MessageBuffer,
     ) -> Option<impl FnOnce() + use<>> {
         let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
@@ -490,13 +496,22 @@ impl Server {
         } else {
             // Server process
             info!("Spawned process {}", new_pid);
+            let response = messages::SpawnResponseBuilder { pid: new_pid }.build();
+            if let Err(errno) = sys::sendmsg(fd, response.finished_data()) {
+                error!("Failed to send Spawn response on fd {}: {}", fd, errno);
+            }
 
             None
         }
     }
 
-    fn handle_command_stat(&mut self) {
+    fn handle_command_stat(&mut self, fd: RawFd) {
         info!("Received command: (Stat)");
+
+        let ack_msg = messages::AckBuilder {}.build();
+        if let Err(errno) = sys::sendmsg(fd, ack_msg.finished_data()) {
+            error!("Failed to send Stat response on fd {}: {}", fd, errno);
+        }
     }
 
     fn preload<T: AsRef<OsStr>>(&self, libraries: &Vec<T>) {

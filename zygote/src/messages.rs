@@ -33,8 +33,9 @@ pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
 // Export types from the inner module.
 pub use inner::{
-    Exit, ExitArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative, SpawnAndroidNativeArgs,
-    SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs, Stat, StatArgs,
+    Ack, AckArgs, Exit, ExitArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative,
+    SpawnAndroidNativeArgs, SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs, SpawnResponse,
+    SpawnResponseArgs, Stat, StatArgs,
 };
 
 /// Trait for types that can be serialized to a FlatBuffer message.
@@ -60,11 +61,24 @@ pub trait ToFlatBuffer {
     }
 }
 
-/// Helper struct for constructing Exit messages.
-#[derive(Debug, Parser)]
-pub struct ExitParser;
+/// Helper struct for constructing Ack messages.
+#[derive(Debug)]
+pub struct AckBuilder;
 
-impl ToFlatBuffer for ExitParser {
+impl ToFlatBuffer for AckBuilder {
+    fn build_message(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder,
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        (Message::Ack, Ack::create(builder, &AckArgs {}).as_union_value())
+    }
+}
+
+/// Helper struct for constructing Exit messages.
+#[derive(Debug)]
+pub struct ExitBuilder;
+
+impl ToFlatBuffer for ExitBuilder {
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -75,12 +89,12 @@ impl ToFlatBuffer for ExitParser {
 
 /// Helper struct for constructing SpawnAndroidNative messages.
 #[derive(Debug, Parser)]
-pub struct SpawnAndroidNativeParser {
+pub struct SpawnAndroidNativeBuilder {
     #[arg(required(true))]
     package: String,
 }
 
-impl ToFlatBuffer for SpawnAndroidNativeParser {
+impl ToFlatBuffer for SpawnAndroidNativeBuilder {
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -100,7 +114,7 @@ impl ToFlatBuffer for SpawnAndroidNativeParser {
 
 /// Helper struct for constructing SpawnLibApp messages.
 #[derive(Debug, Parser)]
-pub struct SpawnLibAppParser {
+pub struct SpawnLibAppBuilder {
     #[arg(required(true))]
     path: String,
 
@@ -108,7 +122,7 @@ pub struct SpawnLibAppParser {
     args: Vec<String>,
 }
 
-impl ToFlatBuffer for SpawnLibAppParser {
+impl ToFlatBuffer for SpawnLibAppBuilder {
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -131,12 +145,12 @@ impl ToFlatBuffer for SpawnLibAppParser {
 
 /// Helper struct for constructing SpawnMock messages.
 #[derive(Debug, Parser)]
-pub struct SpawnMockParser {
+pub struct SpawnMockBuilder {
     #[arg(required(true))]
     name: String,
 }
 
-impl ToFlatBuffer for SpawnMockParser {
+impl ToFlatBuffer for SpawnMockBuilder {
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -150,11 +164,30 @@ impl ToFlatBuffer for SpawnMockParser {
     }
 }
 
-/// Helper struct for constructing Stat messages.
-#[derive(Debug, Parser)]
-pub struct StatParser;
+/// Helper struct for constructing SpawnResponse messages.
+#[derive(Debug)]
+pub struct SpawnResponseBuilder {
+    /// The pid of the spawned process.
+    pub pid: i32,
+}
 
-impl ToFlatBuffer for StatParser {
+impl ToFlatBuffer for SpawnResponseBuilder {
+    fn build_message(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder,
+    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
+        (
+            Message::SpawnResponse,
+            SpawnResponse::create(builder, &SpawnResponseArgs { pid: self.pid }).as_union_value(),
+        )
+    }
+}
+
+/// Helper struct for constructing Stat messages.
+#[derive(Debug)]
+pub struct StatBuilder;
+
+impl ToFlatBuffer for StatBuilder {
     fn build_message(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder,
@@ -198,13 +231,13 @@ pub fn build_message<'a>(
     let extra_args_iter = std::iter::once(message_name).chain(message_args.iter());
 
     match message_name.as_str() {
-        "Exit" => Ok(ExitParser::try_parse_from(extra_args_iter)?.build()),
+        "Exit" => Ok(ExitBuilder {}.build()),
         "SpawnAndroidNative" => {
-            Ok(SpawnAndroidNativeParser::try_parse_from(extra_args_iter)?.build())
+            Ok(SpawnAndroidNativeBuilder::try_parse_from(extra_args_iter)?.build())
         }
-        "SpawnLibApp" => Ok(SpawnLibAppParser::try_parse_from(extra_args_iter)?.build()),
-        "SpawnMock" => Ok(SpawnMockParser::try_parse_from(extra_args_iter)?.build()),
-        "Stat" => Ok(StatParser::try_parse_from(extra_args_iter)?.build()),
+        "SpawnLibApp" => Ok(SpawnLibAppBuilder::try_parse_from(extra_args_iter)?.build()),
+        "SpawnMock" => Ok(SpawnMockBuilder::try_parse_from(extra_args_iter)?.build()),
+        "Stat" => Ok(StatBuilder {}.build()),
         _ => {
             bail!("Invalid message type: {}", message_name)
         }

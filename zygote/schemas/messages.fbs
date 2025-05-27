@@ -1,4 +1,6 @@
-// Zygote management commands
+// Zygote management messages
+
+table Ack {}
 
 table Exit {}
 
@@ -15,13 +17,19 @@ table SpawnLibApp {
     args: [string] (required);
 }
 
+table SpawnResponse {
+    pid: int32;
+}
+
 table Stat {}
 
 union Message {
+    Ack,
     Exit,
     SpawnAndroidNative,
     SpawnLibApp,
     SpawnMock,
+    SpawnResponse,
     Stat,
 }
 
