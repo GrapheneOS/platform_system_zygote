@@ -9,8 +9,8 @@ See b/411209346 to track the high-level development progress for this project.
 * [ ] Make each species a crate feature
 * [ ] Enforce maximum lengths for all message argument strings
 * [ ] Tune buffer sizes
-* [ ] Report the PID of the created process back through the command socket
-* [ ] Support ABI query messages
+* [X] Report the PID of the created process back through the command socket
+* [X] Support ABI query messages
 * [ ] Load Zygote server configuration from file (Serde?)
 * [X] Create new process group when launching the server
 * [X] Add option to set process name
@@ -18,4 +18,6 @@ See b/411209346 to track the high-level development progress for this project.
 * [ ] Add new "preload-list" argument to Zygote server
 * [X] Add support for secondary uid/gid to be used during preloading
 * [ ] Take `cgroup` as argument in spawn messages
-* [ ] Purge memory allocator after preloading
+* [X] Purge memory allocator after preloading
+* [ ] Add an `UnknownMessageType` response message
+* [ ] Add an `UnsupportedMessageType` response message

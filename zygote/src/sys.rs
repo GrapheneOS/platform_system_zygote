@@ -49,16 +49,16 @@ pub type which_t = c_int;
 /// because it was large enough to fit all strings that were observed during
 /// testing.  Testing should be performed to see if a smaller value can be
 /// used.
-pub const STRING_BUF_SIZE: usize = 512;
+pub const BUFFER_SIZE_STRINGS: usize = 512;
 const_assert!(
-    STRING_BUF_SIZE
+    BUFFER_SIZE_STRINGS
         >= std::mem::size_of::<libc::sockaddr_un>() - offset_of!(libc::sockaddr_un, sun_path)
 );
 
 // TODO: Consider making this an ArrayVec
 /// Buffers used for static string allocations
-pub type CStringBuffer = [u8; STRING_BUF_SIZE];
-const CSTRING_BUFFER_INIT: CStringBuffer = [0u8; STRING_BUF_SIZE];
+pub type CStringBuffer = [u8; BUFFER_SIZE_STRINGS];
+const BUFFER_INIT_CSTRING: CStringBuffer = [0u8; BUFFER_SIZE_STRINGS];
 
 /// Helper trait for converting types into `CStr`s
 pub trait AsCStr {
@@ -88,6 +88,11 @@ impl Errno {
     /// Test equality with a libc error number
     pub fn is(&self, query_code: c_int) -> bool {
         self.code == query_code
+    }
+
+    /// Test if the wrapped code matches any of the provided error numbers
+    pub fn matches<const N: usize>(&self, query_codes: &[c_int; N]) -> bool {
+        query_codes.iter().any(|&query_code| self.code == query_code)
     }
 }
 
@@ -323,7 +328,7 @@ pub fn build_sigset(signals: &[c_int]) -> LibcResult<libc::sigset_t> {
 }
 
 /// Type for specifying control flow in [`call_until_would_block`]
-pub enum LoopStatus<T> {
+pub enum LoopControl<T> {
     /// Tell [`call_until_would_block`] to execute the action again.
     Continue,
     /// Tell [`call_until_would_block`] to exit the loop and return the
@@ -367,13 +372,13 @@ impl<T> LoopExit<T> {
 /// [`LoopExit::Early`] variant.
 pub fn call_until_would_block<T, U>(
     task: impl Fn() -> LibcResult<T>,
-    mut handler: impl FnMut(T) -> LoopStatus<U>,
+    mut handler: impl FnMut(T) -> LoopControl<U>,
 ) -> LibcResult<LoopExit<U>> {
     loop {
         match task() {
             Ok(result) => match handler(result) {
-                LoopStatus::Continue => continue,
-                LoopStatus::Break(val) => return Ok(LoopExit::Early(val)),
+                LoopControl::Continue => continue,
+                LoopControl::Break(val) => return Ok(LoopExit::Early(val)),
             },
             Err(errno) if errno.is(libc::EAGAIN) || errno.is(libc::EWOULDBLOCK) => {
                 // Task would block
@@ -515,11 +520,14 @@ pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> 
 
 /// A safe wrapper around [`libc::close`].
 ///
+/// The [`libc::EINTR`] signal is handled internally using the [`retry_eintr!`]
+/// macro.
+///
 /// See: `man close`
 pub fn close(fd: RawFd) -> LibcResult<c_int> {
     // SAFETY: If the file descriptor is invalid `close()` will return -1 and
     //         we will extract errno and wrap it in a LibcResult.
-    libc_result_from_int(unsafe { libc::close(fd) })
+    retry_eintr!(libc_result_from_int(unsafe { libc::close(fd) }))
 }
 
 /// A safe wrapper around [`libc::closedir`].
@@ -910,7 +918,7 @@ pub fn readdir(dir: &LibcDir) -> Option<NonNull<libc::dirent>> {
 ///
 /// See: `man readlink`
 pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
-    let mut link_buffer: CStringBuffer = CSTRING_BUFFER_INIT;
+    let mut link_buffer: CStringBuffer = BUFFER_INIT_CSTRING;
 
     libc_result_from_int_with_payload(
         // SAFETY: The path name is guaranteed to be a valid null-terminated C
@@ -933,6 +941,9 @@ pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
 ///
 /// This wrapper only provides functionality for receiving a single buffer from
 /// a UNIX-domain datagram session socket.
+///
+/// The [`libc::EINTR`] signal is handled internally using the [`retry_eintr!`]
+/// macro.
 ///
 /// See `man recvmsg` and `man readv`
 pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; BUFFER_SIZE])> {
@@ -963,6 +974,9 @@ pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; B
 /// This wrapper only provides functionality for sending a single buffer over a
 /// UNIX-domain datagram session socket.
 ///
+/// The [`libc::EINTR`] signal is handled internally using the [`retry_eintr!`]
+/// macro.
+///
 /// See: `man sendmsg`
 pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
     // Usage of `mem::zeroed()` is required as implementations of `msghdr`
@@ -981,7 +995,7 @@ pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
     // SAFETY: All of the pointers passed to `libc::sendmsg` point to regions
     //         allocated inside this function.  The return value is checked and
     //         wrapped in a LibcResult.
-    libc_result_from_int(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) })
+    retry_eintr!(libc_result_from_int(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) }))
 }
 
 /// A safe wrapper around [`libc::setpgid`].
@@ -1095,7 +1109,7 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
 ///
 /// See: `man strerror`
 pub fn strerror(code: c_int) -> LibcResult<CStringBuffer> {
-    let mut buffer: CStringBuffer = CSTRING_BUFFER_INIT;
+    let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
 
     // SAFETY: The pointer argument refers to memory allocated in this function.
     let retval = unsafe { libc::strerror_r(code, buffer.as_mut_ptr().cast(), buffer.len()) };

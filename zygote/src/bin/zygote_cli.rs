@@ -60,6 +60,7 @@ fn main() -> anyhow::Result<()> {
             let identity_query_response = parcel
                 .message_as_identity_query_response()
                 .ok_or(anyhow!("Could not unpack IdentityQueryResponse"))?;
+
             log::info!("Identity query successful: {:?}", identity_query_response);
             println!("{:?}", identity_query_response);
         }
@@ -67,6 +68,7 @@ fn main() -> anyhow::Result<()> {
             let spawn_response = parcel
                 .message_as_spawn_response()
                 .ok_or(anyhow!("Could not unpack SpawnResponse"))?;
+
             log::info!("Spawn successful; New process pid: {}", spawn_response.pid());
         }
         Message(tag) => {

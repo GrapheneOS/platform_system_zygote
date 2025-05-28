@@ -145,7 +145,7 @@ pub(crate) fn get_open_file_descriptors() -> Result<Vec<RawFd>> {
 
 /// Read file descriptor information from procfs into a CStringBuffer.
 pub(crate) fn get_proc_fd_link_info(fd: RawFd) -> Result<sys::CStringBuffer> {
-    let mut path_cstr_buff = ArrayVec::<u8, { sys::STRING_BUF_SIZE }>::new();
+    let mut path_cstr_buff = ArrayVec::<u8, { sys::BUFFER_SIZE_STRINGS }>::new();
     write!(path_cstr_buff, "{}/{}\0", PROC_SELF_FD_DIR_STR, fd)?;
     let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice()).unwrap();
 
