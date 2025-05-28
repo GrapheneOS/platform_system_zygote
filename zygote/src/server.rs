@@ -167,6 +167,11 @@ impl Server {
 
         server.preload(&config.preload_libraries);
 
+        #[cfg(target_os = "android")]
+        if let Err(errno) = sys::mallopt(libc::M_PURGE_ALL, 0) {
+            error!("Failed to mallopt(M_PURGE_ALL): {}", errno);
+        }
+
         server
     }
 
