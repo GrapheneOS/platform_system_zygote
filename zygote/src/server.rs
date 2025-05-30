@@ -535,11 +535,12 @@ impl Server {
             Break(ClientLoopControl::Child(move || {
                 debug_assert_single_threaded();
 
-                // SAFETY: This is called in a single-threaded context
                 #[cfg(target_os = "android")]
-                unsafe {
-                    sys::android::fdsan_set_error_level(fds_error_level)
-                };
+                {
+                    sys::android::reset_stack_guards();
+                    // SAFETY: This is called in a single-threaded context
+                    unsafe { sys::android::fdsan_set_error_level(fds_error_level) };
+                }
 
                 species.gestate(spawn_message)
             }))

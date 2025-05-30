@@ -37,6 +37,14 @@ unsafe extern "C" {
     /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
     pub fn android_fdsan_set_error_level(level: c_uint) -> c_uint;
 
+    /// Reset the thread's stack protection salt
+    ///
+    /// The caller should not return after calling this function.  If it does,
+    /// and stack protection is enabled, the program will crash.
+    ///
+    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/__libc_init_main_thread.cpp;l=104
+    pub safe fn android_reset_stack_guards();
+
     /// This variant of `dup` is used by
     /// [`file_descriptor::FileDescriptorEntry::execute`] to ensure that the
     /// correct flags (e.g. libc::O_CLOEXEC) are set during the duplication

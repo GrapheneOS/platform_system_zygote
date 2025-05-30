@@ -1175,4 +1175,14 @@ pub mod android {
         // SAFETY: This function takes an integer argument and always succeeds.
         fdsan_error_level(unsafe { libc_fill::android_fdsan_set_error_level(level as c_uint) })
     }
+
+    /// Reset the thread local stack protection salt.
+    ///
+    /// The caller should not return after calling this function.  If it does,
+    /// and stack protection is enabled, the program will crash.
+    ///
+    /// TODO: Make this function take a `noreturn` thunk.
+    pub fn reset_stack_guards() {
+        libc_fill::android_reset_stack_guards();
+    }
 }
