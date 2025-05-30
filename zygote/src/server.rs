@@ -538,8 +538,19 @@ impl Server {
                 #[cfg(target_os = "android")]
                 {
                     sys::android::reset_stack_guards();
+
                     // SAFETY: This is called in a single-threaded context
-                    unsafe { sys::android::fdsan_set_error_level(fds_error_level) };
+                    unsafe {
+                        sys::android::fdsan_set_error_level(fds_error_level);
+                    }
+
+                    if sys::android::set_zygote_child().is_err() {
+                        error!("Failed to android_mallopt(M_SET_ZYGOTE_CHILD)");
+                    }
+
+                    if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
+                        error!("Failed to mallopt(M_DECAY_TIME): {}", errno);
+                    }
                 }
 
                 species.gestate(spawn_message)

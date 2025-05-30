@@ -17,7 +17,7 @@
 //! defined by the `libc` crate for some platforms.
 
 #[cfg(target_os = "android")]
-use core::ffi::{c_int, c_uint};
+use core::ffi::{c_int, c_uint, c_void};
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {
@@ -36,6 +36,11 @@ unsafe extern "C" {
     ///
     /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
     pub fn android_fdsan_set_error_level(level: c_uint) -> c_uint;
+
+    /// Set Android-specific allocation options.
+    ///
+    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/android_mallopt.cpp
+    pub fn android_mallopt(opcode: c_int, arg: *mut c_void, arg_size: usize) -> bool;
 
     /// Reset the thread's stack protection salt
     ///

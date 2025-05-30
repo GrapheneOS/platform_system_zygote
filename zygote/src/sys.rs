@@ -1125,7 +1125,9 @@ pub fn strerror(code: c_int) -> LibcResult<CStringBuffer> {
 /// Android-specific functionality
 #[cfg(target_os = "android")]
 pub mod android {
-    use core::ffi::c_uint;
+    use core::ffi::{c_uint, c_void};
+
+    use anyhow::{anyhow, Result};
 
     use crate::libc_fill;
 
@@ -1154,6 +1156,63 @@ pub mod android {
         }
     }
 
+    /// Operations supported by [`mallopt`]
+    ///
+    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/platform/bionic/malloc.h;l=54
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    pub enum MalloptOpcode {
+        /// Marks the calling process as a profileable zygote child, possibly
+        /// initializing profiling infrastructure.
+        InitZygoteChildProfiling = 1,
+        /// Reset malloc hooks
+        ResetHooks = 2,
+        /// Set an upper bound on the total size in bytes of all allocations
+        /// made using the memory allocation APIs.
+        ///   arg = size_t*
+        ///   arg_size = sizeof(size_t)
+        SetAllocationLimitBytes = 3,
+        /// Called after the zygote forks to indicate this is a child.
+        SetZygoteChild = 4,
+        /// Options to dump backtraces of allocations. These options only
+        /// work when malloc debug has been enabled.
+        ///
+        /// Writes the backtrace information of all current allocations to a file.
+        /// NOTE: arg_size has to be sizeof(FILE*) because FILE is an opaque type.
+        ///   arg = FILE*
+        ///   arg_size = sizeof(FILE*)
+        WriteMallocLeekInfoToFile = 5,
+        /// Get information about the backtraces of all
+        ///   arg = android_mallopt_leak_info_t*
+        ///   arg_size = sizeof(android_mallopt_leak_info_t)
+        GetMallocLeakInfo = 6,
+        /// Free the memory allocated and returned by M_GET_MALLOC_LEAK_INFO.
+        ///   arg = android_mallopt_leak_info_t*
+        ///   arg_size = sizeof(android_mallopt_leak_info_t)
+        FreeMallocLeakInfo = 7,
+        /// Query whether the current process is considered to be profileable by
+        /// the Android platform. Result is assigned to the arg pointer's
+        /// destination.
+        ///   arg = bool*
+        ///   arg_size = sizeof(bool)
+        GetProcessProfileable = 9,
+        /// Maybe enable GWP-ASan. Set *arg to force GWP-ASan to be turned on,
+        /// otherwise this mallopt() will internally decide whether to sample
+        /// the process. The program must be single threaded at the point when
+        /// the android_mallopt function is called.
+        ///   arg = android_mallopt_gwp_asan_options_t*
+        ///   arg_size = sizeof(android_mallopt_gwp_asan_options_t)
+        InitializeGwpAsan = 10,
+        /// Query whether memtag stack is enabled for this process.
+        MemtagStackIsOn = 11,
+        /// Query whether the current process has the decay time enabled so
+        /// that the memory from allocations are not immediately released to the
+        /// OS. Result is assigned to the arg pointer's destination.
+        ///   arg = bool*
+        ///   arg_size = sizeof(bool)
+        GetDecayTimeEnabled = 12,
+    }
+
     /// A safe wrapper around [`libc_fill::android_fdsan_get_error_level`]
     ///
     /// # Safety
@@ -1174,6 +1233,22 @@ pub mod android {
     pub unsafe fn fdsan_set_error_level(level: FDSanErrorLevel) -> FDSanErrorLevel {
         // SAFETY: This function takes an integer argument and always succeeds.
         fdsan_error_level(unsafe { libc_fill::android_fdsan_set_error_level(level as c_uint) })
+    }
+
+    /// A safe wrapper around [`libc_fill::android_mallopt`] and the
+    /// M_SET_ZYGOTE_CHILD opcode
+    pub fn set_zygote_child() -> Result<()> {
+        // SAFETY: This opcode takes no arguments so a nullptr is passed
+        //         instead.
+        unsafe {
+            libc_fill::android_mallopt(
+                MalloptOpcode::SetZygoteChild as _,
+                std::ptr::null_mut(),
+                std::mem::size_of::<c_void>(),
+            )
+        }
+        .then_some(())
+        .ok_or_else(|| anyhow!("Call to android_mallopt failed: Opcode = M_SET_ZYGOTE_CHILD"))
     }
 
     /// Reset the thread local stack protection salt.
