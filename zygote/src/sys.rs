@@ -36,13 +36,13 @@ use crate::libc_fill;
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
 /// [`libc::setpriority`].
 #[allow(non_camel_case_types)]
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "musl")))]
 pub type which_t = core::ffi::c_uint;
 
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
 /// [`libc::setpriority`].
 #[allow(non_camel_case_types)]
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_env = "musl"))]
 pub type which_t = c_int;
 
 /// Number of bytes to allocate for string buffers.  The value 512 was selected
@@ -794,6 +794,7 @@ pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> LibcResult<li
 /// A safe wrapper around [`libc::mallopt`].
 ///
 /// See: `man mallopt`
+#[cfg(not(target_env = "musl"))]
 pub fn mallopt(cmd: c_int, arg: c_int) -> LibcResult<()> {
     // SAFETY: This function takes no pointer arguments and the return value
     //         is checked and wrapped in a LibcResult.
