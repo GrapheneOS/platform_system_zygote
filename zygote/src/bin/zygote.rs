@@ -47,6 +47,6 @@ fn run_server() -> Option<impl FnOnce()> {
 
     log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
 
-    let mut server = server::Server::new(&config);
+    let mut server = server::Server::new(config);
     server.serve()
 }

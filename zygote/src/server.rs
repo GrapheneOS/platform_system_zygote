@@ -23,7 +23,7 @@ use std::{os::fd::RawFd, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
-use flatbuffers;
+use flatbuffers::{self};
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
@@ -31,17 +31,21 @@ use crate::{
     assert_ok, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Message, MessageBuffer, Parcel, MESSAGE_BUFFER_SIZE},
+    messages::{self, Message, MessageBuffer, Parcel, ToFlatBuffer, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
-    sys::{self, LoopExit, LoopStatus, PollFd},
+    sys::{
+        self, LibcResult,
+        LoopControl::{self, *},
+        LoopExit, PollFd,
+    },
 };
 
-const COMMAND_SOCKET_BUFFER_SIZE: usize = 16;
-const POLL_BUFFER_SIZE: usize = 64;
+const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
+const BUFFER_SIZE_POLL: usize = 64;
 const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
 const ZYGOTE_SOCKET_PREFIX: &str = "/dev/socket/";
 
-type PollBuffer = ArrayVec<PollFd, POLL_BUFFER_SIZE>;
+type PollBuffer = ArrayVec<PollFd, BUFFER_SIZE_POLL>;
 
 impl std::convert::From<&mut Server> for PollBuffer {
     fn from(server: &mut Server) -> PollBuffer {
@@ -50,8 +54,8 @@ impl std::convert::From<&mut Server> for PollBuffer {
         poll_buffer.push(PollFd::new(server.signal_fd, libc::POLLIN));
         poll_buffer.push(PollFd::new(server.server_socket, libc::POLLIN));
 
-        for command_socket in &server.command_sockets {
-            poll_buffer.push(PollFd::new(*command_socket, libc::POLLIN));
+        for client_socket in &server.client_sockets {
+            poll_buffer.push(PollFd::new(*client_socket, libc::POLLIN));
         }
 
         poll_buffer
@@ -61,7 +65,7 @@ impl std::convert::From<&mut Server> for PollBuffer {
 struct PollPartition<'a> {
     pub signal: &'a PollFd,
     pub server: &'a PollFd,
-    pub command: &'a [PollFd],
+    pub clients: &'a [PollFd],
 }
 
 trait Partition<'a> {
@@ -73,43 +77,52 @@ impl<'a> Partition<'a> for PollBuffer {
         PollPartition::<'a> {
             signal: &self[0],
             server: &self[1],
-            command: if self.len() > 2 { &self[2..] } else { &[] },
+            clients: if self.len() > 2 { &self[2..] } else { &[] },
         }
     }
 }
 
 #[derive(Debug)]
-enum ServerStatus<T> {
+enum ServerControl<T> {
     Continue,
-    Exit,
+    Shutdown,
     Trampoline(T),
 }
 
-impl<T> ServerStatus<T> {
+impl<T> ServerControl<T> {
     #[allow(dead_code)]
     pub fn is_continue(&self) -> bool {
-        matches!(self, ServerStatus::Continue)
+        matches!(self, ServerControl::Continue)
     }
 
     pub fn is_exit(&self) -> bool {
-        matches!(self, ServerStatus::Exit)
+        matches!(self, ServerControl::Shutdown)
     }
 
     #[allow(dead_code)]
     pub fn is_trampoline(&self) -> bool {
-        matches!(self, ServerStatus::Trampoline(_))
+        matches!(self, ServerControl::Trampoline(_))
     }
+}
+
+enum ClientLoopControl<T> {
+    Child(T),
+    NextSocket,
+    Error(RawFd, sys::Errno),
+    Shutdown,
 }
 
 /// The main data structure for the Zygote process server.
 pub struct Server {
-    registry: FileDescriptorRegistry,
+    name: String,
     species: SpeciesRef,
     pid: libc::pid_t,
 
+    registry: FileDescriptorRegistry,
+
     signal_fd: RawFd,
     server_socket: RawFd,
-    command_sockets: ArrayVec<RawFd, COMMAND_SOCKET_BUFFER_SIZE>,
+    client_sockets: ArrayVec<RawFd, BUFFER_SIZE_CLIENT_SOCKETS>,
 
     child_priority: Option<i32>,
     server_socket_path: Option<String>,
@@ -123,10 +136,10 @@ impl Server {
     /// reference.
     ///
     /// Add a destructor to clean up the socket if we create it.
-    pub fn new(config: &config::Server) -> Self {
+    pub fn new(config: config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let (server_socket, server_socket_path) = Server::get_server_socket(config).unwrap();
+        let (server_socket, server_socket_path) = Self::get_server_socket(&config).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
 
         let sigset = sys::build_sigset(&[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]).unwrap();
@@ -135,13 +148,15 @@ impl Server {
         registry.register(signal_fd, file_descriptors::Action::Close);
 
         let server = Self {
-            registry,
+            name: config.name,
             species: config.species,
             pid: sys::getpid(),
 
+            registry,
+
             signal_fd,
             server_socket,
-            command_sockets: ArrayVec::new(),
+            client_sockets: ArrayVec::new(),
 
             child_priority: config.child_priority,
             server_socket_path,
@@ -150,7 +165,7 @@ impl Server {
             preload_gid: config.preload_gid,
         };
 
-        sys::prctl_set_name(&config.name);
+        sys::prctl_set_name(&server.name);
 
         // Create a new process group for this Zygote server process and its
         // children.  The following list contains the possible error codes
@@ -175,6 +190,10 @@ impl Server {
         server
     }
 
+    /// Produce a socket file descriptor by one of the following methods:
+    ///   * Using the provided integer as a file descriptor
+    ///   * Opening a new socket and binding it to the provided path
+    ///   * Opening a new socket and binding it to a default path
     fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
         if config.socket.is_empty() {
             let mut socket_path = std::path::PathBuf::from(ZYGOTE_SOCKET_PREFIX);
@@ -228,23 +247,23 @@ impl Server {
     fn check_poll_events(
         &mut self,
         partition: PollPartition<'_>,
-    ) -> ServerStatus<impl FnOnce() + use<>> {
+    ) -> ServerControl<impl FnOnce() + use<>> {
         if self.check_signalfd_events(&partition).is_exit() {
-            return ServerStatus::Exit;
+            return ServerControl::Shutdown;
         }
 
         self.check_server_socket_events(&partition);
-        self.check_command_sockets_events(&partition)
+        self.check_client_sockets_events(&partition)
     }
 
-    fn check_command_sockets_events(
+    fn check_client_sockets_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerStatus<impl FnOnce() + use<>> {
-        for command_pollfd in partition.command {
-            // POLLERR and POLLNVAL should never occur for a command socket.
-            let checked_pollfd = command_pollfd.check().unwrap_or_else(|(fd, error_events)| {
-                panic!("Received polling error for command socket {}: {:?}", fd, error_events)
+    ) -> ServerControl<impl FnOnce() + use<>> {
+        for client_pollfd in partition.clients {
+            // POLLERR and POLLNVAL should never occur for a client socket.
+            let checked_pollfd = client_pollfd.check().unwrap_or_else(|(fd, error_events)| {
+                panic!("Received polling error for client socket {}: {:?}", fd, error_events)
             });
 
             let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
@@ -252,67 +271,15 @@ impl Server {
                     || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
                     &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
                         if readlen == 0 {
-                            return LoopStatus::Break(LoopStatus::Continue);
+                            return Break(ClientLoopControl::NextSocket);
                         }
 
                         let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
 
-                        match parcel.message_type() {
-                            Message::Exit => {
-                                self.handle_command_exit(fd);
-
-                                // Break out of the `recvmsg` loop
-                                LoopStatus::Break(
-                                    // Break out of the PollFd loop
-                                    LoopStatus::Break(
-                                        // Exit the server
-                                        ServerStatus::Exit,
-                                    ),
-                                )
-                            }
-                            Message::Stat => {
-                                self.handle_command_stat();
-
-                                // Continue the `recvmsg` loop
-                                LoopStatus::Continue
-                            }
-                            cmd if cmd == self.species.message_type_spawn() => {
-                                if let Some(thunk) = self.handle_command_spawn(message_buffer) {
-                                    // Child process
-
-                                    // Break out of the `recvmsg` loop
-                                    LoopStatus::Break(
-                                        // Break out of the PollFd loop
-                                        LoopStatus::Break(
-                                            // Launch the new application
-                                            ServerStatus::Trampoline(thunk),
-                                        ),
-                                    )
-                                } else {
-                                    // Server process
-
-                                    // Continue the `recvmsg` loop
-                                    LoopStatus::Continue
-                                }
-                            }
-                            cmd @ Message(tag) if tag < Message::ENUM_MAX => {
-                                error!(
-                                    "Message not supported by this species: {}",
-                                    cmd.variant_name().unwrap()
-                                );
-
-                                // Continue the `recvmsg` loop
-                                LoopStatus::Continue
-                            }
-                            Message(tag) => {
-                                error!("Invalid message variant encountered: {}", tag);
-
-                                // Continue the `recvmsg` loop
-                                LoopStatus::Continue
-                            }
-                        }
+                        self.dispatch_message_handler(fd, message_buffer, parcel)
                     },
                 )
+                // TODO: Add more extensive error handling.
                 .unwrap()
             });
 
@@ -323,51 +290,61 @@ impl Server {
                 Some(LoopExit::WouldBlock) => {
                     // All available messages were read from the socket
                 }
-                Some(LoopExit::Early(LoopStatus::Continue)) => {
-                    // Zero-length read from socket, continue and wait for SIGHUP
-                }
-                Some(LoopExit::Early(LoopStatus::Break(server_status))) => {
-                    // Either messages were read until we received a
-                    // shutdown command or we received a spawn command
-                    // and are in the child process.
-                    return server_status;
+                Some(LoopExit::Early(control)) => {
+                    match control {
+                        ClientLoopControl::Child(thunk) => {
+                            // We are in the child process and should exit the
+                            // server with the thunk.
+                            return ServerControl::Trampoline(thunk);
+                        }
+                        ClientLoopControl::NextSocket => {
+                            // Zero-length read from socket, continue and wait for SIGHUP
+                        }
+                        ClientLoopControl::Error(fd, errno) => {
+                            error!(
+                                "Error encountered while responding to client socket {fd}: {errno}"
+                            );
+
+                            self.remove_client_socket(fd);
+                            continue;
+                        }
+                        ClientLoopControl::Shutdown => return ServerControl::Shutdown,
+                    }
                 }
             }
 
             let _ = checked_pollfd.handle_event(libc::POLLHUP, |fd| {
-                self.registry.remove(fd).unwrap();
-                self.command_sockets.remove(
-                    self.command_sockets.iter().position(|&search_fd| search_fd == fd).unwrap(),
-                );
-                sys::close(fd).unwrap();
+                info!("client socket disconnected: {fd}");
+                self.remove_client_socket(fd);
             });
         }
 
         // Continue the server loop
-        ServerStatus::Continue
+        ServerControl::Continue
     }
 
     fn check_server_socket_events(&mut self, partition: &PollPartition<'_>) {
         // POLLERR and POLLNVAL should never occur for the server socket.
         let checked_pollfd = partition.server.check().unwrap_or_else(|(_, error_events)| {
-            panic!("Received polling error for server socket: {:?}", error_events);
+            panic!("Received polling error for server socket: {error_events:?}");
         });
 
         checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
-            sys::call_until_would_block(|| sys::accept(fd), &mut |new_command_fd| {
+            sys::call_until_would_block(|| sys::accept(fd), &mut |new_client_fd| {
                 info!(
-                    "Accepted new command socket connection from PID {}",
-                    sys::get_socket_creds(new_command_fd).unwrap().pid
+                    "Accepted new client socket connection from PID {}",
+                    sys::get_socket_creds(new_client_fd).unwrap().pid
                 );
 
-                sys::fcntl_setfl(new_command_fd, libc::O_NONBLOCK).unwrap();
+                sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK).unwrap();
 
-                self.command_sockets.push(new_command_fd);
-                self.registry.register(new_command_fd, file_descriptors::Action::Close);
+                self.client_sockets.push(new_client_fd);
+                self.registry.register(new_client_fd, file_descriptors::Action::Close);
 
                 // Continue reading
-                LoopStatus::<()>::Continue
+                LoopControl::<()>::Continue
             })
+            // TODO: Add more extensive error handling.
             .unwrap();
         });
 
@@ -378,10 +355,13 @@ impl Server {
         // listen socket.
     }
 
-    fn check_signalfd_events(&mut self, partition: &PollPartition<'_>) -> ServerStatus<fn()> {
+    fn check_signalfd_events(
+        &mut self,
+        partition: &PollPartition<'_>,
+    ) -> ServerControl<impl FnOnce()> {
         // POLLERR and POLLNVAL should never occur for a signalfd.
         let checked_pollfd = partition.signal.check().unwrap_or_else(|(_, error_events)| {
-            panic!("Received polling error for signalfd: {:?}", error_events);
+            panic!("Received polling error for signalfd: {error_events:?}");
         });
 
         checked_pollfd
@@ -397,47 +377,109 @@ impl Server {
                                 );
 
                                 // Continue reading
-                                LoopStatus::Continue
+                                Continue
                             }
                             libc::SIGINT => {
                                 info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
 
                                 // Terminate early
-                                LoopStatus::Break(libc::SIGINT)
+                                Break(libc::SIGINT)
                             }
                             libc::SIGTERM => {
                                 info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
 
                                 // Terminate early
-                                LoopStatus::Break(libc::SIGTERM)
+                                Break(libc::SIGTERM)
                             }
                             signo => {
                                 // This should never happen as only SIGCHLD,
                                 // SIGINT, and SIGTERM are added to the signalfd's
                                 // mask.
-                                panic!("Unhandled signal received: {}", signo);
+                                panic!("Unhandled signal received: {signo}");
                             }
                         }
                     },
                 )
+                // TODO: Add more extensive error handling.
                 .unwrap()
             })
             // The server should exit early iff the handler exited
             // early due to receiving a SIGINT or SIGTERM.
-            .map_or(ServerStatus::Continue, |loop_status| match loop_status {
-                LoopExit::Early(_) => ServerStatus::Exit,
-                LoopExit::WouldBlock => ServerStatus::Continue,
+            .map_or(ServerControl::<fn()>::Continue, |loop_control| match loop_control {
+                LoopExit::Early(_) => ServerControl::Shutdown,
+                LoopExit::WouldBlock => ServerControl::Continue,
             })
     }
 
-    fn handle_command_exit(&mut self, fd: RawFd) {
-        info!("Received command: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
+    fn dispatch_message_handler(
+        &mut self,
+        fd: RawFd,
+        message_buffer: MessageBuffer,
+        parcel: Parcel<'_>,
+    ) -> LoopControl<ClientLoopControl<impl FnOnce()>> {
+        match parcel.message_type() {
+            Message::Exit => self.handle_message_exit(fd),
+            Message::IdentityQuery => self.handle_message_identity_query(fd),
+            msg if msg == self.species.message_type_spawn() => {
+                self.handle_message_spawn(fd, message_buffer)
+            }
+            Message::Stat => self.handle_message_stat(fd),
+            msg @ Message(tag) if tag < Message::ENUM_MAX => {
+                error!("Message not supported by this species: {}", msg.variant_name().unwrap());
+
+                // Continue the `recvmsg` loop
+                Continue
+            }
+            Message(tag) => {
+                error!("Invalid message variant encountered: {tag}");
+
+                // Continue the `recvmsg` loop
+                Continue
+            }
+        }
     }
 
-    fn handle_command_spawn(
+    fn handle_message_exit<Thunk: FnOnce()>(
         &mut self,
+        fd: RawFd,
+    ) -> LoopControl<ClientLoopControl<Thunk>> {
+        info!("Received client: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
+
+        let ack_msg = messages::AckBuilder {}.build();
+        if let Err(errno) = Self::send_response(fd, ack_msg.finished_data()) {
+            warn!("Failed to acknowledge Exit message: {errno}")
+        }
+
+        Break(ClientLoopControl::Shutdown)
+    }
+
+    fn handle_message_identity_query<Thunk: FnOnce()>(
+        &self,
+        fd: RawFd,
+    ) -> LoopControl<ClientLoopControl<Thunk>> {
+        info!("Received client: (IdentityQuery {})", sys::get_socket_creds(fd).unwrap().pid);
+
+        let response = messages::IdentityQueryResponseBuilder {
+            name: &self.name,
+            species: self.species.name(),
+            arch: std::env::consts::ARCH,
+        }
+        .build();
+
+        match Self::send_response(fd, response.finished_data()) {
+            Ok(_) => Continue,
+            Err(errno) => {
+                error!("Failed to send IdentityQuery response: {errno}");
+                Break(ClientLoopControl::Error(fd, errno))
+            }
+        }
+    }
+
+    fn handle_message_spawn(
+        &mut self,
+        fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> Option<impl FnOnce() + use<>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
         let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
         info!("Received message: ({:?})", parcel.message_type());
 
@@ -484,19 +526,38 @@ impl Server {
             // self.
             let species: SpeciesRef = self.species;
 
-            Some(move || {
-                species.gestate(spawn_message);
-            })
+            Break(ClientLoopControl::Child(move || species.gestate(spawn_message)))
         } else {
             // Server process
             info!("Spawned process {}", new_pid);
-
-            None
+            let response = messages::SpawnResponseBuilder { pid: new_pid }.build();
+            match Self::send_response(fd, response.finished_data()) {
+                Ok(_) => Continue,
+                Err(errno) => {
+                    error!("Failed to send Spawn response: {}", errno);
+                    Break(ClientLoopControl::Error(fd, errno))
+                }
+            }
         }
     }
 
-    fn handle_command_stat(&mut self) {
-        info!("Received command: (Stat)");
+    fn handle_message_stat<Thunk: FnOnce()>(
+        &mut self,
+        fd: RawFd,
+    ) -> LoopControl<ClientLoopControl<Thunk>> {
+        info!("Received client: (Stat)");
+
+        let ack_msg = messages::AckBuilder {}.build();
+        match Self::send_response(fd, ack_msg.finished_data()) {
+            Ok(_) => {
+                // Continue the `recvmsg` loop
+                Continue
+            }
+            Err(errno) => {
+                error!("Failed to send Stat response: {}", errno);
+                Break(ClientLoopControl::Error(fd, errno))
+            }
+        }
     }
 
     fn preload<T: AsRef<OsStr>>(&self, libraries: &Vec<T>) {
@@ -535,6 +596,47 @@ impl Server {
         }
     }
 
+    fn remove_client_socket(&mut self, fd: RawFd) {
+        self.registry.remove(fd).unwrap();
+        self.client_sockets
+            .remove(self.client_sockets.iter().position(|&search_fd| search_fd == fd).unwrap());
+        // Silently ignore EBADF and EIO.
+        let _ = sys::close(fd);
+    }
+
+    /// Send the provided response to on the file descriptor and panic on
+    /// errors that indicate an irrecoverable bug.
+    ///
+    /// The following errors will cause a panic:
+    /// * [`libc::EACCES`]
+    /// * [`libc::EALREADY`]
+    /// * [`libc::EBADF`]
+    /// * [`libc::EDESTADDRREQ`]
+    /// * [`libc::EFAULT`]
+    /// * [`libc::EINVAL`]
+    /// * [`libc::EISCONN`]
+    /// * [`libc::EMSGSIZE`]
+    /// * [`libc::ENOBUFS`]
+    /// * [`libc::ENOMEM`]
+    /// * [`libc::ENOTCONN`]
+    /// * [`libc::ENOTSOCK`]
+    /// * [`libc::EOPNOTSUPP`]
+    /// * [`libc::EPIPE`]
+    ///
+    /// The following errors will be returned to the caller:
+    /// * [`libc::EAGAIN`]
+    /// * [`libc::EWOULDBLOCK`]
+    /// * [`libc::ECONNRESET`]
+    fn send_response(fd: RawFd, buffer: &[u8]) -> LibcResult<()> {
+        match sys::sendmsg(fd, buffer) {
+            Ok(_) => Ok(()),
+            Err(errno) if errno.matches(&[libc::EAGAIN | libc::EWOULDBLOCK | libc::ECONNRESET]) => {
+                Err(errno)
+            }
+            Err(errno) => panic!("Unexpected error when sending response on fd {fd}: {errno}"),
+        }
+    }
+
     /// Execute the main server loop until the server receives a SIGTERM or
     /// [`crate::messages::Exit`] message.
     ///
@@ -550,11 +652,11 @@ impl Server {
             sys::poll(&mut poll_array, -1).unwrap();
 
             match self.check_poll_events(poll_array.partition()) {
-                ServerStatus::Continue => {}
-                ServerStatus::Exit => {
+                ServerControl::Continue => {}
+                ServerControl::Shutdown => {
                     return None;
                 }
-                ServerStatus::Trampoline(thunk) => {
+                ServerControl::Trampoline(thunk) => {
                     return Some(thunk);
                 }
             }

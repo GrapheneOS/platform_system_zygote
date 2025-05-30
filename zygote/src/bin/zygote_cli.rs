@@ -15,10 +15,14 @@
 
 //! Command line interface tool for issuing commands to a Zygote
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use clap::Parser;
 
-use zygote::{config, messages::build_message, sys};
+use zygote::{
+    config,
+    messages::{self, build_message, Message},
+    sys,
+};
 
 fn main() -> anyhow::Result<()> {
     let config = config::Cli::parse();
@@ -44,6 +48,34 @@ fn main() -> anyhow::Result<()> {
     };
 
     sys::sendmsg(client_socket, finished_builder.finished_data())?;
+
+    let (_, response) = sys::recvmsg::<{ messages::MESSAGE_BUFFER_SIZE }>(client_socket)?;
+
+    let parcel = flatbuffers::root::<messages::Parcel>(&response)?;
+    match parcel.message_type() {
+        Message::Ack => {
+            log::info!("Message acknowledged");
+        }
+        Message::IdentityQueryResponse => {
+            let identity_query_response = parcel
+                .message_as_identity_query_response()
+                .ok_or(anyhow!("Could not unpack IdentityQueryResponse"))?;
+
+            log::info!("Identity query successful: {:?}", identity_query_response);
+            println!("{:?}", identity_query_response);
+        }
+        Message::SpawnResponse => {
+            let spawn_response = parcel
+                .message_as_spawn_response()
+                .ok_or(anyhow!("Could not unpack SpawnResponse"))?;
+
+            log::info!("Spawn successful; New process pid: {}", spawn_response.pid());
+        }
+        Message(tag) => {
+            log::error!("Unexpected response message type: {}", tag);
+        }
+    }
+
     sys::close(client_socket)?;
 
     Ok(())

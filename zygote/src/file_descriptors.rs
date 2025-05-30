@@ -67,10 +67,10 @@ static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 #[derive(Eq, PartialEq)]
 enum FileDescriptorInfo {
     AbstractSocket {
-        name: ArrayString<{ sys::STRING_BUF_SIZE }>,
+        name: ArrayString<{ sys::BUFFER_SIZE_STRINGS }>,
     },
     BoundSocket {
-        path: ArrayString<{ sys::STRING_BUF_SIZE }>,
+        path: ArrayString<{ sys::BUFFER_SIZE_STRINGS }>,
     },
     Fifo,
     File {
