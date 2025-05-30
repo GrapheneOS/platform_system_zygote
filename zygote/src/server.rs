@@ -480,15 +480,21 @@ impl Server {
         fd: RawFd,
         message_buffer: MessageBuffer,
     ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
+        // The server does not spawn any threads.  Preloaded library
+        // initializers should not start any threads.  Any threads created by
+        // species-specific code during initialization must be terminated when
+        // control is returned to the process-server.
+        debug_assert_single_threaded();
+        debug_assert_ok!(self.registry.audit());
+
         let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
         info!("Received message: ({:?})", parcel.message_type());
 
-        debug_assert_ok!(self.registry.audit());
+        #[cfg(target_os = "android")]
+        // SAFETY: This is called in a single-threaded context
+        let fds_error_level = unsafe { sys::android::fdsan_get_error_level() };
 
-        debug_assert_single_threaded();
-        // SAFETY: The server never spawns any threads directly and none of the
-        //         used libraries should spawn threads either.  The above debug
-        //         assertion is used to verify this property.
+        // SAFETY: This is called in a single-threaded context.
         //
         //         The `fork()` function can produce the following errors:
         //         EAGAIN, ENOMEM, ENOSYS, ERESTARTNOINTR.
@@ -526,7 +532,17 @@ impl Server {
             // self.
             let species: SpeciesRef = self.species;
 
-            Break(ClientLoopControl::Child(move || species.gestate(spawn_message)))
+            Break(ClientLoopControl::Child(move || {
+                debug_assert_single_threaded();
+
+                // SAFETY: This is called in a single-threaded context
+                #[cfg(target_os = "android")]
+                unsafe {
+                    sys::android::fdsan_set_error_level(fds_error_level)
+                };
+
+                species.gestate(spawn_message)
+            }))
         } else {
             // Server process
             info!("Spawned process {}", new_pid);

@@ -17,10 +17,26 @@
 //! defined by the `libc` crate for some platforms.
 
 #[cfg(target_os = "android")]
-use core::ffi::c_int;
+use core::ffi::{c_int, c_uint};
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {
+    /// Return the current process's FDSan error level
+    ///
+    /// # Safety
+    /// This function is not thread safe.
+    ///
+    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    pub fn android_fdsan_get_error_level() -> c_uint;
+
+    /// Sets the process's FDSan error level and returns the previous value
+    ///
+    /// # Safety
+    /// This function is not thread safe.
+    ///
+    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    pub fn android_fdsan_set_error_level(level: c_uint) -> c_uint;
+
     /// This variant of `dup` is used by
     /// [`file_descriptor::FileDescriptorEntry::execute`] to ensure that the
     /// correct flags (e.g. libc::O_CLOEXEC) are set during the duplication

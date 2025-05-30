@@ -1121,3 +1121,58 @@ pub fn strerror(code: c_int) -> LibcResult<CStringBuffer> {
         Err(Errno { code: retval })
     }
 }
+
+/// Android-specific functionality
+#[cfg(target_os = "android")]
+pub mod android {
+    use core::ffi::c_uint;
+
+    use crate::libc_fill;
+
+    /// Error levels for Android's File Descriptor Sanitizer
+    ///
+    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    #[repr(C)]
+    pub enum FDSanErrorLevel {
+        /// No errors
+        Disabled = 0,
+        /// Warn once(ish) on error, and then downgrade to [`Disabled`]
+        WarnOnce,
+        /// Warn always on error
+        WarnAlways,
+        /// Abort on error
+        Fatal,
+    }
+
+    fn fdsan_error_level(level: c_uint) -> FDSanErrorLevel {
+        match level {
+            0 => FDSanErrorLevel::Disabled,
+            1 => FDSanErrorLevel::WarnOnce,
+            2 => FDSanErrorLevel::WarnAlways,
+            3 => FDSanErrorLevel::Fatal,
+            _ => panic!("Invalid result returned from libc"),
+        }
+    }
+
+    /// A safe wrapper around [`libc_fill::android_fdsan_get_error_level`]
+    ///
+    /// # Safety
+    /// This function is not thread safe.
+    ///
+    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    pub unsafe fn fdsan_get_error_level() -> FDSanErrorLevel {
+        // SAFETY: This function takes not arguments and always succeeds.
+        fdsan_error_level(unsafe { libc_fill::android_fdsan_get_error_level() })
+    }
+
+    /// A safe wrapper around [`libc_fill::android_fdsan_get_error_level`]
+    ///
+    /// # Safety
+    /// This function is not thread safe.
+    ///
+    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    pub unsafe fn fdsan_set_error_level(level: FDSanErrorLevel) -> FDSanErrorLevel {
+        // SAFETY: This function takes an integer argument and always succeeds.
+        fdsan_error_level(unsafe { libc_fill::android_fdsan_set_error_level(level as c_uint) })
+    }
+}
