@@ -124,7 +124,8 @@ pub struct Server {
     server_socket: RawFd,
     client_sockets: ArrayVec<RawFd, BUFFER_SIZE_CLIENT_SOCKETS>,
 
-    child_priority: Option<i32>,
+    priority_initial: Option<i32>,
+    priority_final: Option<i32>,
     server_socket_path: Option<String>,
 
     preload_uid: Option<libc::uid_t>,
@@ -158,7 +159,8 @@ impl Server {
             server_socket,
             client_sockets: ArrayVec::new(),
 
-            child_priority: config.child_priority,
+            priority_initial: config.priority_initial,
+            priority_final: config.priority_final,
             server_socket_path,
 
             preload_uid: config.preload_uid,
@@ -509,7 +511,7 @@ impl Server {
         if new_pid == 0 {
             // Child process
 
-            if let Some(priority) = self.child_priority {
+            if let Some(priority) = self.priority_initial {
                 if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
                     // EINVAL, EPERM, and ESRCH only apply when setting the
                     // priority of other processes.
@@ -528,9 +530,11 @@ impl Server {
             //         are taken before control is passed to the species code.
             let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
 
-            // Creating this local variable avoids capturing a reference to
-            // self.
+            // Creating these local copies avoids capturing additional
+            // references.
+
             let species: SpeciesRef = self.species;
+            let priority_final = self.priority_final;
 
             Break(ClientLoopControl::Child(move || {
                 debug_assert_single_threaded();
@@ -553,7 +557,7 @@ impl Server {
                     }
                 }
 
-                species.gestate(spawn_message)
+                species.gestate(spawn_message, priority_final)
             }))
         } else {
             // Server process

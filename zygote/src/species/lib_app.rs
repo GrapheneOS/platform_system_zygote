@@ -20,12 +20,13 @@
 use core::ffi::CStr;
 
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::{
     file_descriptors::Action,
     messages::{self, Message},
     species::Species,
+    sys,
 };
 
 /// Name of the entry symbol for LibApps
@@ -55,7 +56,7 @@ impl Species for App {
         false
     }
 
-    fn gestate(&self, spawn_message: messages::SpawnMessage) -> ! {
+    fn gestate(&self, spawn_message: messages::SpawnMessage, priority_final: Option<i32>) -> ! {
         let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
         let spawn_cmd = parcel.message_as_spawn_lib_app().unwrap();
 
@@ -88,6 +89,14 @@ impl Species for App {
                 error!("Symbol `zygote_entry` not found in shared library: {}", err);
                 std::process::exit(1);
             });
+
+        if let Some(priority) = priority_final {
+            if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
+                // EINVAL, EPERM, and ESRCH only apply when setting the
+                // priority of other processes.
+                warn!("Insufficient permissions to set priority: {}", priority);
+            }
+        }
 
         // SAFETY: The function signature is part of the API for LibApps.  An
         //         improper signature will result in undefined behavior.  From

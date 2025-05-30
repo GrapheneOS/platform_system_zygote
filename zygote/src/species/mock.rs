@@ -64,7 +64,7 @@ impl Species for Turtle {
         ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
     }
 
-    fn gestate(&self, spawn_message: messages::SpawnMessage) -> ! {
+    fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
         let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
         let spawn_cmd = parcel.message_as_spawn_mock().unwrap();
         println!("Hello from the child process.  My name is {}", spawn_cmd.name());

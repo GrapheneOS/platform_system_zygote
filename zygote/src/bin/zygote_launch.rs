@@ -40,5 +40,7 @@ fn main() {
     //         permission to take any actions specified by those spawn
     //         arguments.  Any resulting actions will be taken with the
     //         permissions of the current process.
-    config.species.gestate(unsafe { messages::SpawnMessage::new(message_buffer) });
+    let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
+
+    config.species.gestate(spawn_message, config.priority_final);
 }

@@ -54,6 +54,10 @@ pub struct Launch {
     #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
     pub log_level: LevelFilter,
 
+    /// Final scheduling priority for child processes immediately after forking
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_final: Option<i32>,
+
     /// Additional arguments that might be used by the command
     #[arg(trailing_var_arg(true))]
     pub spawn_args: Vec<String>,
@@ -88,9 +92,15 @@ pub struct Server {
     #[arg(long, value_parser(clap::value_parser!(libc::uid_t).range(0..)))]
     pub preload_uid: Option<libc::uid_t>,
 
-    /// Scheduling priority for the Zygote server process
+    /// Initial scheduling priority for child processes immediately after
+    /// forking
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub child_priority: Option<i32>,
+    pub priority_initial: Option<i32>,
+
+    /// Final scheduling priority for child processes immediately before
+    /// entering application code
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_final: Option<i32>,
 
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket
