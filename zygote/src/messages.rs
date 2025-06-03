@@ -39,134 +39,258 @@ pub use inner::{
     SpawnResponseArgs, Stat, StatArgs,
 };
 
-/// Trait for types that can be serialized to a FlatBuffer message.
-pub trait ToFlatBuffer {
-    /// Serialize a message into the provided FlatBufferBuilder.
-    fn build_message(
+/*
+ * Traits
+ */
+
+/// A trait for capturing associated types of FlatBuffers helpers
+pub trait FlatBufferAssociatedType<'builder> {
+    /// The `flatc` generated struct for creating tables of the associated type
+    type FlatBufferType;
+    /// The `flatc` generated struct for aggregating packed table constructor
+    /// arguments
+    type FlatBufferArgType;
+}
+
+/// A trait for helper structs that can be marshaled into a FlatBuffer
+pub trait ToFlatBuffer<'builder>
+where
+    Self: FlatBufferAssociatedType<'builder>,
+{
+    /// Marshal this structure into a FlatBuffer
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>);
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType>;
+}
 
-    /// Build a flatbuffer message.
-    fn build<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
-        let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
+/// A trait for helper structs that can be marshaled into a FlatBuffer union
+pub trait ToFlatBufferUnion<'builder, UnionType>
+where
+    Self: FlatBufferAssociatedType<'builder> + ToFlatBuffer<'builder>,
+{
+    /// The type tag for this element type of the union
+    const UNION_TAG: UnionType;
 
-        let (message_type, message) = self.build_message(&mut builder);
+    /// Marshal this structure into a FlatBuffer and then create a union value
+    fn marshal_union(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<UnionWIPOffset> {
+        self.marshal(builder).as_union_value()
+    }
+}
 
-        let parcel =
-            Parcel::create(&mut builder, &ParcelArgs { message_type, message: Some(message) });
+/// A trait for helper structs that can be marshaled into the FlatBuffer Parcel
+/// table defined in `messages.fbs`
+pub trait ToParcel<'builder>
+where
+    Self: ToFlatBufferUnion<'builder, Message>,
+{
+    /// Create and finalize a Parcel from this member of the Message FlatBuffer
+    /// union
+    fn to_parcel(&self) -> flatbuffers::FlatBufferBuilder<'builder> {
+        let mut builder =
+            flatbuffers::FlatBufferBuilder::<'builder>::with_capacity(MESSAGE_BUFFER_SIZE);
 
+        let message = self.marshal_union(&mut builder);
+
+        let parcel = Parcel::create(
+            &mut builder,
+            &ParcelArgs { message_type: Self::UNION_TAG, message: Some(message) },
+        );
         builder.finish(parcel, None);
-
         builder
     }
 }
 
+impl<'builder, T> ToParcel<'builder> for T where T: ToFlatBufferUnion<'builder, Message> {}
+
+trait ToPacked<'builder> {
+    type PackedType: ?Sized;
+    fn to_packed(&self, builder: &mut flatbuffers::FlatBufferBuilder<'builder>)
+        -> Self::PackedType;
+}
+
+impl<'builder> ToPacked<'builder> for &String {
+    type PackedType = flatbuffers::WIPOffset<&'builder str>;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        builder.create_string(self.as_str())
+    }
+}
+
+impl<'builder> ToPacked<'builder> for &str {
+    type PackedType = flatbuffers::WIPOffset<&'builder str>;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        builder.create_string(self)
+    }
+}
+
+impl<'builder> ToPacked<'builder> for &Vec<String> {
+    type PackedType = flatbuffers::WIPOffset<
+        flatbuffers::Vector<'builder, flatbuffers::ForwardsUOffset<&'builder str>>,
+    >;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        let packed_strings: Vec<_> =
+            self.iter().map(|s| builder.create_string(s.as_str())).collect();
+        builder.create_vector(&packed_strings)
+    }
+}
+
+/*
+ * Structs
+ */
+
 /// Helper struct for constructing Ack messages.
 #[derive(Debug)]
-pub struct AckBuilder;
+pub struct AckPacker;
 
-impl ToFlatBuffer for AckBuilder {
-    fn build_message(
+impl<'builder> FlatBufferAssociatedType<'builder> for AckPacker {
+    type FlatBufferType = Ack<'builder>;
+    type FlatBufferArgType = AckArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for AckPacker {
+    const UNION_TAG: Message = Message::Ack;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for AckPacker {
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (Message::Ack, Ack::create(builder, &AckArgs {}).as_union_value())
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType {})
     }
 }
 
 /// Helper struct for constructing Exit messages.
 #[derive(Debug)]
-pub struct ExitBuilder;
+pub struct ExitPacker;
 
-impl ToFlatBuffer for ExitBuilder {
-    fn build_message(
+impl<'builder> FlatBufferAssociatedType<'builder> for ExitPacker {
+    type FlatBufferType = Exit<'builder>;
+    type FlatBufferArgType = ExitArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for ExitPacker {
+    const UNION_TAG: Message = Message::Exit;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for ExitPacker {
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (Message::Exit, Exit::create(builder, &ExitArgs {}).as_union_value())
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType {})
     }
 }
 
 /// Helper struct for constructing IdentityQuery messages.
 #[derive(Debug)]
-pub struct IdentityQueryBuilder;
+pub struct IdentityQueryPacker;
 
-impl ToFlatBuffer for IdentityQueryBuilder {
-    fn build_message(
+impl<'builder> FlatBufferAssociatedType<'builder> for IdentityQueryPacker {
+    type FlatBufferType = IdentityQuery<'builder>;
+    type FlatBufferArgType = IdentityQueryArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for IdentityQueryPacker {
+    const UNION_TAG: Message = Message::IdentityQuery;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for IdentityQueryPacker {
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (
-            Message::IdentityQuery,
-            IdentityQuery::create(builder, &IdentityQueryArgs {}).as_union_value(),
-        )
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType {})
     }
 }
 
 /// Helper struct for constructing IdentityQueryResponse messages.
 #[derive(Debug)]
-pub struct IdentityQueryResponseBuilder<'a> {
+pub struct IdentityQueryResponsePacker<'args> {
     /// Name of the Zygote server process
-    pub name: &'a String,
+    pub name: &'args String,
     /// Name of the Zygote server's species
     pub species: &'static str,
     /// Name of the Zygote server's architecture
     pub arch: &'static str,
 }
 
-impl ToFlatBuffer for IdentityQueryResponseBuilder<'_> {
-    fn build_message(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        let packed_name = builder.create_string(self.name.as_str());
-        let packed_species = builder.create_string(self.species);
-        let packed_arch = builder.create_string(self.arch);
+impl<'builder> FlatBufferAssociatedType<'builder> for IdentityQueryResponsePacker<'_> {
+    type FlatBufferType = IdentityQueryResponse<'builder>;
+    type FlatBufferArgType = IdentityQueryResponseArgs<'builder>;
+}
 
-        (
-            Message::IdentityQueryResponse,
-            IdentityQueryResponse::create(
-                builder,
-                &IdentityQueryResponseArgs {
-                    name: Some(packed_name),
-                    species: Some(packed_species),
-                    arch: Some(packed_arch),
-                },
-            )
-            .as_union_value(),
+impl ToFlatBufferUnion<'_, Message> for IdentityQueryResponsePacker<'_> {
+    const UNION_TAG: Message = Message::IdentityQueryResponse;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for IdentityQueryResponsePacker<'_> {
+    fn marshal(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        let packed_name = self.name.to_packed(builder);
+        let packed_species = self.species.to_packed(builder);
+        let packed_arch = self.arch.to_packed(builder);
+
+        Self::FlatBufferType::create(
+            builder,
+            &Self::FlatBufferArgType {
+                name: Some(packed_name),
+                species: Some(packed_species),
+                arch: Some(packed_arch),
+            },
         )
     }
 }
 
 /// Helper struct for constructing SpawnAndroidNative messages.
 #[derive(Debug, Parser)]
-pub struct SpawnAndroidNativeBuilder {
+pub struct SpawnAndroidNativePacker {
     #[arg(required(true))]
     package: String,
 }
 
-impl ToFlatBuffer for SpawnAndroidNativeBuilder {
-    fn build_message(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        let packed_package = builder.create_string(self.package.as_str());
+impl<'builder> FlatBufferAssociatedType<'builder> for SpawnAndroidNativePacker {
+    type FlatBufferType = SpawnAndroidNative<'builder>;
+    type FlatBufferArgType = SpawnAndroidNativeArgs<'builder>;
+}
 
-        (
-            Message::SpawnAndroidNative,
-            SpawnAndroidNative::create(
-                builder,
-                &SpawnAndroidNativeArgs { package: Some(packed_package) },
-            )
-            .as_union_value(),
+impl ToFlatBufferUnion<'_, Message> for SpawnAndroidNativePacker {
+    const UNION_TAG: Message = Message::SpawnAndroidNative;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for SpawnAndroidNativePacker {
+    fn marshal(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        let packed_package = (&self.package).to_packed(builder);
+        Self::FlatBufferType::create(
+            builder,
+            &Self::FlatBufferArgType { package: Some(packed_package) },
         )
     }
 }
 
 /// Helper struct for constructing SpawnLibApp messages.
 #[derive(Debug, Parser)]
-pub struct SpawnLibAppBuilder {
+pub struct SpawnLibAppPacker {
     #[arg(required(true))]
     path: String,
 
@@ -174,77 +298,99 @@ pub struct SpawnLibAppBuilder {
     args: Vec<String>,
 }
 
-impl ToFlatBuffer for SpawnLibAppBuilder {
-    fn build_message(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        let packed_path = builder.create_string(self.path.as_str());
-        let packed_args_strings: Vec<_> =
-            self.args.iter().map(|arg| builder.create_string(arg.as_str())).collect();
-        let packed_args_vector = builder.create_vector(&packed_args_strings);
+impl<'builder> FlatBufferAssociatedType<'builder> for SpawnLibAppPacker {
+    type FlatBufferType = SpawnLibApp<'builder>;
+    type FlatBufferArgType = SpawnLibAppArgs<'builder>;
+}
 
-        (
-            Message::SpawnLibApp,
-            SpawnLibApp::create(
-                builder,
-                &SpawnLibAppArgs { path: Some(packed_path), args: Some(packed_args_vector) },
-            )
-            .as_union_value(),
+impl ToFlatBufferUnion<'_, Message> for SpawnLibAppPacker {
+    const UNION_TAG: Message = Message::SpawnLibApp;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for SpawnLibAppPacker {
+    fn marshal(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        let packed_path = (&self.path).to_packed(builder);
+        let packed_args = (&self.args).to_packed(builder);
+        Self::FlatBufferType::create(
+            builder,
+            &Self::FlatBufferArgType { path: Some(packed_path), args: Some(packed_args) },
         )
     }
 }
 
 /// Helper struct for constructing SpawnMock messages.
 #[derive(Debug, Parser)]
-pub struct SpawnMockBuilder {
+pub struct SpawnMockPacker {
     #[arg(required(true))]
     name: String,
 }
 
-impl ToFlatBuffer for SpawnMockBuilder {
-    fn build_message(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        let packed_name = builder.create_string(self.name.as_str());
+impl<'builder> FlatBufferAssociatedType<'builder> for SpawnMockPacker {
+    type FlatBufferType = SpawnMock<'builder>;
+    type FlatBufferArgType = SpawnMockArgs<'builder>;
+}
 
-        (
-            Message::SpawnMock,
-            SpawnMock::create(builder, &SpawnMockArgs { name: Some(packed_name) }).as_union_value(),
-        )
+impl ToFlatBufferUnion<'_, Message> for SpawnMockPacker {
+    const UNION_TAG: Message = Message::SpawnMock;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for SpawnMockPacker {
+    fn marshal(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        let packed_name = (&self.name).to_packed(builder);
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType { name: Some(packed_name) })
     }
 }
 
 /// Helper struct for constructing SpawnResponse messages.
 #[derive(Debug)]
-pub struct SpawnResponseBuilder {
+pub struct SpawnResponsePacker {
     /// The pid of the spawned process.
     pub pid: i32,
 }
 
-impl ToFlatBuffer for SpawnResponseBuilder {
-    fn build_message(
+impl<'builder> FlatBufferAssociatedType<'builder> for SpawnResponsePacker {
+    type FlatBufferType = SpawnResponse<'builder>;
+    type FlatBufferArgType = SpawnResponseArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for SpawnResponsePacker {
+    const UNION_TAG: Message = Message::SpawnResponse;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for SpawnResponsePacker {
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (
-            Message::SpawnResponse,
-            SpawnResponse::create(builder, &SpawnResponseArgs { pid: self.pid }).as_union_value(),
-        )
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType { pid: self.pid })
     }
 }
 
 /// Helper struct for constructing Stat messages.
 #[derive(Debug)]
-pub struct StatBuilder;
+pub struct StatPacker;
 
-impl ToFlatBuffer for StatBuilder {
-    fn build_message(
+impl<'builder> FlatBufferAssociatedType<'builder> for StatPacker {
+    type FlatBufferType = Stat<'builder>;
+    type FlatBufferArgType = StatArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for StatPacker {
+    const UNION_TAG: Message = Message::Stat;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for StatPacker {
+    fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder,
-    ) -> (Message, flatbuffers::WIPOffset<UnionWIPOffset>) {
-        (Message::Stat, Stat::create(builder, &StatArgs {}).as_union_value())
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        Self::FlatBufferType::create(builder, &Self::FlatBufferArgType {})
     }
 }
 
@@ -283,14 +429,14 @@ pub fn build_message<'a>(
     let extra_args_iter = std::iter::once(message_name).chain(message_args.iter());
 
     match message_name.as_str() {
-        "Exit" => Ok(ExitBuilder {}.build()),
-        "IdentityQuery" => Ok(IdentityQueryBuilder {}.build()),
+        "Exit" => Ok(ExitPacker {}.to_parcel()),
+        "IdentityQuery" => Ok(IdentityQueryPacker {}.to_parcel()),
         "SpawnAndroidNative" => {
-            Ok(SpawnAndroidNativeBuilder::try_parse_from(extra_args_iter)?.build())
+            Ok(SpawnAndroidNativePacker::try_parse_from(extra_args_iter)?.to_parcel())
         }
-        "SpawnLibApp" => Ok(SpawnLibAppBuilder::try_parse_from(extra_args_iter)?.build()),
-        "SpawnMock" => Ok(SpawnMockBuilder::try_parse_from(extra_args_iter)?.build()),
-        "Stat" => Ok(StatBuilder {}.build()),
+        "SpawnLibApp" => Ok(SpawnLibAppPacker::try_parse_from(extra_args_iter)?.to_parcel()),
+        "SpawnMock" => Ok(SpawnMockPacker::try_parse_from(extra_args_iter)?.to_parcel()),
+        "Stat" => Ok(StatPacker {}.to_parcel()),
         _ => {
             bail!("Invalid message type: {}", message_name)
         }
