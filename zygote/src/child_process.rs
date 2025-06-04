@@ -42,7 +42,7 @@ pub(crate) fn re_initialize(
     species.re_initialize_prologue(re_init_data);
 
     // Set the process name
-    sys::prctl_set_name(&ZYGOTE_CHILD_PROCESS_INITIAL_NAME.to_bytes());
+    sys::set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
 
     // Tell the kernel that this thread should keep its capabilities after it
     // changes it UID.

@@ -34,8 +34,10 @@ use zerocopy::FromBytes;
 #[cfg(target_os = "android")]
 pub mod android;
 mod libc_fill;
+mod process_name;
 
 pub use libc_fill::clone_args;
+pub use process_name::set_new_process_name;
 
 /// A platform-dependent type alias for rlimit resources
 #[allow(non_camel_case_types)]
@@ -1003,7 +1005,7 @@ pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> LibcResult<c_int> {
 /// A safe wrapper around the [`libc::prctl`] `PR_SET_NAME` operation.
 ///
 /// See: `man PR_SET_NAME`
-pub fn prctl_set_name<S: AsRef<[u8]>>(name: &S) {
+pub fn prctl_set_name<S: AsRef<[u8]> + ?Sized>(name: &S) {
     let mut name_buffer = [0u8; 16];
     let copy_len = std::cmp::min(name.as_ref().len(), name_buffer.len() - 1);
     name_buffer[..copy_len].copy_from_slice(&name.as_ref()[..copy_len]);

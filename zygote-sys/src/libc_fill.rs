@@ -163,6 +163,14 @@ unsafe extern "C" {
     ///
     /// See `man dup`
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
+
+    /// Set the process name.
+    ///
+    /// # Safety
+    /// `progname` must be a pointer to a valid C string which lives while it's set as the process name.
+    ///
+    /// See https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/upstream-openbsd/lib/libc/gen/setprogname.c;l=22
+    pub fn setprogname(progname: *const c_char);
 }
 
 #[cfg(not(target_env = "musl"))]
