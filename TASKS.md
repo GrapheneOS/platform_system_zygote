@@ -21,3 +21,4 @@ See b/411209346 to track the high-level development progress for this project.
 * [X] Purge memory allocator after preloading
 * [ ] Add an `UnknownMessageType` response message
 * [ ] Add an `UnsupportedMessageType` response message
+* [ ] De-duplicate code between `zygote_cli.rs` and `zygote_launcher.rs`

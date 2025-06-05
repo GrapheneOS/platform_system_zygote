@@ -423,17 +423,26 @@ impl Server {
         match parcel.message_type() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
-            msg if msg == self.species.message_type_spawn() => {
-                self.handle_message_spawn(fd, message_buffer)
+            Message::Spawn => {
+                let spawn_cmd = parcel.message_as_spawn().unwrap();
+
+                if spawn_cmd.payload_type() == self.species.spawn_payload_type() {
+                    self.handle_message_spawn(fd, message_buffer)
+                } else {
+                    // TODO: Respond with an error
+                    error!(
+                        "Incorrect spawn payload for this species {}: {:?}",
+                        self.species.name(),
+                        spawn_cmd.payload_type()
+                    );
+
+                    // Continue the `recvmsg` loop
+                    Continue
+                }
             }
             Message::Stat => self.handle_message_stat(fd),
-            msg @ Message(tag) if tag < Message::ENUM_MAX => {
-                error!("Message not supported by this species: {}", msg.variant_name().unwrap());
-
-                // Continue the `recvmsg` loop
-                Continue
-            }
             Message(tag) => {
+                // TODO: Respond with an error
                 error!("Invalid message variant encountered: {tag}");
 
                 // Continue the `recvmsg` loop

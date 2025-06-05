@@ -113,7 +113,8 @@ pub struct Server {
     pub species: SpeciesRef,
 }
 
-fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
+/// Parse a string into a [`log::LevelFilter`]
+pub fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
     match parse_arg {
         "0" => Ok(LevelFilter::Off),
         "1" => Ok(LevelFilter::Error),

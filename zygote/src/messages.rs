@@ -13,16 +13,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Generated Rust bindings for the Flatbuffer schema defined in `schemas/messages.fbs`
+//! Generated Rust bindings for the FlatBuffer schema defined in `schemas/messages.fbs`
 
 #[allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
 mod inner {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-use anyhow::{bail, Result};
-use clap::Parser;
 use flatbuffers::UnionWIPOffset;
+
+// Export types from the inner module.
+pub use inner::{
+    Ack, AckArgs, Exit, ExitArgs, IdentityQuery, IdentityQueryArgs, IdentityQueryResponse,
+    IdentityQueryResponseArgs, Message, Parcel, ParcelArgs, Spawn, SpawnAndroidNative,
+    SpawnAndroidNativeArgs, SpawnArgs, SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs,
+    SpawnPayload, SpawnResponse, SpawnResponseArgs, Stat, StatArgs,
+};
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
@@ -30,14 +36,6 @@ pub const MESSAGE_BUFFER_SIZE: usize = 512;
 pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SIZE];
 /// Statically allocated arrays used for receiving messages.
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
-
-// Export types from the inner module.
-pub use inner::{
-    Ack, AckArgs, Exit, ExitArgs, IdentityQuery, IdentityQueryArgs, IdentityQueryResponse,
-    IdentityQueryResponseArgs, Message, Parcel, ParcelArgs, SpawnAndroidNative,
-    SpawnAndroidNativeArgs, SpawnLibApp, SpawnLibAppArgs, SpawnMock, SpawnMockArgs, SpawnResponse,
-    SpawnResponseArgs, Stat, StatArgs,
-};
 
 /*
  * Traits
@@ -259,11 +257,144 @@ impl<'builder> ToFlatBuffer<'builder> for IdentityQueryResponsePacker<'_> {
     }
 }
 
-/// Helper struct for constructing SpawnAndroidNative messages.
-#[derive(Debug, Parser)]
+union SpawnPayloadPackers {
+    android_native: std::mem::ManuallyDrop<SpawnAndroidNativePacker>,
+    lib_app: std::mem::ManuallyDrop<SpawnLibAppPacker>,
+    mock: std::mem::ManuallyDrop<SpawnMockPacker>,
+}
+
+/// Helper struct for constructing Spawn messages
+pub struct SpawnPacker {
+    /// UID to assign to the newly created process
+    pub uid: i32,
+    /// GID to assign to the newly created process
+    pub gid: i32,
+
+    payload_type: SpawnPayload,
+    payload: SpawnPayloadPackers,
+}
+
+impl SpawnPacker {
+    /// Create a Spawn message with a SpawnAndroidNativePacker as the payload
+    pub fn new_android_native(uid: i32, gid: i32, payload: SpawnAndroidNativePacker) -> Self {
+        Self {
+            uid,
+            gid,
+            payload_type: SpawnPayload::SpawnAndroidNative,
+            payload: SpawnPayloadPackers { android_native: std::mem::ManuallyDrop::new(payload) },
+        }
+    }
+
+    /// Create a Spawn message with a SpawnLibAppPacker as the payload
+    pub fn new_lib_app(uid: i32, gid: i32, payload: SpawnLibAppPacker) -> Self {
+        Self {
+            uid,
+            gid,
+            payload_type: SpawnPayload::SpawnLibApp,
+            payload: SpawnPayloadPackers { lib_app: std::mem::ManuallyDrop::new(payload) },
+        }
+    }
+
+    /// Create a Spawn message with a SpawnMockPacker as a payload
+    pub fn new_mock(uid: i32, gid: i32, payload: SpawnMockPacker) -> Self {
+        Self {
+            uid,
+            gid,
+            payload_type: SpawnPayload::SpawnMock,
+            payload: SpawnPayloadPackers { mock: std::mem::ManuallyDrop::new(payload) },
+        }
+    }
+}
+
+impl std::ops::Drop for SpawnPacker {
+    fn drop(&mut self) {
+        // SAFETY: All reads/writes to this union are moderated by the
+        //         `payload_type` value.
+        unsafe {
+            match self.payload_type {
+                SpawnPayload::SpawnAndroidNative => {
+                    std::mem::ManuallyDrop::drop(&mut self.payload.android_native)
+                }
+                SpawnPayload::SpawnLibApp => {
+                    std::mem::ManuallyDrop::drop(&mut self.payload.lib_app)
+                }
+                SpawnPayload::SpawnMock => std::mem::ManuallyDrop::drop(&mut self.payload.mock),
+                _ => {}
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for SpawnPacker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_builder = f.debug_struct("SpawnPacker");
+
+        debug_builder
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
+            .field("payload_type", &self.payload_type);
+
+        // SAFETY: All reads/writes to this union are moderated by the
+        //         `payload_type` value.
+        unsafe {
+            match self.payload_type {
+                SpawnPayload::SpawnAndroidNative => {
+                    debug_builder.field("payload", &self.payload.android_native)
+                }
+                SpawnPayload::SpawnLibApp => debug_builder.field("payload", &self.payload.lib_app),
+                SpawnPayload::SpawnMock => debug_builder.field("payload", &self.payload.mock),
+                _ => debug_builder.field("payload", &"UNKNOWN"),
+            };
+        }
+
+        debug_builder.finish()
+    }
+}
+
+impl<'builder> FlatBufferAssociatedType<'builder> for SpawnPacker {
+    type FlatBufferType = Spawn<'builder>;
+    type FlatBufferArgType = SpawnArgs;
+}
+
+impl ToFlatBufferUnion<'_, Message> for SpawnPacker {
+    const UNION_TAG: Message = Message::Spawn;
+}
+
+impl<'builder> ToFlatBuffer<'builder> for SpawnPacker {
+    fn marshal(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::FlatBufferType> {
+        // SAFETY: All reads/writes to this union are moderated by the
+        //         `payload_type` value.
+        let payload_offset = unsafe {
+            match self.payload_type {
+                SpawnPayload::SpawnAndroidNative => {
+                    self.payload.android_native.marshal(builder).as_union_value()
+                }
+                SpawnPayload::SpawnLibApp => self.payload.lib_app.marshal(builder).as_union_value(),
+                SpawnPayload::SpawnMock => self.payload.mock.marshal(builder).as_union_value(),
+                _ => panic!("Attempted to marshal unknown SpawnPayload type"),
+            }
+        };
+
+        Self::FlatBufferType::create(
+            builder,
+            &Self::FlatBufferArgType {
+                uid: self.uid,
+                gid: self.gid,
+                payload_type: self.payload_type,
+                payload: Some(payload_offset),
+            },
+        )
+    }
+}
+
+/// Helper struct for constructing SpawnAndroidNative spawn payloads
+#[derive(Debug)]
 pub struct SpawnAndroidNativePacker {
-    #[arg(required(true))]
-    package: String,
+    /// Name of the NativeAndroidApplication package
+    pub package: String,
 }
 
 impl<'builder> FlatBufferAssociatedType<'builder> for SpawnAndroidNativePacker {
@@ -271,8 +402,8 @@ impl<'builder> FlatBufferAssociatedType<'builder> for SpawnAndroidNativePacker {
     type FlatBufferArgType = SpawnAndroidNativeArgs<'builder>;
 }
 
-impl ToFlatBufferUnion<'_, Message> for SpawnAndroidNativePacker {
-    const UNION_TAG: Message = Message::SpawnAndroidNative;
+impl ToFlatBufferUnion<'_, SpawnPayload> for SpawnAndroidNativePacker {
+    const UNION_TAG: SpawnPayload = SpawnPayload::SpawnAndroidNative;
 }
 
 impl<'builder> ToFlatBuffer<'builder> for SpawnAndroidNativePacker {
@@ -288,14 +419,13 @@ impl<'builder> ToFlatBuffer<'builder> for SpawnAndroidNativePacker {
     }
 }
 
-/// Helper struct for constructing SpawnLibApp messages.
-#[derive(Debug, Parser)]
+/// Helper struct for constructing SpawnLibApp spawn payloads.
+#[derive(Debug)]
 pub struct SpawnLibAppPacker {
-    #[arg(required(true))]
-    path: String,
-
-    #[arg(trailing_var_arg(true))]
-    args: Vec<String>,
+    /// Path to the LibApp shared library
+    pub path: String,
+    /// Arguments for the LibApp
+    pub args: Vec<String>,
 }
 
 impl<'builder> FlatBufferAssociatedType<'builder> for SpawnLibAppPacker {
@@ -303,8 +433,8 @@ impl<'builder> FlatBufferAssociatedType<'builder> for SpawnLibAppPacker {
     type FlatBufferArgType = SpawnLibAppArgs<'builder>;
 }
 
-impl ToFlatBufferUnion<'_, Message> for SpawnLibAppPacker {
-    const UNION_TAG: Message = Message::SpawnLibApp;
+impl ToFlatBufferUnion<'_, SpawnPayload> for SpawnLibAppPacker {
+    const UNION_TAG: SpawnPayload = SpawnPayload::SpawnLibApp;
 }
 
 impl<'builder> ToFlatBuffer<'builder> for SpawnLibAppPacker {
@@ -321,11 +451,11 @@ impl<'builder> ToFlatBuffer<'builder> for SpawnLibAppPacker {
     }
 }
 
-/// Helper struct for constructing SpawnMock messages.
-#[derive(Debug, Parser)]
+/// Helper struct for constructing SpawnMock spawn payloads.
+#[derive(Debug)]
 pub struct SpawnMockPacker {
-    #[arg(required(true))]
-    name: String,
+    /// The name to print in the new process
+    pub name: String,
 }
 
 impl<'builder> FlatBufferAssociatedType<'builder> for SpawnMockPacker {
@@ -333,8 +463,8 @@ impl<'builder> FlatBufferAssociatedType<'builder> for SpawnMockPacker {
     type FlatBufferArgType = SpawnMockArgs<'builder>;
 }
 
-impl ToFlatBufferUnion<'_, Message> for SpawnMockPacker {
-    const UNION_TAG: Message = Message::SpawnMock;
+impl ToFlatBufferUnion<'_, SpawnPayload> for SpawnMockPacker {
+    const UNION_TAG: SpawnPayload = SpawnPayload::SpawnMock;
 }
 
 impl<'builder> ToFlatBuffer<'builder> for SpawnMockPacker {
@@ -418,27 +548,5 @@ impl SpawnMessage {
 impl AsRef<MessageBuffer> for SpawnMessage {
     fn as_ref(&self) -> &MessageBuffer {
         &self.buffer
-    }
-}
-
-/// Build a flatbuffer message from a message name and arguments.
-pub fn build_message<'a>(
-    message_name: &'a String,
-    message_args: &'a [String],
-) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
-    let extra_args_iter = std::iter::once(message_name).chain(message_args.iter());
-
-    match message_name.as_str() {
-        "Exit" => Ok(ExitPacker {}.to_parcel()),
-        "IdentityQuery" => Ok(IdentityQueryPacker {}.to_parcel()),
-        "SpawnAndroidNative" => {
-            Ok(SpawnAndroidNativePacker::try_parse_from(extra_args_iter)?.to_parcel())
-        }
-        "SpawnLibApp" => Ok(SpawnLibAppPacker::try_parse_from(extra_args_iter)?.to_parcel()),
-        "SpawnMock" => Ok(SpawnMockPacker::try_parse_from(extra_args_iter)?.to_parcel()),
-        "Stat" => Ok(StatPacker {}.to_parcel()),
-        _ => {
-            bail!("Invalid message type: {}", message_name)
-        }
     }
 }

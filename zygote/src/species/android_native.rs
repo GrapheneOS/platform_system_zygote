@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, Message},
+    messages::{self, SpawnPayload},
     species::Species,
 };
 
@@ -35,8 +35,8 @@ impl Species for App {
         false
     }
 
-    fn message_type_spawn(&self) -> Message {
-        Message::SpawnAndroidNative
+    fn spawn_payload_type(&self) -> SpawnPayload {
+        SpawnPayload::SpawnAndroidNative
     }
 
     fn name(&self) -> &'static str {
@@ -49,8 +49,9 @@ impl Species for App {
 
     fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
         let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
-        let spawn_cmd = parcel.message_as_spawn_android_native().unwrap();
-        println!("Hello from the child process.  My name is {}", spawn_cmd.package());
+        let spawn_cmd = parcel.message_as_spawn().unwrap();
+        let spawn_payload = spawn_cmd.payload_as_spawn_android_native().unwrap();
+        println!("Hello from the child process.  My name is {}", spawn_payload.package());
         std::process::exit(0)
     }
 
