@@ -27,12 +27,11 @@ use flatbuffers::{self};
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
-use crate::messages::ToParcel;
 use crate::{
-    assert_ok, config, debug_assert_ok,
+    assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Message, MessageBuffer, Parcel, MESSAGE_BUFFER_SIZE},
+    messages::{self, Message, MessageBuffer, Parcel, ToParcel, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{
         self, LibcResult,
@@ -550,22 +549,9 @@ impl Server {
                 debug_assert_single_threaded();
 
                 #[cfg(target_os = "android")]
-                {
-                    sys::android::reset_stack_guards();
+                child_process::re_init_android(fds_error_level);
 
-                    // SAFETY: This is called in a single-threaded context
-                    unsafe {
-                        sys::android::fdsan_set_error_level(fds_error_level);
-                    }
-
-                    if sys::android::set_zygote_child().is_err() {
-                        error!("Failed to android_mallopt(M_SET_ZYGOTE_CHILD)");
-                    }
-
-                    if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
-                        error!("Failed to mallopt(M_DECAY_TIME): {}", errno);
-                    }
-                }
+                child_process::re_init_common();
 
                 species.gestate(spawn_message, priority_final)
             }))

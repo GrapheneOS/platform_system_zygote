@@ -16,8 +16,8 @@
 //! This module provides extern definitions for `libc` functions that are not
 //! defined by the `libc` crate for some platforms.
 
-#[cfg(target_os = "android")]
-use core::ffi::{c_int, c_uint, c_void};
+#[allow(unused_imports)]
+use core::ffi::{c_char, c_int, c_uint, c_void};
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {
@@ -57,4 +57,21 @@ unsafe extern "C" {
     ///
     /// See `man dup`
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
+}
+
+#[cfg(not(target_env = "musl"))]
+unsafe extern "C" {
+    /// Get a pointer to an immutable string containing the name of the error
+    /// code (e.g. "EPERM").  Returns `NULL` on an invalid input.
+    ///
+    /// # Safety
+    /// This function is thread safe and returns a pointer to constant data.
+    pub fn strerrorname_np(errno: c_int) -> *const c_char;
+
+    /// Get a pointer to an immutable string containing a description of the
+    /// error code.  Returns `NULL` on an invalid input.
+    ///
+    /// # Safety
+    /// This function is thread safe and returns a pointer to constant data.
+    pub fn strerrordesc_np(errno: c_int) -> *const c_char;
 }

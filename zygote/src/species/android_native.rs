@@ -51,6 +51,12 @@ impl Species for App {
         let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
         let spawn_cmd = parcel.message_as_spawn().unwrap();
         let spawn_payload = spawn_cmd.payload_as_spawn_android_native().unwrap();
+
+        // TODO: Handle process dumpability
+        // TODO: Enable debugging
+        // TODO: Set heap tagging level
+        // TODO: Disable heap zero-initialization
+
         println!("Hello from the child process.  My name is {}", spawn_payload.package());
         std::process::exit(0)
     }

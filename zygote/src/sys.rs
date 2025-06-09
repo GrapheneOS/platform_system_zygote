@@ -30,7 +30,7 @@ use anyhow::Result;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 
-#[cfg(target_os = "android")]
+#[allow(unused_imports)]
 use crate::libc_fill;
 
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
@@ -103,14 +103,38 @@ impl From<Errno> for std::fmt::Error {
 }
 
 impl Display for Errno {
+    #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Errno: {:?}", strerror(self.code)?.as_cstr())
+        write!(
+            f,
+            "Errno ({}): {}",
+            error_name(self.code)?.to_str().unwrap(),
+            error_description(self.code)?.as_cstr().unwrap().to_str().unwrap()
+        )
+    }
+
+    #[cfg(any(target_env = "musl", all(target_os = "linux", soong)))]
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Errno: {}", error_description(self.code)?.as_cstr().unwrap().to_str().unwrap())
     }
 }
 
 impl Debug for Errno {
+    #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        f.debug_struct("Errno").field("code", &strerror(self.code)?.as_cstr()).finish()
+        f.debug_struct("Errno")
+            .field("code", &self.code)
+            .field("name", &error_name(self.code)?)
+            .field("description", &error_description(self.code)?.as_cstr())
+            .finish()
+    }
+
+    #[cfg(any(target_env = "musl", all(target_os = "linux", soong)))]
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("Errno")
+            .field("code", &self.code)
+            .field("description", &error_description(self.code)?.as_cstr())
+            .finish()
     }
 }
 
@@ -263,7 +287,17 @@ fn libc_result_from_int_with_void<T: Eq + From<i8>>(retval: T) -> LibcResult<()>
 
 /// Converts a pointer into a [`LibcResult`] type, returning an [`Errno`] if it
 /// is `null` and converting it into the desired return type if it isn't.
+#[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
 fn libc_result_from_ptr<T, U, C: Fn(NonNull<T>) -> U>(
+    retval: *const T,
+    constructor: C,
+) -> LibcResult<U> {
+    NonNull::new(retval as *mut T).map(constructor).ok_or(errno())
+}
+
+/// Converts a pointer into a [`LibcResult`] type, returning an [`Errno`] if it
+/// is `null` and converting it into the desired return type if it isn't.
+fn libc_result_from_mut_ptr<T, U, C: Fn(NonNull<T>) -> U>(
     retval: *mut T,
     constructor: C,
 ) -> LibcResult<U> {
@@ -589,6 +623,40 @@ pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> LibcResult<()> {
     }));
 }
 
+/// A safe wrapper around [`libc::strerror_r`].
+///
+/// This function uses `strerror_r` because `strerror` is not thread-safe.
+///
+/// See: `man strerror`
+pub fn error_description(code: c_int) -> LibcResult<CStringBuffer> {
+    let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
+
+    // SAFETY: The pointer argument refers to memory allocated in this function.
+    let retval = unsafe { libc::strerror_r(code, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+    if retval == 0 {
+        Ok(buffer)
+    } else {
+        Err(Errno { code: retval })
+    }
+}
+
+/// A safe wrapper around [`libc_fill::strerrorname_np`]
+///
+/// See: `man strerror`
+#[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
+pub fn error_name(code: c_int) -> LibcResult<&'static CStr> {
+    // SAFETY: This function takes no pointers and the return result is checked
+    //         and wrapped in a LibcResult.  The returned pointers point to
+    //         statically allocated null-terminated strings and are safe to
+    //         cast to `CStr`s.
+    unsafe {
+        libc_result_from_ptr(libc_fill::strerrorname_np(code), |non_null_ptr: NonNull<c_char>| {
+            CStr::from_ptr(non_null_ptr.as_ptr() as *const c_char)
+        })
+    }
+}
+
 /// A safe wrapper around [`libc::fcntl`], passing [`libc::F_GETFD`] as the
 /// `op`.
 ///
@@ -833,7 +901,7 @@ pub fn opendir(path: &CStr) -> LibcResult<LibcDir> {
     //         value is checked and wrapped in a LibcResult.  The pointer
     //         itself has been verified as non-null and is thus wrapped in a
     //         LibcResult.
-    libc_result_from_ptr(unsafe { libc::opendir(path.as_ptr()) }, LibcDir::from_raw)
+    libc_result_from_mut_ptr(unsafe { libc::opendir(path.as_ptr()) }, LibcDir::from_raw)
 }
 
 /// A safe wrapper around [`libc::pipe`].
@@ -885,6 +953,28 @@ pub fn prctl_set_name<S: AsRef<[u8]>>(name: &S) {
     unsafe { libc::prctl(libc::PR_SET_NAME, name_buffer.as_ptr() as *const c_void) };
 }
 
+/// A safe wrapper around the [`libc::prctl`] `PR_GET_SECUREBITS` operation.
+///
+/// See: `man prctl`
+/// See: `man capabilities`
+pub fn prctl_get_securebits() -> LibcResult<c_int> {
+    // SAFETY: The `libc::prctl` `PR_GET_SECUREBITS` operation takes no pointer
+    //         arguments and can only return `EINVAL` if the argument is
+    //         invalid.  The argument is guaranteed to be valid in this case.
+    libc_result_from_int(unsafe { libc::prctl(libc::PR_GET_SECUREBITS) })
+}
+
+/// A safe wrapper around the [`libc::prctl`] `PR_SET_SECUREBITS` operation.
+///
+/// See: `man prctl`
+/// See: `man capabilities`
+pub fn prctl_set_securebits(securebits: c_int) -> LibcResult<()> {
+    // SAFETY: The `libc::prctl` `PR_SET_SECUREBITS` operation takes an integer
+    //         argument and can only return `EINVAL` if the argument is
+    //         invalid.  The argument is guaranteed to be valid in this case.
+    libc_result_from_int_with_void(unsafe { libc::prctl(libc::PR_SET_SECUREBITS, securebits) })
+}
+
 /// A safe wrapper around [`libc::read`].
 ///
 /// See: `man read`
@@ -912,7 +1002,8 @@ pub fn readdir(dir: &LibcDir) -> Option<NonNull<libc::dirent>> {
     //         return value is checked and wrapped in a LibcResult.  The
     //         pointer itself has been verified as non-null and is thus wrapped
     //         in a LibcResult.
-    libc_result_from_ptr(unsafe { libc::readdir(dir.inner.as_ptr()) }, std::convert::identity).ok()
+    libc_result_from_mut_ptr(unsafe { libc::readdir(dir.inner.as_ptr()) }, std::convert::identity)
+        .ok()
 }
 
 /// A safe wrapper around [`libc::readlink`].
@@ -1102,24 +1193,6 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
     //         by `libc::socket`.  The return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
-}
-
-/// A safe wrapper around [`libc::strerror_r`].
-///
-/// This function uses `strerror_r` because `strerror` is not thread-safe.
-///
-/// See: `man strerror`
-pub fn strerror(code: c_int) -> LibcResult<CStringBuffer> {
-    let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
-
-    // SAFETY: The pointer argument refers to memory allocated in this function.
-    let retval = unsafe { libc::strerror_r(code, buffer.as_mut_ptr().cast(), buffer.len()) };
-
-    if retval == 0 {
-        Ok(buffer)
-    } else {
-        Err(Errno { code: retval })
-    }
 }
 
 /// Android-specific functionality

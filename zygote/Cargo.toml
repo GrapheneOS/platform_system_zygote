@@ -12,7 +12,7 @@ anyhow = "1.0.97"
 arrayvec = "0.7.6"
 clap = { version = "4.5.0", features = ["derive"] }
 flatbuffers = "25.1.24"
-libc = "0.2.161"
+libc = "0.2.168"
 libloading = "0.8.6"
 log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
@@ -24,7 +24,7 @@ which = "7.0.3"
 
 [dev-dependencies]
 libtest-mimic = "0.8.1"
-rustix = { version = "1.0.2", features = [
+rustix = { version = "0.38.31", features = [
     "alloc",
     "event",
     "fs",
