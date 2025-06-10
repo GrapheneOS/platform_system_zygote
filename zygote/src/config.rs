@@ -20,7 +20,10 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use log::LevelFilter;
 
-use crate::species::SpeciesRef;
+use crate::{
+    messages::{Message, MessageParser, SpawnPayloadParser, ToParcel, TryToParcel},
+    species::SpeciesRef,
+};
 
 const ENV_VAR_SOCKET: &str = "ZYGOTE_SOCKET";
 
@@ -34,16 +37,12 @@ pub struct Cli {
 
     /// A path to the target Zygote's server socket; Abstract sockets are not
     /// currently supported.
-    #[arg(long, short, required(true))]
+    #[arg(required(true))]
     pub socket: String,
 
-    /// Name of command to send; accepted values: exit, spawn, stat
-    #[arg(required(true))]
-    pub command_name: String,
-
-    /// Additional arguments that might be used by the command
-    #[arg(trailing_var_arg(true))]
-    pub command_args: Vec<String>,
+    /// Name of command and arguments to send
+    #[command(subcommand)]
+    pub command: MessageParser,
 }
 
 /// Configuration values used by the Zygote launch utility.  This API is
@@ -58,14 +57,33 @@ pub struct Launch {
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
     pub priority_final: Option<i32>,
 
-    /// Additional arguments that might be used by the command
-    #[arg(trailing_var_arg(true))]
-    pub spawn_args: Vec<String>,
-
-    /// A runtime-defined reference to Species-specific behavior
-    /// implementations.
+    /// UID to switch to
     #[arg(long)]
-    pub species: SpeciesRef,
+    pub uid: Option<i32>,
+
+    /// Main GID to switch to
+    #[arg(long)]
+    pub gid: Option<i32>,
+
+    /// The species and species specific arguments
+    #[command(subcommand)]
+    pub payload: SpawnPayloadParser,
+}
+
+impl Launch {
+    fn to_spawn_message(&self) -> Result<Message<'_, '_>> {
+        Ok(Message::Spawn {
+            uid: self.uid,
+            gid: self.gid,
+            payload: self.payload.to_spawn_payload()?,
+        })
+    }
+}
+
+impl TryToParcel for Launch {
+    fn try_to_parcel<'a>(&self) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
+        Ok(self.to_spawn_message()?.to_parcel())
+    }
 }
 
 /// Configuration values used to determine the runtime behavior of a Zygote

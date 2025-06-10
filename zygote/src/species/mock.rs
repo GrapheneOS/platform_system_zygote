@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, SpawnPayload},
+    messages::{self, FromParcel, Message, SpawnPayload},
     species::{file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, Species},
 };
 
@@ -52,8 +52,8 @@ impl Species for Turtle {
         ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
-    fn spawn_payload_type(&self) -> SpawnPayload {
-        SpawnPayload::SpawnMock
+    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
+        matches!(message, SpawnPayload::Mock { .. })
     }
 
     fn name(&self) -> &'static str {
@@ -65,14 +65,18 @@ impl Species for Turtle {
     }
 
     fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
-        let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
-        let spawn_cmd = parcel.message_as_spawn().unwrap();
+        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
 
-        debug_assert_eq!(spawn_cmd.payload_type(), SpawnPayload::SpawnMock);
-
-        let spawn_payload = spawn_cmd.payload_as_spawn_mock().unwrap();
-        println!("Hello from the child process.  My name is {}", spawn_payload.name());
-        std::process::exit(0)
+        if let Message::Spawn { uid: _, gid: _, payload } = message {
+            if let SpawnPayload::Mock { name } = payload {
+                println!("Hello from the parent process.  My name is {}", name);
+                std::process::exit(0)
+            } else {
+                panic!("Invalid spawn payload for species {}: {:?}", self.name(), payload);
+            }
+        } else {
+            panic!("Invalid message type passed to gestate(): {:?}", message);
+        }
     }
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {

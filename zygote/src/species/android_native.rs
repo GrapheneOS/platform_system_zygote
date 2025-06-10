@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, SpawnPayload},
+    messages::{self, FromParcel, Message, SpawnPayload},
     species::Species,
 };
 
@@ -35,8 +35,8 @@ impl Species for App {
         false
     }
 
-    fn spawn_payload_type(&self) -> SpawnPayload {
-        SpawnPayload::SpawnAndroidNative
+    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
+        matches!(message, SpawnPayload::AndroidNative { .. })
     }
 
     fn name(&self) -> &'static str {
@@ -48,17 +48,23 @@ impl Species for App {
     }
 
     fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
-        let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
-        let spawn_cmd = parcel.message_as_spawn().unwrap();
-        let spawn_payload = spawn_cmd.payload_as_spawn_android_native().unwrap();
+        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
 
-        // TODO: Handle process dumpability
-        // TODO: Enable debugging
-        // TODO: Set heap tagging level
-        // TODO: Disable heap zero-initialization
+        if let Message::Spawn { uid: _, gid: _, payload } = message {
+            if let SpawnPayload::AndroidNative { package } = payload {
+                // TODO: Handle process dumpability
+                // TODO: Enable debugging
+                // TODO: Set heap tagging level
+                // TODO: Disable heap zero-initialization
 
-        println!("Hello from the child process.  My name is {}", spawn_payload.package());
-        std::process::exit(0)
+                println!("Hello from the parent process.  My name is {}", package);
+                std::process::exit(0)
+            } else {
+                panic!("Invalid spawn payload for species {}: {:?}", self.name(), payload);
+            }
+        } else {
+            panic!("Invalid message type passed to gestate(): {:?}", message);
+        }
     }
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {

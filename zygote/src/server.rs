@@ -23,7 +23,6 @@ use std::{os::fd::RawFd, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
-use flatbuffers::{self};
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
@@ -31,7 +30,7 @@ use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Message, MessageBuffer, Parcel, ToParcel, MESSAGE_BUFFER_SIZE},
+    messages::{self, FromParcel, Message, MessageBuffer, ToParcel, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{
         self, LibcResult,
@@ -108,6 +107,7 @@ impl<T> ServerControl<T> {
 enum ClientLoopControl<T> {
     Child(T),
     NextSocket,
+    // TODO: Change the error type to be anyhow::Error
     Error(RawFd, sys::Errno),
     Shutdown,
 }
@@ -276,9 +276,18 @@ impl Server {
                             return Break(ClientLoopControl::NextSocket);
                         }
 
-                        let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
-
-                        self.dispatch_message_handler(fd, message_buffer, parcel)
+                        match Message::try_from_parcel(&message_buffer) {
+                            Ok(_) => self.dispatch_message_handler(fd, message_buffer),
+                            Err(err) => {
+                                // TODO: Respond with an error
+                                warn!(
+                                    "Invalid message received from client (PID {}): {}",
+                                    sys::get_socket_creds(fd).unwrap().pid,
+                                    err
+                                );
+                                Break(ClientLoopControl::NextSocket)
+                            }
+                        }
                     },
                 )
                 // TODO: Add more extensive error handling.
@@ -417,22 +426,19 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-        parcel: Parcel<'_>,
     ) -> LoopControl<ClientLoopControl<impl FnOnce()>> {
-        match parcel.message_type() {
+        match Message::try_from_parcel(&message_buffer).unwrap() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
-            Message::Spawn => {
-                let spawn_cmd = parcel.message_as_spawn().unwrap();
-
-                if spawn_cmd.payload_type() == self.species.spawn_payload_type() {
+            Message::Spawn { payload, .. } => {
+                if self.species.is_spawn_payload_type(&payload) {
                     self.handle_message_spawn(fd, message_buffer)
                 } else {
                     // TODO: Respond with an error
                     error!(
                         "Incorrect spawn payload for this species {}: {:?}",
                         self.species.name(),
-                        spawn_cmd.payload_type()
+                        payload
                     );
 
                     // Continue the `recvmsg` loop
@@ -440,9 +446,8 @@ impl Server {
                 }
             }
             Message::Stat => self.handle_message_stat(fd),
-            Message(tag) => {
-                // TODO: Respond with an error
-                error!("Invalid message variant encountered: {tag}");
+            msg => {
+                warn!("Server received invalid message: {:?}", msg);
 
                 // Continue the `recvmsg` loop
                 Continue
@@ -454,10 +459,11 @@ impl Server {
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!("Received client: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
+        info!("Received message: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
 
-        let ack_msg = messages::AckPacker {}.to_parcel();
-        if let Err(errno) = Self::send_response(fd, ack_msg.finished_data()) {
+        if let Err(errno) =
+            Self::send_response(fd, Message::AckResponse.to_parcel().finished_data())
+        {
             warn!("Failed to acknowledge Exit message: {errno}")
         }
 
@@ -468,16 +474,15 @@ impl Server {
         &self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!("Received client: (IdentityQuery {})", sys::get_socket_creds(fd).unwrap().pid);
+        info!("Received message: (IdentityQuery {})", sys::get_socket_creds(fd).unwrap().pid);
 
-        let response = messages::IdentityQueryResponsePacker {
+        let response = Message::IdentityQueryResponse {
             name: &self.name,
             species: self.species.name(),
             arch: std::env::consts::ARCH,
-        }
-        .to_parcel();
+        };
 
-        match Self::send_response(fd, response.finished_data()) {
+        match Self::send_response(fd, response.to_parcel().finished_data()) {
             Ok(_) => Continue,
             Err(errno) => {
                 error!("Failed to send IdentityQuery response: {errno}");
@@ -498,8 +503,8 @@ impl Server {
         debug_assert_single_threaded();
         debug_assert_ok!(self.registry.audit());
 
-        let parcel = flatbuffers::root::<Parcel>(&message_buffer).unwrap();
-        info!("Received message: ({:?})", parcel.message_type());
+        let message = Message::try_from_parcel(&message_buffer).unwrap();
+        info!("Received message: ({:?})", message);
 
         #[cfg(target_os = "android")]
         // SAFETY: This is called in a single-threaded context
@@ -558,8 +563,8 @@ impl Server {
         } else {
             // Server process
             info!("Spawned process {}", new_pid);
-            let response = messages::SpawnResponsePacker { pid: new_pid }.to_parcel();
-            match Self::send_response(fd, response.finished_data()) {
+            let response = Message::SpawnResponse { pid: new_pid };
+            match Self::send_response(fd, response.to_parcel().finished_data()) {
                 Ok(_) => Continue,
                 Err(errno) => {
                     error!("Failed to send Spawn response: {}", errno);
@@ -573,10 +578,9 @@ impl Server {
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!("Received client: (Stat)");
+        info!("Received message: (Stat)");
 
-        let ack_msg = messages::AckPacker {}.to_parcel();
-        match Self::send_response(fd, ack_msg.finished_data()) {
+        match Self::send_response(fd, Message::AckResponse.to_parcel().finished_data()) {
             Ok(_) => {
                 // Continue the `recvmsg` loop
                 Continue

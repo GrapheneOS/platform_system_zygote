@@ -90,7 +90,7 @@ pub trait Species {
     fn bound_socket_is_allowed(&self, name: &str) -> bool;
     /// Return the [`messages::Command`] tag corresponding to this
     /// species' Spawn command
-    fn spawn_payload_type(&self) -> messages::SpawnPayload;
+    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool;
     /// Returns the name of the species
     fn name(&self) -> &'static str;
     /// Returns true if the file is allowed to be registered
