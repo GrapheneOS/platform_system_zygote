@@ -36,6 +36,8 @@ rustix = { version = "1.0.2", features = [
     "use-libc-auxv",
 ] }
 which = "7.0.3"
+tempfile = "3"
+memmark = { path = "../memmark" }
 
 [[test]]
 name = "file_descriptor_tests_no_panic"
