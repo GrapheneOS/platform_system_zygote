@@ -24,7 +24,7 @@ use log::{error, info, warn};
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, Message},
+    messages::{self, SpawnPayload},
     species::Species,
     sys,
 };
@@ -44,8 +44,8 @@ impl Species for App {
         false
     }
 
-    fn message_type_spawn(&self) -> Message {
-        Message::SpawnLibApp
+    fn spawn_payload_type(&self) -> SpawnPayload {
+        SpawnPayload::SpawnLibApp
     }
 
     fn name(&self) -> &'static str {
@@ -58,19 +58,20 @@ impl Species for App {
 
     fn gestate(&self, spawn_message: messages::SpawnMessage, priority_final: Option<i32>) -> ! {
         let parcel = flatbuffers::root::<messages::Parcel>(spawn_message.as_ref()).unwrap();
-        let spawn_cmd = parcel.message_as_spawn_lib_app().unwrap();
+        let spawn_cmd = parcel.message_as_spawn().unwrap();
+        let spawn_payload = spawn_cmd.payload_as_spawn_lib_app().unwrap();
 
-        let library_path_str = spawn_cmd.path();
+        let library_path_str = spawn_payload.path();
         let library_path = std::path::Path::new(library_path_str);
 
-        let library_args = spawn_cmd.args().iter().map(|arg| arg.to_owned()).collect();
+        let library_args = spawn_payload.args().iter().map(|arg| arg.to_owned()).collect();
 
         if !library_path.exists() {
-            error!("No library found at the specified path: {}", spawn_cmd.path());
+            error!("No library found at the specified path: {}", spawn_payload.path());
             std::process::exit(1);
         }
 
-        info!("Path to library application: {}", spawn_cmd.path());
+        info!("Path to library application: {}", spawn_payload.path());
 
         // SAFETY: The library path is obtained from the SpawnMessage which
         //         originates from a trusted source.  The path has been

@@ -27,11 +27,12 @@ use flatbuffers::{self};
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
+use crate::messages::ToParcel;
 use crate::{
     assert_ok, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, Message, MessageBuffer, Parcel, ToFlatBuffer, MESSAGE_BUFFER_SIZE},
+    messages::{self, Message, MessageBuffer, Parcel, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
     sys::{
         self, LibcResult,
@@ -422,17 +423,26 @@ impl Server {
         match parcel.message_type() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
-            msg if msg == self.species.message_type_spawn() => {
-                self.handle_message_spawn(fd, message_buffer)
+            Message::Spawn => {
+                let spawn_cmd = parcel.message_as_spawn().unwrap();
+
+                if spawn_cmd.payload_type() == self.species.spawn_payload_type() {
+                    self.handle_message_spawn(fd, message_buffer)
+                } else {
+                    // TODO: Respond with an error
+                    error!(
+                        "Incorrect spawn payload for this species {}: {:?}",
+                        self.species.name(),
+                        spawn_cmd.payload_type()
+                    );
+
+                    // Continue the `recvmsg` loop
+                    Continue
+                }
             }
             Message::Stat => self.handle_message_stat(fd),
-            msg @ Message(tag) if tag < Message::ENUM_MAX => {
-                error!("Message not supported by this species: {}", msg.variant_name().unwrap());
-
-                // Continue the `recvmsg` loop
-                Continue
-            }
             Message(tag) => {
+                // TODO: Respond with an error
                 error!("Invalid message variant encountered: {tag}");
 
                 // Continue the `recvmsg` loop
@@ -447,7 +457,7 @@ impl Server {
     ) -> LoopControl<ClientLoopControl<Thunk>> {
         info!("Received client: (Exit {})", sys::get_socket_creds(fd).unwrap().pid);
 
-        let ack_msg = messages::AckBuilder {}.build();
+        let ack_msg = messages::AckPacker {}.to_parcel();
         if let Err(errno) = Self::send_response(fd, ack_msg.finished_data()) {
             warn!("Failed to acknowledge Exit message: {errno}")
         }
@@ -461,12 +471,12 @@ impl Server {
     ) -> LoopControl<ClientLoopControl<Thunk>> {
         info!("Received client: (IdentityQuery {})", sys::get_socket_creds(fd).unwrap().pid);
 
-        let response = messages::IdentityQueryResponseBuilder {
+        let response = messages::IdentityQueryResponsePacker {
             name: &self.name,
             species: self.species.name(),
             arch: std::env::consts::ARCH,
         }
-        .build();
+        .to_parcel();
 
         match Self::send_response(fd, response.finished_data()) {
             Ok(_) => Continue,
@@ -562,7 +572,7 @@ impl Server {
         } else {
             // Server process
             info!("Spawned process {}", new_pid);
-            let response = messages::SpawnResponseBuilder { pid: new_pid }.build();
+            let response = messages::SpawnResponsePacker { pid: new_pid }.to_parcel();
             match Self::send_response(fd, response.finished_data()) {
                 Ok(_) => Continue,
                 Err(errno) => {
@@ -579,7 +589,7 @@ impl Server {
     ) -> LoopControl<ClientLoopControl<Thunk>> {
         info!("Received client: (Stat)");
 
-        let ack_msg = messages::AckBuilder {}.build();
+        let ack_msg = messages::AckPacker {}.to_parcel();
         match Self::send_response(fd, ack_msg.finished_data()) {
             Ok(_) => {
                 // Continue the `recvmsg` loop

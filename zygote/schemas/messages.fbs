@@ -25,6 +25,19 @@ table SpawnLibApp {
     args: [string] (required);
 }
 
+union SpawnPayload {
+    SpawnAndroidNative,
+    SpawnLibApp,
+    SpawnMock,
+}
+
+table Spawn {
+    uid: int32;
+    gid: int32;
+
+    payload: SpawnPayload (required);
+}
+
 table SpawnResponse {
     pid: int32;
 }
@@ -36,9 +49,7 @@ union Message {
     Exit,
     IdentityQuery,
     IdentityQueryResponse,
-    SpawnAndroidNative,
-    SpawnLibApp,
-    SpawnMock,
+    Spawn,
     SpawnResponse,
     Stat,
 }
