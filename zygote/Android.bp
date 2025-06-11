@@ -180,6 +180,7 @@ rust_test_host {
 phony {
     name: "zygote_all",
     required: [
+        "libcapwrap",
         "libmemmark",
         "libzygote",
         "libzygote_test",
