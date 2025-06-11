@@ -44,24 +44,18 @@ mod integration_test {
         sleep(Duration::from_millis(250));
 
         let output = Command::new(zygote_cli)
-            .arg("--socket")
+            .args(["-v", "4"])
             .arg(&socket)
-            .args(["-v", "4", "IdentityQuery"])
+            .arg("IdentityQuery")
             .output()?;
         assert!(output.status.success());
 
-        let output = Command::new(zygote_cli)
-            .arg("--socket")
-            .arg(&socket)
-            .args(["-v", "4", "Stat"])
-            .output()?;
+        let output =
+            Command::new(zygote_cli).args(["-v", "4"]).arg(&socket).arg("Stat").output()?;
         assert!(output.status.success());
 
-        let output = Command::new(zygote_cli)
-            .arg("--socket")
-            .arg(&socket)
-            .args(["-v", "4", "Exit"])
-            .output()?;
+        let output =
+            Command::new(zygote_cli).args(["-v", "4"]).arg(&socket).arg("Exit").output()?;
         assert!(output.status.success());
 
         let zygote_status = zygote.wait()?;
@@ -98,19 +92,16 @@ mod integration_test {
         sleep(Duration::from_millis(250));
 
         let output = Command::new(zygote_cli)
-            .arg("--socket")
+            .args(["-v", "4"])
             .arg(&socket)
-            .args(["-v", "4", "SpawnLibApp"])
+            .args(["Spawn", "SpawnLibApp"])
             .arg(libmemmark)
             .args(["--", "--foo", "--bar"])
             .output()?;
         assert!(output.status.success());
 
-        let output = Command::new(zygote_cli)
-            .arg("--socket")
-            .arg(&socket)
-            .args(["-v", "4", "Exit"])
-            .output()?;
+        let output =
+            Command::new(zygote_cli).args(["-v", "4"]).arg(&socket).arg("Exit").output()?;
         assert!(output.status.success());
 
         let zygote_status = zygote.wait()?;
@@ -135,7 +126,7 @@ mod integration_test {
             env::current_exe()?.parent().unwrap().parent().unwrap().join("libmemmark.so");
 
         let zygote_output = Command::new(zygote_launch)
-            .args(["-v", "4", "--species", "lib-app"])
+            .args(["-v", "4", "LibApp"])
             .arg(libmemmark)
             .args(["--", "--foo", "--bar"])
             .output()?;

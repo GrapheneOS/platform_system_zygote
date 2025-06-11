@@ -15,6 +15,8 @@
 
 //! Safe wrappers around functions exported by libcap
 
+// To build with cargo, you need to install libcap-dev
+
 mod sys;
 
 pub use sys::{cap_user_header_t, cap_value_t};
