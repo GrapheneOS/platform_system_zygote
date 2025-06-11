@@ -637,8 +637,8 @@ impl Server {
         let _ = sys::close(fd);
     }
 
-    /// Send the provided response to on the file descriptor and panic on
-    /// errors that indicate an irrecoverable bug.
+    /// Send the provided response through the socket and panic on errors that
+    /// indicate an irrecoverable bug.
     ///
     /// The following errors will cause a panic:
     /// * [`libc::EACCES`]

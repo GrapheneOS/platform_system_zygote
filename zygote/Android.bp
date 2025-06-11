@@ -157,6 +157,7 @@ rust_test_host {
         "liblogger",
         "liblog_rust",
         "libstatic_assertions",
+        "libzygote_sys",
         "libzerocopy",
         "libzygote_sys",
     ],
@@ -181,21 +182,5 @@ rust_test_host {
         "liblibtest_mimic",
         "libzygote_sys",
         "libzygote_test",
-    ],
-}
-
-phony {
-    name: "zygote_all",
-    required: [
-        "libcapwrap",
-        "libmemmark",
-        "libzygote",
-        "libzygote_sys",
-        "libzygote_test",
-        "zygote_cli",
-        "zygote_launch",
-        "zygote_next",
-        "zygote_next_unit_tests",
-        "zygote_next_integration_test_fd_no_panic",
     ],
 }

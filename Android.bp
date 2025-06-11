@@ -17,19 +17,18 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-rust_library {
-    name: "libcapwrap",
-    crate_name: "capwrap",
-    host_supported: true,
-    edition: "2021",
-    srcs: [
-        "src/lib.rs",
-    ],
-    rustlibs: [
-        "libbitflags",
+phony {
+    name: "zygote_all",
+    required: [
+        "libcapwrap",
+        "libmemmark",
+        "libzygote",
         "libzygote_sys",
-    ],
-    shared_libs: [
-        "libcap",
+        "libzygote_test",
+        "zygote_cli",
+        "zygote_launch",
+        "zygote_next",
+        "zygote_next_unit_tests",
+        "zygote_next_integration_test_fd_no_panic",
     ],
 }

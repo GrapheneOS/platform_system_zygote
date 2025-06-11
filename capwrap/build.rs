@@ -13,23 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
-rust_library {
-    name: "libcapwrap",
-    crate_name: "capwrap",
-    host_supported: true,
-    edition: "2021",
-    srcs: [
-        "src/lib.rs",
-    ],
-    rustlibs: [
-        "libbitflags",
-        "libzygote_sys",
-    ],
-    shared_libs: [
-        "libcap",
-    ],
+fn main() {
+    println!("cargo::rustc-link-lib=dylib=cap");
 }

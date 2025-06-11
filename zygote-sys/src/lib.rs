@@ -252,7 +252,7 @@ unsafe impl<const N: usize> LibcFromBytes for [u8; N] {}
 /// Convert an integer return value from a `libc` call into a [`LibcResult`]
 /// type.  If the return value is -1 the Error type will contain the resulting
 /// `errno` value.
-fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
+pub fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
     if retval == T::from(-1) {
         Err(errno())
     } else {
@@ -263,7 +263,7 @@ fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
 /// Test an integer `libc` return value and returns the auxiliary value if
 /// is not equal to -1 and the `errno` value if it is.  The payload thunk is
 /// only evaluated when `retval` does not indicate an error.
-fn libc_result_from_int_with_payload<T: Eq + From<i8>, P>(
+pub fn libc_result_from_int_with_payload<T: Eq + From<i8>, P>(
     retval: T,
     payload: impl FnOnce() -> P,
 ) -> LibcResult<P> {
@@ -276,7 +276,7 @@ fn libc_result_from_int_with_payload<T: Eq + From<i8>, P>(
 
 /// Test an integer `libc` return value and return `void` if it is not equal to
 /// -1 and the `errno` value if it is.
-fn libc_result_from_int_with_void<T: Eq + From<i8>>(retval: T) -> LibcResult<()> {
+pub fn libc_result_from_int_with_void<T: Eq + From<i8>>(retval: T) -> LibcResult<()> {
     if retval == T::from(-1) {
         Err(errno())
     } else {
