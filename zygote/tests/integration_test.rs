@@ -63,9 +63,9 @@ mod integration_test {
 
         let mut zygote_stderr = String::new();
         BufReader::new(stderr).read_to_string(&mut zygote_stderr)?;
-        assert!(zygote_stderr.contains("Received client: (IdentityQuery"));
-        assert!(zygote_stderr.contains("Received client: (Stat"));
-        assert!(zygote_stderr.contains("Received client: (Exit"));
+        assert!(zygote_stderr.contains("Received message: (IdentityQuery"));
+        assert!(zygote_stderr.contains("Received message: (Stat"));
+        assert!(zygote_stderr.contains("Received message: (Exit"));
 
         Ok(())
     }
@@ -94,7 +94,7 @@ mod integration_test {
         let output = Command::new(zygote_cli)
             .args(["-v", "4"])
             .arg(&socket)
-            .args(["Spawn", "SpawnLibApp"])
+            .args(["Spawn", "LibApp"])
             .arg(libmemmark)
             .args(["--", "--foo", "--bar"])
             .output()?;
