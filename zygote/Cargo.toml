@@ -16,8 +16,8 @@ libc = "0.2.168"
 libloading = "0.8.6"
 log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
-static_assertions = "1.1.0"
 zerocopy = "0.8.21"
+zygote-sys = { path = "../zygote-sys" }
 
 [build-dependencies]
 which = "7.0.3"

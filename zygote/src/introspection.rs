@@ -27,7 +27,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use arrayvec::ArrayVec;
 
-use crate::sys;
+use zygote_sys as sys;
 
 /// Prefix to the /proc/ directory containing information about open file
 /// descriptors.

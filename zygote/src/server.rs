@@ -26,17 +26,18 @@ use arrayvec::ArrayVec;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
+use zygote_sys::{
+    self as sys, LibcResult,
+    LoopControl::{self, *},
+    LoopExit, PollFd,
+};
+
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
     messages::{self, FromParcel, Message, MessageBuffer, ToParcel, MESSAGE_BUFFER_SIZE},
     species::SpeciesRef,
-    sys::{
-        self, LibcResult,
-        LoopControl::{self, *},
-        LoopExit, PollFd,
-    },
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;

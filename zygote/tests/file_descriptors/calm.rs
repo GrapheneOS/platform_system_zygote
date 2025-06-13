@@ -22,11 +22,13 @@ use std::{fs::File, os::fd::AsRawFd};
 
 use rustix::fd::IntoRawFd;
 
+use zygote_sys as sys;
+
 use zygote::{
     assert_ok,
     file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry},
     introspection::{assert_fd_closed, assert_single_threaded},
-    sys, test,
+    test,
 };
 
 // Command-line arguments to ignore, because they are not supported by libtest-mimic.

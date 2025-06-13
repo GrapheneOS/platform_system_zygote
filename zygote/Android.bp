@@ -49,6 +49,7 @@ rust_library {
         "liblog_rust",
         "libstatic_assertions",
         "libzerocopy",
+        "libzygote_sys",
     ],
 }
 
@@ -75,6 +76,7 @@ rust_library {
         "liblog_rust",
         "libstatic_assertions",
         "libzerocopy",
+        "libzygote_sys",
     ],
 }
 
@@ -91,6 +93,7 @@ rust_binary {
         "liblogger",
         "liblog_rust",
         "libzygote",
+        "libzygote_sys",
     ],
 }
 
@@ -110,6 +113,7 @@ rust_binary {
         "liblogger",
         "liblog_rust",
         "libzygote",
+        "libzygote_sys",
     ],
 }
 
@@ -129,6 +133,7 @@ rust_binary {
         "liblogger",
         "liblog_rust",
         "libzygote",
+        "libzygote_sys",
     ],
 }
 
@@ -153,6 +158,7 @@ rust_test_host {
         "liblog_rust",
         "libstatic_assertions",
         "libzerocopy",
+        "libzygote_sys",
     ],
 }
 
@@ -173,6 +179,7 @@ rust_test_host {
         "librustix",
         "liblibc",
         "liblibtest_mimic",
+        "libzygote_sys",
         "libzygote_test",
     ],
 }
@@ -183,6 +190,7 @@ phony {
         "libcapwrap",
         "libmemmark",
         "libzygote",
+        "libzygote_sys",
         "libzygote_test",
         "zygote_cli",
         "zygote_launch",

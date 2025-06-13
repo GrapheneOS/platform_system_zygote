@@ -36,10 +36,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
 use zerocopy::IntoBytes;
 
+use zygote_sys::{self as sys, AsCStr, CStringBuffer};
+
 use crate::{
     introspection::{self, debug_assert_single_threaded, get_proc_fd_link_info},
     species::SpeciesRef,
-    sys::{self, AsCStr, CStringBuffer},
 };
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
@@ -596,12 +597,10 @@ impl FileDescriptorRegistry {
 mod test {
     use std::{fs::File, os::fd::AsRawFd};
 
+    use zygote_sys::{self as sys, create_abstract_socket, create_bound_socket, AsCStr};
+
     use super::FileDescriptorInfo;
-    use crate::{
-        introspection::get_executable_path,
-        sys::{self, create_abstract_socket, create_bound_socket, AsCStr},
-        test::manage_test,
-    };
+    use crate::{introspection::get_executable_path, test::manage_test};
 
     #[test]
     #[rustfmt::skip]

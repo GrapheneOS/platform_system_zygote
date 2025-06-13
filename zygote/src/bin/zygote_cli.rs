@@ -19,13 +19,14 @@ use std::os::fd::RawFd;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use flatbuffers::FlatBufferBuilder;
 use log::{error, info};
 
-use flatbuffers::FlatBufferBuilder;
+use zygote_sys as sys;
+
 use zygote::{
     config,
     messages::{self, FromParcel, Message, TryToParcel},
-    sys,
 };
 
 fn main() -> Result<()> {

@@ -22,11 +22,12 @@ use core::ffi::CStr;
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
+use zygote_sys as sys;
+
 use crate::{
     file_descriptors::Action,
     messages::{self, FromParcel, Message, SpawnPayload},
     species::Species,
-    sys,
 };
 
 /// Name of the entry symbol for LibApps

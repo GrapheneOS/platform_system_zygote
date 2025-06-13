@@ -21,7 +21,9 @@
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::{config, server, sys};
+use zygote_sys as sys;
+
+use zygote::{config, server};
 
 fn main() -> Result<()> {
     if let Some(thunk) = run_server() {

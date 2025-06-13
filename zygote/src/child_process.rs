@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use log::warn;
 
-use crate::sys;
+use zygote_sys as sys;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 

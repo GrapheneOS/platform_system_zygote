@@ -30,8 +30,7 @@ use anyhow::Result;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 
-#[allow(unused_imports)]
-use crate::libc_fill;
+mod libc_fill;
 
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
 /// [`libc::setpriority`].
@@ -469,7 +468,9 @@ pub fn read_exact<T: LibcFromBytes>(fd: RawFd) -> LibcResult<T> {
     })
 }
 
-pub(crate) struct EffectiveIdContext {
+/// An RAII object that sets and resets the effective permissions of the
+/// calling process
+pub struct EffectiveIdContext {
     ruid: libc::uid_t,
     rgid: libc::gid_t,
 
@@ -478,6 +479,7 @@ pub(crate) struct EffectiveIdContext {
 }
 
 impl EffectiveIdContext {
+    /// Set the effective permissions of the calling process
     pub fn enter(
         euid: Option<libc::uid_t>,
         egid: Option<libc::gid_t>,
@@ -497,6 +499,7 @@ impl EffectiveIdContext {
         Ok(EffectiveIdContext { ruid: getuid(), rgid: getgid(), euid, egid })
     }
 
+    /// Restore the effective permissions of the calling process
     pub fn exit(&self) -> Result<()> {
         if self.euid.is_some() {
             // Pass the bit pattern of twos-complement `-1` as the real UID to

@@ -1,0 +1,13 @@
+[package]
+name = "zygote-sys"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.97"
+libc = "0.2.168"
+static_assertions = "1.1.0"
+zerocopy = "0.8.21"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(soong)'] }
