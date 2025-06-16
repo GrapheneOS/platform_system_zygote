@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, FromParcel, Message, SpawnPayload},
+    messages::{self, SpawnParamsCommon, SpawnPayload},
     species::{file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, Species},
 };
 
@@ -64,18 +64,12 @@ impl Species for Turtle {
         ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
     }
 
-    fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
-        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
-
-        if let Message::Spawn { uid: _, gid: _, payload } = message {
-            if let SpawnPayload::Mock { name } = payload {
-                println!("Hello from the parent process.  My name is {}", name);
-                std::process::exit(0)
-            } else {
-                panic!("Invalid spawn payload for species {}: {:?}", self.name(), payload);
-            }
+    fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
+        if let SpawnPayload::Mock { name } = spawn_payload {
+            println!("Hello from the child process.  My name is {}", name);
+            std::process::exit(0)
         } else {
-            panic!("Invalid message type passed to gestate(): {:?}", message);
+            panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
     }
 

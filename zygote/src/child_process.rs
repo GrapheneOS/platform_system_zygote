@@ -21,12 +21,14 @@ use log::warn;
 
 use zygote_sys as sys;
 
+use crate::messages::SpawnParamsCommon;
+
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 
 /// Perform child-process initialization tasks that are available on all
 /// supported platforms. All species-specific re-initialization code must
 /// be called before calling [`re_init_common`].
-pub(crate) fn re_init_common() {
+pub(crate) fn re_init_common(_spawn_params: &SpawnParamsCommon) {
     sys::prctl_set_name(&ZYGOTE_CHILD_PROCESS_INITIAL_NAME.to_bytes());
 
     match sys::prctl_set_securebits(libc::SECBIT_KEEP_CAPS) {

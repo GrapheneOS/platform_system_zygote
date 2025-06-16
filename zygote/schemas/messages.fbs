@@ -35,6 +35,9 @@ table Spawn {
     uid: int32;
     gid: int32;
 
+    priority_initial: int32;
+    priority_final: int32;
+
     payload: SpawnPayload (required);
 }
 

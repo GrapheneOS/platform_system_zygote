@@ -36,7 +36,9 @@ use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path},
-    messages::{self, FromParcel, Message, MessageBuffer, ToParcel, MESSAGE_BUFFER_SIZE},
+    messages::{
+        self, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel, MESSAGE_BUFFER_SIZE,
+    },
     species::SpeciesRef,
 };
 
@@ -125,12 +127,12 @@ pub struct Server {
     server_socket: RawFd,
     client_sockets: ArrayVec<RawFd, BUFFER_SIZE_CLIENT_SOCKETS>,
 
-    priority_initial: Option<i32>,
-    priority_final: Option<i32>,
     server_socket_path: Option<String>,
 
     preload_uid: Option<libc::uid_t>,
     preload_gid: Option<libc::gid_t>,
+
+    spawn_params: SpawnParamsCommon,
 }
 
 impl Server {
@@ -138,10 +140,10 @@ impl Server {
     /// reference.
     ///
     /// Add a destructor to clean up the socket if we create it.
-    pub fn new(config: config::Server) -> Self {
+    pub fn new(config: &config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let (server_socket, server_socket_path) = Self::get_server_socket(&config).unwrap();
+        let (server_socket, server_socket_path) = Self::get_server_socket(config).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
 
         let sigset = sys::build_sigset(&[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]).unwrap();
@@ -150,7 +152,7 @@ impl Server {
         registry.register(signal_fd, file_descriptors::Action::Close);
 
         let server = Self {
-            name: config.name,
+            name: config.name.clone(),
             species: config.species,
             pid: sys::getpid(),
 
@@ -160,12 +162,12 @@ impl Server {
             server_socket,
             client_sockets: ArrayVec::new(),
 
-            priority_initial: config.priority_initial,
-            priority_final: config.priority_final,
             server_socket_path,
 
             preload_uid: config.preload_uid,
             preload_gid: config.preload_gid,
+
+            spawn_params: config.to_spawn_params(),
         };
 
         sys::prctl_set_name(&server.name);
@@ -507,6 +509,10 @@ impl Server {
         let message = Message::try_from_parcel(&message_buffer).unwrap();
         info!("Received message: ({:?})", message);
 
+        // TODO: Implement logic to lock some or all of the common spawn
+        //       parameters, preventing them from being set by a spawn message.
+        let spawn_params = message.get_spawn_params().unwrap().or(&self.spawn_params);
+
         #[cfg(target_os = "android")]
         // SAFETY: This is called in a single-threaded context
         let fds_error_level = unsafe { sys::android::fdsan_get_error_level() };
@@ -526,7 +532,7 @@ impl Server {
         if new_pid == 0 {
             // Child process
 
-            if let Some(priority) = self.priority_initial {
+            if let Some(priority) = spawn_params.priority_initial {
                 if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
                     // EINVAL, EPERM, and ESRCH only apply when setting the
                     // priority of other processes.
@@ -545,11 +551,8 @@ impl Server {
             //         are taken before control is passed to the species code.
             let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
 
-            // Creating these local copies avoids capturing additional
-            // references.
-
+            // Creating local copies avoids capturing additional references.
             let species: SpeciesRef = self.species;
-            let priority_final = self.priority_final;
 
             Break(ClientLoopControl::Child(move || {
                 debug_assert_single_threaded();
@@ -557,9 +560,12 @@ impl Server {
                 #[cfg(target_os = "android")]
                 child_process::re_init_android(fds_error_level);
 
-                child_process::re_init_common();
+                child_process::re_init_common(&spawn_params);
 
-                species.gestate(spawn_message, priority_final)
+                // Unpack the message in the child process
+                let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+
+                species.gestate(&spawn_params, message.get_spawn_payload().unwrap());
             }))
         } else {
             // Server process

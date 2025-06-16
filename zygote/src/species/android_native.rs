@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, FromParcel, Message, SpawnPayload},
+    messages::{self, SpawnParamsCommon, SpawnPayload},
     species::Species,
 };
 
@@ -47,23 +47,17 @@ impl Species for App {
         false
     }
 
-    fn gestate(&self, spawn_message: messages::SpawnMessage, _priority_final: Option<i32>) -> ! {
-        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+    fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
+        if let SpawnPayload::AndroidNative { package } = spawn_payload {
+            // TODO: Handle process dumpability
+            // TODO: Enable debugging
+            // TODO: Set heap tagging level
+            // TODO: Disable heap zero-initialization
 
-        if let Message::Spawn { uid: _, gid: _, payload } = message {
-            if let SpawnPayload::AndroidNative { package } = payload {
-                // TODO: Handle process dumpability
-                // TODO: Enable debugging
-                // TODO: Set heap tagging level
-                // TODO: Disable heap zero-initialization
-
-                println!("Hello from the parent process.  My name is {}", package);
-                std::process::exit(0)
-            } else {
-                panic!("Invalid spawn payload for species {}: {:?}", self.name(), payload);
-            }
+            println!("Hello from the child process.  My name is {}", package);
+            std::process::exit(0)
         } else {
-            panic!("Invalid message type passed to gestate(): {:?}", message);
+            panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
     }
 
