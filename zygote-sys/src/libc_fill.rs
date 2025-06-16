@@ -66,6 +66,7 @@ unsafe extern "C" {
     ///
     /// # Safety
     /// This function is thread safe and returns a pointer to constant data.
+    #[allow(dead_code)]
     pub fn strerrorname_np(errno: c_int) -> *const c_char;
 
     /// Get a pointer to an immutable string containing a description of the
@@ -73,5 +74,6 @@ unsafe extern "C" {
     ///
     /// # Safety
     /// This function is thread safe and returns a pointer to constant data.
+    #[allow(dead_code)]
     pub fn strerrordesc_np(errno: c_int) -> *const c_char;
 }

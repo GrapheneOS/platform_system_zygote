@@ -13,17 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Implementation of a fully native Zygote architecture.
-//!
-//! This library contains the logic used by the Zygote executable.
-
-#[cfg(any(test, feature = "test"))]
-pub mod test;
-
-pub mod child_process;
-pub mod config;
-pub mod file_descriptors;
-pub mod introspection;
-pub mod messages;
-pub mod server;
-pub mod species;
+fn main() {
+    println!("cargo::rustc-link-lib=dylib=cap");
+}

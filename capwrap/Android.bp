@@ -25,6 +25,10 @@ rust_library {
     srcs: [
         "src/lib.rs",
     ],
+    rustlibs: [
+        "libbitflags",
+        "libzygote_sys",
+    ],
     shared_libs: [
         "libcap",
     ],
