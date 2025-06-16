@@ -38,6 +38,10 @@ table Spawn {
     priority_initial: int32;
     priority_final: int32;
 
+    cap_effective: uint64;
+    cap_permitted: uint64;
+    cap_inheritable: uint64;
+
     payload: SpawnPayload (required);
 }
 

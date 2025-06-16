@@ -33,13 +33,16 @@ type CapDataPair = [__user_cap_data_struct; 2];
 
 const CAP_HEADER_V3: __user_cap_header_struct = cap_header(CapabilitiesVersion::V3, 0);
 
+/// The storage type for capability flags
+pub type RawCap = u64;
+
 bitflags! {
     /// Bitflags representing Linux capabilities
     ///
     /// See: `man capabilities`
     #[repr(transparent)]
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct CapabilityFlags: u64 {
+    pub struct CapabilityFlags: RawCap {
         const CHOWN = 1 << 0;
         const DAC_OVERRIDE = 1 << 1;
         const DAC_READ_SEARCH = 1 << 2;
@@ -109,17 +112,26 @@ impl CapabilitiesSet {
     }
 
     /// Construct a [`CapabilitiesSet`] from a pair of `libcap` structs
-    fn from_raw(data: &CapDataPair) -> Self {
+    fn from_cap_data_pair(data: &CapDataPair) -> Self {
         Self {
             effective: CapabilityFlags::from_bits_truncate(
-                data[0].effective as u64 | (data[1].effective as u64) << 32,
+                data[0].effective as RawCap | (data[1].effective as RawCap) << 32,
             ),
             permitted: CapabilityFlags::from_bits_truncate(
-                data[0].permitted as u64 | (data[1].permitted as u64) << 32,
+                data[0].permitted as RawCap | (data[1].permitted as RawCap) << 32,
             ),
             inheritable: CapabilityFlags::from_bits_truncate(
-                data[0].inheritable as u64 | (data[1].inheritable as u64) << 32,
+                data[0].inheritable as RawCap | (data[1].inheritable as RawCap) << 32,
             ),
+        }
+    }
+
+    /// Creates a new [`CapabilitiesSet`] from the raw bitmasks
+    pub fn from_raw(effective: RawCap, permitted: RawCap, inheritable: RawCap) -> Self {
+        Self {
+            effective: CapabilityFlags::from_bits_truncate(effective),
+            permitted: CapabilityFlags::from_bits_truncate(permitted),
+            inheritable: CapabilityFlags::from_bits_truncate(inheritable),
         }
     }
 
@@ -136,17 +148,28 @@ impl CapabilitiesSet {
             //         stack frame. The return value is checked and wrapped in
             //         a `LibcResult`.
             unsafe { sys::capget(std::ptr::addr_of_mut!(header), data.as_mut_ptr()) },
-            || Self::from_raw(&data),
+            || Self::from_cap_data_pair(&data),
         )
     }
 
-    /// Creates a new [`CapabilitiesSet`] from the raw bitmasks
-    pub fn new(effective: u64, permitted: u64, inheritable: u64) -> Self {
-        Self {
-            effective: CapabilityFlags::from_bits_truncate(effective),
-            permitted: CapabilityFlags::from_bits_truncate(permitted),
-            inheritable: CapabilityFlags::from_bits_truncate(inheritable),
-        }
+    /// The base constructor for [`CapabilitiesSet`]
+    pub fn new(
+        effective: CapabilityFlags,
+        permitted: CapabilityFlags,
+        inheritable: CapabilityFlags,
+    ) -> Self {
+        Self { effective, permitted, inheritable }
+    }
+
+    /// Build a new [`CapabilitiesSet`], replacing any capability classes if
+    /// [`Some`] values are provided
+    pub fn replace_some(
+        &self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> Self {
+        *self.clone().overwrite_some(effective, permitted, inheritable)
     }
 
     /// Creates a new [`CapabilitiesSet`] by combining the flags of `self` and
@@ -157,6 +180,17 @@ impl CapabilitiesSet {
             permitted: self.permitted | other.permitted,
             inheritable: self.inheritable | other.inheritable,
         }
+    }
+
+    /// Build a new [`CapabilitiesSet`], adding any new capabilities if
+    /// provided with [`Some`] values
+    pub fn with_some(
+        &self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> Self {
+        *self.clone().add_some(effective, permitted, inheritable)
     }
 
     /// Return a new [`CapabilitiesSet`] with the provided flags added to the
@@ -256,7 +290,7 @@ impl CapabilitiesSet {
     }
 
     /// Adds the flags of `other` to this struct's bitmasks
-    pub fn add(&mut self, other: &Self) -> &Self {
+    pub fn add(&mut self, other: &Self) -> &mut Self {
         self.effective |= other.effective;
         self.permitted |= other.permitted;
         self.inheritable |= other.inheritable;
@@ -264,22 +298,42 @@ impl CapabilitiesSet {
         self
     }
 
+    /// Add capabilities to classes when provided with [`Some`] values
+    pub fn add_some(
+        &mut self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> &mut Self {
+        if let Some(caps) = effective {
+            self.effective |= caps;
+        }
+        if let Some(caps) = permitted {
+            self.permitted |= caps;
+        }
+        if let Some(caps) = inheritable {
+            self.inheritable |= caps;
+        }
+
+        self
+    }
+
     /// Add the provided flags to the effective set
-    pub fn add_effective(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective |= flags;
 
         self
     }
 
     /// Add the provided flags to the permitted set
-    pub fn add_permitted(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted |= flags;
 
         self
     }
 
     /// Add the provided flags to the inheritable set
-    pub fn add_inheritable(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable |= flags;
 
         self
@@ -316,8 +370,28 @@ impl CapabilitiesSet {
         self.inheritable.contains(flags)
     }
 
+    /// Replace existing capability classes when provided with [`Some`] values
+    pub fn overwrite_some(
+        &mut self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> &mut Self {
+        if let Some(caps) = effective {
+            self.effective = caps;
+        }
+        if let Some(caps) = permitted {
+            self.permitted = caps;
+        }
+        if let Some(caps) = inheritable {
+            self.inheritable = caps;
+        }
+
+        self
+    }
+
     /// Removes the flags of `other` to this struct's bitmasks
-    pub fn remove(&mut self, other: &Self) -> &Self {
+    pub fn remove(&mut self, other: &Self) -> &mut Self {
         self.effective &= !other.effective;
         self.permitted &= !other.permitted;
         self.inheritable &= !other.inheritable;
@@ -326,39 +400,45 @@ impl CapabilitiesSet {
     }
 
     /// Remove the provided flags from the effective set
-    pub fn remove_effective(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective &= !flags;
 
         self
     }
 
     /// Remove the provided flags from the permitted set
-    pub fn remove_permitted(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted &= !flags;
 
         self
     }
 
     /// Remove the provided flags from the inheritable set
-    pub fn remove_inheritable(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable &= !flags;
 
         self
     }
 
     /// Set the effective capabilities
-    pub fn set_effective(&mut self, flags: CapabilityFlags) {
+    pub fn set_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective = flags;
+
+        self
     }
 
     /// Set the permitted capabilities
-    pub fn set_permitted(&mut self, flags: CapabilityFlags) {
+    pub fn set_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted = flags;
+
+        self
     }
 
     /// Set the inheritable capabilities
-    pub fn set_inheritable(&mut self, flags: CapabilityFlags) {
+    pub fn set_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable = flags;
+
+        self
     }
 }
 

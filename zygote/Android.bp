@@ -41,6 +41,7 @@ rust_library {
     rustlibs: [
         "libanyhow",
         "libarrayvec",
+        "libcapwrap",
         "libclap",
         "libflatbuffers",
         "liblibc",
@@ -68,6 +69,7 @@ rust_library {
     rustlibs: [
         "libanyhow",
         "libarrayvec",
+        "libcapwrap",
         "libclap",
         "libflatbuffers",
         "liblibc",
@@ -150,6 +152,7 @@ rust_test_host {
     rustlibs: [
         "libanyhow",
         "libarrayvec",
+        "libcapwrap",
         "libclap",
         "libflatbuffers",
         "liblibc",

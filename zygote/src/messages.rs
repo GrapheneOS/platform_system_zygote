@@ -26,6 +26,7 @@ use clap::Subcommand;
 use flatbuffers::UnionWIPOffset;
 
 use crate::species::{self, SpeciesRef};
+use capwrap::{CapabilityFlags, RawCap};
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
@@ -84,6 +85,12 @@ pub struct SpawnParamsCommon {
     /// Final scheduling priority for child processes immediately before
     /// entering application code
     pub priority_final: Option<i32>,
+    /// Effective capabilities for the child process
+    pub cap_effective: Option<CapabilityFlags>,
+    /// Permitted capabilities for the child process
+    pub cap_permitted: Option<CapabilityFlags>,
+    /// Inheritable capabilities for the child process
+    pub cap_inheritable: Option<CapabilityFlags>,
 }
 
 impl SpawnParamsCommon {
@@ -94,6 +101,9 @@ impl SpawnParamsCommon {
             gid: self.gid.or(other.gid),
             priority_initial: self.priority_initial.or(other.priority_initial),
             priority_final: self.priority_final.or(other.priority_final),
+            cap_effective: self.cap_effective.or(other.cap_effective),
+            cap_permitted: self.cap_permitted.or(other.cap_permitted),
+            cap_inheritable: self.cap_inheritable.or(other.cap_inheritable),
         }
     }
 }
@@ -199,6 +209,18 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                         gid: params.gid.unwrap_or(-1),
                         priority_initial: params.priority_initial.unwrap_or(<i32>::MAX),
                         priority_final: params.priority_final.unwrap_or(<i32>::MAX),
+                        cap_effective: params
+                            .cap_effective
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
+                        cap_permitted: params
+                            .cap_permitted
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
+                        cap_inheritable: params
+                            .cap_inheritable
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
                         payload_type: payload.inner_type(),
                         payload: Some(packed_payload),
                     },
@@ -250,6 +272,7 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
 
                 let uid = if spawn.uid() > 0 { Some(spawn.uid()) } else { None };
                 let gid = if spawn.gid() > 0 { Some(spawn.gid()) } else { None };
+
                 let priority_initial = if (-20..20).contains(&spawn.priority_initial()) {
                     Some(spawn.priority_initial())
                 } else {
@@ -260,10 +283,26 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                 } else {
                     None
                 };
+
+                let cap_effective = (spawn.cap_effective() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_effective()));
+                let cap_permitted = (spawn.cap_permitted() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_permitted()));
+                let cap_inheritable = (spawn.cap_inheritable() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_inheritable()));
+
                 let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
 
                 Ok(Message::Spawn {
-                    params: SpawnParamsCommon { uid, gid, priority_initial, priority_final },
+                    params: SpawnParamsCommon {
+                        uid,
+                        gid,
+                        priority_initial,
+                        priority_final,
+                        cap_effective,
+                        cap_permitted,
+                        cap_inheritable,
+                    },
                     payload,
                 })
             }
@@ -324,6 +363,9 @@ impl MessageParser {
                         gid: *gid,
                         priority_initial: *priority_initial,
                         priority_final: *priority_final,
+                        cap_effective: None,
+                        cap_permitted: None,
+                        cap_inheritable: None,
                     },
                     payload: payload.to_spawn_payload()?,
                 })

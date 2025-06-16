@@ -95,6 +95,9 @@ impl Launch {
             gid: self.gid,
             priority_initial: self.priority_initial,
             priority_final: self.priority_final,
+            cap_effective: None,
+            cap_permitted: None,
+            cap_inheritable: None,
         }
     }
 }
@@ -169,6 +172,9 @@ impl Server {
             gid: self.gid,
             priority_initial: self.priority_initial,
             priority_final: self.priority_final,
+            cap_effective: None,
+            cap_permitted: None,
+            cap_inheritable: None,
         }
     }
 }
