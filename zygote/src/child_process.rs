@@ -19,7 +19,7 @@ use core::ffi::CStr;
 
 use log::warn;
 
-use capwrap::{CapabilitiesSet, CapabilityFlags};
+use capwrap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 use zygote_sys as sys;
 
 use crate::messages::SpawnParamsCommon;
@@ -48,7 +48,17 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
             .unwrap();
     }
 
-    // TODO: Drop capabilities bounding set
+    // Drop capabilities bounding set if requested
+    if let Some(cap_bound) = spawn_params.cap_bound {
+        for flag in cap_bound.complement().iter() {
+            let cap = Capability::try_from(flag.bits().trailing_zeros()).unwrap();
+            if capwrap::cap_within_bound(cap) {
+                capwrap::cap_drop_bound(cap).unwrap();
+            }
+        }
+    }
+
+    // TODO: Create new process group
     // TODO: Set rlimits
     // TODO: Add additional groups to the process
     // TODO: Set SEComp filters

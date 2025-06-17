@@ -41,6 +41,7 @@ table Spawn {
     cap_effective: uint64;
     cap_permitted: uint64;
     cap_inheritable: uint64;
+    cap_bound: uint64;
 
     payload: SpawnPayload (required);
 }

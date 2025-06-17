@@ -98,6 +98,7 @@ impl Launch {
             cap_effective: None,
             cap_permitted: None,
             cap_inheritable: None,
+            cap_bound: None,
         }
     }
 }
@@ -175,6 +176,7 @@ impl Server {
             cap_effective: None,
             cap_permitted: None,
             cap_inheritable: None,
+            cap_bound: None,
         }
     }
 }

@@ -716,5 +716,7 @@ impl Drop for Server {
             // Clean up the server code in the child process
             self.registry.execute_actions();
         }
+
+        // TODO: Restore signal mask
     }
 }

@@ -63,8 +63,9 @@ pub(crate) type cap_user_data_const_t = *const __user_cap_data_struct;
 #[allow(non_camel_case_types)]
 pub(crate) type cap_value_t = c_int;
 
-#[allow(dead_code)]
 extern "C" {
+    pub(crate) fn cap_drop_bound(cap: cap_value_t) -> c_int;
+    pub(crate) fn cap_get_bound(cap: cap_value_t) -> c_int;
     pub(crate) fn cap_max_bits() -> cap_value_t;
 
     pub(crate) fn capget(header: cap_user_header_t, data: cap_user_data_t) -> c_int;

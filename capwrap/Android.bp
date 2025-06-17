@@ -26,6 +26,7 @@ rust_library {
         "src/lib.rs",
     ],
     rustlibs: [
+        "libanyhow",
         "libbitflags",
         "libzygote_sys",
     ],

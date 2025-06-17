@@ -91,6 +91,8 @@ pub struct SpawnParamsCommon {
     pub cap_permitted: Option<CapabilityFlags>,
     /// Inheritable capabilities for the child process
     pub cap_inheritable: Option<CapabilityFlags>,
+    /// Bounding capabilities for the child process
+    pub cap_bound: Option<CapabilityFlags>,
 }
 
 impl SpawnParamsCommon {
@@ -104,6 +106,7 @@ impl SpawnParamsCommon {
             cap_effective: self.cap_effective.or(other.cap_effective),
             cap_permitted: self.cap_permitted.or(other.cap_permitted),
             cap_inheritable: self.cap_inheritable.or(other.cap_inheritable),
+            cap_bound: self.cap_bound.or(other.cap_bound),
         }
     }
 }
@@ -221,6 +224,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                             .cap_inheritable
                             .map(|cap| cap.bits())
                             .unwrap_or(RawCap::MAX),
+                        cap_bound: params.cap_bound.map(|cap| cap.bits()).unwrap_or(RawCap::MAX),
                         payload_type: payload.inner_type(),
                         payload: Some(packed_payload),
                     },
@@ -290,6 +294,8 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                     .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_permitted()));
                 let cap_inheritable = (spawn.cap_inheritable() != RawCap::MAX)
                     .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_inheritable()));
+                let cap_bound = (spawn.cap_bound() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_bound()));
 
                 let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
 
@@ -302,6 +308,7 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                         cap_effective,
                         cap_permitted,
                         cap_inheritable,
+                        cap_bound,
                     },
                     payload,
                 })
@@ -366,6 +373,7 @@ impl MessageParser {
                         cap_effective: None,
                         cap_permitted: None,
                         cap_inheritable: None,
+                        cap_bound: None,
                     },
                     payload: payload.to_spawn_payload()?,
                 })
