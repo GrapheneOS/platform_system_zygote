@@ -18,7 +18,7 @@ package {
 }
 
 genrule {
-    name: "libzygote_schemas",
+    name: "libzygote_schemas-rust",
     tools: ["flatc"],
     cmd: "$(location flatc) --rust --filename-suffix '' -o $$(dirname $(out)) $(in)",
     srcs: [
@@ -29,6 +29,31 @@ genrule {
     ],
 }
 
+genrule {
+    name: "libzygote_schemas-cpp",
+    tools: ["flatc"],
+    cmd: "mkdir -p $(genDir)/libzygote_schemas && $(location flatc) --cpp --filename-suffix '' -o $(genDir)/libzygote_schemas $(in)",
+    srcs: [
+        "schemas/messages.fbs",
+    ],
+    out: [
+        "libzygote_schemas/messages.h",
+    ],
+    export_include_dirs: [
+        ".",
+    ],
+}
+
+cc_library_headers {
+    name: "libzygote_schema_headers",
+    host_supported: true,
+    generated_headers: ["libzygote_schemas-cpp"],
+    export_generated_headers: ["libzygote_schemas-cpp"],
+    header_libs: [
+        "flatbuffer_headers",
+    ],
+}
+
 rust_library {
     name: "libzygote",
     crate_name: "zygote",
@@ -36,7 +61,7 @@ rust_library {
     edition: "2021",
     srcs: [
         "src/lib.rs",
-        ":libzygote_schemas",
+        ":libzygote_schemas-rust",
     ],
     rustlibs: [
         "libanyhow",
@@ -63,7 +88,7 @@ rust_library {
     ],
     srcs: [
         "src/lib.rs",
-        ":libzygote_schemas",
+        ":libzygote_schemas-rust",
     ],
     rustlibs: [
         "libanyhow",
@@ -145,7 +170,7 @@ rust_test_host {
     ],
     srcs: [
         "src/lib.rs",
-        ":libzygote_schemas",
+        ":libzygote_schemas-rust",
     ],
     rustlibs: [
         "libanyhow",
