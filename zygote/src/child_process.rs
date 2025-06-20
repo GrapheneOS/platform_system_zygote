@@ -88,11 +88,26 @@ pub(crate) fn re_initialize(
         .unwrap();
     }
 
+    if let Some(gid) = spawn_params.gid {
+        let gid = gid as libc::gid_t;
+        sys::setresgid(gid, gid, gid).unwrap();
+    }
+
     // Set SecComp filters
+    // Must be called when the new process still has CAP_SYS_ADMIN, in this case,
+    // before changing uid from 0, which clears capabilities.  The other
+    // alternative is to call prctl(PR_SET_NO_NEW_PRIVS, 1) afterward, but that
+    // breaks SELinux domain transition (see b/71859146).  As the result,
+    // privileged syscalls used below still need to be accessible in app process.
     species.set_seccomp_filters(spawn_params);
 
     // TODO: Set the scheduling policy
-    // TODO: Set new real and effective uid and gid
+    // Must be called before losing the permission to set scheduler policy.
+
+    if let Some(uid) = spawn_params.uid {
+        let uid = uid as libc::uid_t;
+        sys::setresuid(uid, uid, uid).unwrap();
+    }
 
     CapabilitiesSet::load()
         .unwrap()

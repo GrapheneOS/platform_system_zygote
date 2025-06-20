@@ -1176,6 +1176,15 @@ pub fn setregid(rgid: libc::gid_t, egid: libc::gid_t) -> LibcResult<()> {
     libc_result_from_int_with_void(unsafe { libc::setregid(rgid, egid) })
 }
 
+/// A safe wrapper around [`libc::setresgid`]
+///
+/// See: `man setresgid`
+pub fn setresgid(rgid: libc::gid_t, egid: libc::gid_t, sgid: libc::gid_t) -> LibcResult<()> {
+    // SAFETY: The `libc::setresgid` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setresgid(rgid, egid, sgid) })
+}
+
 /// A safe wrapper around [`libc::setreuid`]
 ///
 /// See : `man setreuid`
@@ -1183,6 +1192,15 @@ pub fn setreuid(ruid: libc::uid_t, euid: libc::uid_t) -> LibcResult<()> {
     // SAFETY: The `libc::setreuid` function takes no pointers and the return
     //         value is checked and wrapped in a LibcResult.
     libc_result_from_int_with_void(unsafe { libc::setreuid(ruid, euid) })
+}
+
+/// A safe wrapper around [`libc::setresuid`]
+///
+/// See : `man setresuid`
+pub fn setresuid(ruid: libc::uid_t, euid: libc::uid_t, suid: libc::uid_t) -> LibcResult<()> {
+    // SAFETY: The `libc::setresuid` function takes no pointers and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setresuid(ruid, euid, suid) })
 }
 
 /// A safe wrapper around [`libc::setrlimit`]

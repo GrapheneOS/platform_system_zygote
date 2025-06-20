@@ -22,6 +22,7 @@ table IdentityQueryResponse {
 
 table SpawnAndroidNative {
     package: string (required);
+    start_seq: int64;
 }
 
 table SpawnMock {
