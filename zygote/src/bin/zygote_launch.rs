@@ -20,7 +20,7 @@ use clap::Parser;
 
 use zygote::{
     config::Launch,
-    messages::{SpawnMessage, TryToParcel, MESSAGE_BUFFER_INIT},
+    messages::{FromParcel, Message, TryToParcel, MESSAGE_BUFFER_INIT},
 };
 
 fn main() -> Result<()> {
@@ -38,12 +38,10 @@ fn main() -> Result<()> {
     message_buffer.as_mut_slice()[0..builder.finished_data().len()]
         .copy_from_slice(builder.finished_data());
 
-    // SAFETY: The contents of this SpawnMessage were parsed from the command
-    //         line.  It is assumed that the caller of this program has
-    //         permission to take any actions specified by those spawn
-    //         arguments.  Any resulting actions will be taken with the
-    //         permissions of the current process.
-    let spawn_message = unsafe { SpawnMessage::new(message_buffer) };
+    let spawn_message = Message::try_from_parcel(&message_buffer)?;
 
-    config.payload.species().gestate(spawn_message, config.priority_final)
+    config.payload.species().gestate(
+        spawn_message.get_spawn_params().unwrap(),
+        spawn_message.get_spawn_payload().unwrap(),
+    )
 }

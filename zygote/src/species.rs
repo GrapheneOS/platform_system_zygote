@@ -20,7 +20,7 @@
 use core::ffi::CStr;
 use std::str::FromStr;
 
-use crate::messages;
+use crate::messages::{SpawnParamsCommon, SpawnPayload};
 
 pub mod android_native;
 pub mod lib_app;
@@ -88,15 +88,14 @@ pub trait Species {
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_is_allowed(&self, name: &str) -> bool;
-    /// Return the [`messages::Command`] tag corresponding to this
-    /// species' Spawn command
-    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool;
+    /// Return true if the provided payload is associated with this species
+    fn is_spawn_payload_type(&self, message: &SpawnPayload) -> bool;
     /// Returns the name of the species
     fn name(&self) -> &'static str;
     /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
     /// Take over control flow for the new process
-    fn gestate(&self, spawn_message: messages::SpawnMessage, priority_final: Option<i32>) -> !;
+    fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
 

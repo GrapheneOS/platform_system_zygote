@@ -10,6 +10,7 @@ test = []
 [dependencies]
 anyhow = "1.0.97"
 arrayvec = "0.7.6"
+capwrap = { path = "../capwrap" }
 clap = { version = "4.5.0", features = ["derive"] }
 flatbuffers = "25.1.24"
 libc = "0.2.168"

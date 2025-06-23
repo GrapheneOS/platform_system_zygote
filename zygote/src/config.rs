@@ -21,7 +21,9 @@ use clap::Parser;
 use log::LevelFilter;
 
 use crate::{
-    messages::{Message, MessageParser, SpawnPayloadParser, ToParcel, TryToParcel},
+    messages::{
+        Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
+    },
     species::SpeciesRef,
 };
 
@@ -53,10 +55,13 @@ pub struct Launch {
     #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
     pub log_level: LevelFilter,
 
-    /// Final scheduling priority for child processes immediately after forking
-    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub priority_final: Option<i32>,
+    /// The species and species specific arguments
+    #[command(subcommand)]
+    pub payload: SpawnPayloadParser,
 
+    /*
+     * Common Spawn Parameters
+     */
     /// UID to switch to
     #[arg(long)]
     pub uid: Option<i32>,
@@ -65,18 +70,36 @@ pub struct Launch {
     #[arg(long)]
     pub gid: Option<i32>,
 
-    /// The species and species specific arguments
-    #[command(subcommand)]
-    pub payload: SpawnPayloadParser,
+    /// Initial scheduling priority for child processes immediately after
+    /// forking
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_initial: Option<i32>,
+
+    /// Final scheduling priority for child processes immediately before
+    /// entering application code
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_final: Option<i32>,
 }
 
 impl Launch {
     fn to_spawn_message(&self) -> Result<Message<'_, '_>> {
         Ok(Message::Spawn {
-            uid: self.uid,
-            gid: self.gid,
+            params: self.to_spawn_params(),
             payload: self.payload.to_spawn_payload()?,
         })
+    }
+
+    fn to_spawn_params(&self) -> SpawnParamsCommon {
+        SpawnParamsCommon {
+            uid: self.uid,
+            gid: self.gid,
+            priority_initial: self.priority_initial,
+            priority_final: self.priority_final,
+            cap_effective: None,
+            cap_permitted: None,
+            cap_inheritable: None,
+            cap_bound: None,
+        }
     }
 }
 
@@ -110,16 +133,6 @@ pub struct Server {
     #[arg(long, value_parser(clap::value_parser!(libc::uid_t).range(0..)))]
     pub preload_uid: Option<libc::uid_t>,
 
-    /// Initial scheduling priority for child processes immediately after
-    /// forking
-    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub priority_initial: Option<i32>,
-
-    /// Final scheduling priority for child processes immediately before
-    /// entering application code
-    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub priority_final: Option<i32>,
-
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket
     #[arg(long, default_value = "default", value_parser(socket_arg_parser))]
@@ -129,6 +142,43 @@ pub struct Server {
     /// implementations.
     #[arg(long)]
     pub species: SpeciesRef,
+
+    /*
+     * Common Spawn Parameters
+     */
+    /// UID to switch to
+    #[arg(long)]
+    pub uid: Option<i32>,
+
+    /// Main GID to switch to
+    #[arg(long)]
+    pub gid: Option<i32>,
+
+    /// Initial scheduling priority for child processes immediately after
+    /// forking
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_initial: Option<i32>,
+
+    /// Final scheduling priority for child processes immediately before
+    /// entering application code
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    pub priority_final: Option<i32>,
+}
+
+impl Server {
+    /// Generate spawn parameters from a Server configuration
+    pub fn to_spawn_params(&self) -> SpawnParamsCommon {
+        SpawnParamsCommon {
+            uid: self.uid,
+            gid: self.gid,
+            priority_initial: self.priority_initial,
+            priority_final: self.priority_final,
+            cap_effective: None,
+            cap_permitted: None,
+            cap_inheritable: None,
+            cap_bound: None,
+        }
+    }
 }
 
 /// Parse a string into a [`log::LevelFilter`]

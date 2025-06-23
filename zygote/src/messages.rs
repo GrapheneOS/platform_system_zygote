@@ -26,6 +26,7 @@ use clap::Subcommand;
 use flatbuffers::UnionWIPOffset;
 
 use crate::species::{self, SpeciesRef};
+use capwrap::{CapabilityFlags, RawCap};
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
@@ -71,6 +72,45 @@ where
     fn try_from_parcel(buffer: &'a [u8]) -> Result<Self>;
 }
 
+/// Parameters common to all spawn operations
+#[derive(Debug, Copy, Clone)]
+pub struct SpawnParamsCommon {
+    /// UID for the new process
+    pub uid: Option<i32>,
+    /// Primary GID for the new process
+    pub gid: Option<i32>,
+    /// Initial scheduling priority for child processes immediately after
+    /// forking
+    pub priority_initial: Option<i32>,
+    /// Final scheduling priority for child processes immediately before
+    /// entering application code
+    pub priority_final: Option<i32>,
+    /// Effective capabilities for the child process
+    pub cap_effective: Option<CapabilityFlags>,
+    /// Permitted capabilities for the child process
+    pub cap_permitted: Option<CapabilityFlags>,
+    /// Inheritable capabilities for the child process
+    pub cap_inheritable: Option<CapabilityFlags>,
+    /// Bounding capabilities for the child process
+    pub cap_bound: Option<CapabilityFlags>,
+}
+
+impl SpawnParamsCommon {
+    /// Take optional arguments from `other` if the are missing from `self`
+    pub fn or(&self, other: &Self) -> SpawnParamsCommon {
+        SpawnParamsCommon {
+            uid: self.uid.or(other.uid),
+            gid: self.gid.or(other.gid),
+            priority_initial: self.priority_initial.or(other.priority_initial),
+            priority_final: self.priority_final.or(other.priority_final),
+            cap_effective: self.cap_effective.or(other.cap_effective),
+            cap_permitted: self.cap_permitted.or(other.cap_permitted),
+            cap_inheritable: self.cap_inheritable.or(other.cap_inheritable),
+            cap_bound: self.cap_bound.or(other.cap_bound),
+        }
+    }
+}
+
 /// Messages used in the Zygote server protocol
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
@@ -92,10 +132,8 @@ pub enum Message<'a, 'b> {
     },
     /// Request the server spawn a new process
     Spawn {
-        /// UID for the new process
-        uid: Option<i32>,
-        /// Primary GID for the new process
-        gid: Option<i32>,
+        /// Parameters common to all spawn operations
+        params: SpawnParamsCommon,
         /// Species-specific spawn data
         payload: SpawnPayload<'a>,
     },
@@ -106,6 +144,24 @@ pub enum Message<'a, 'b> {
     },
     /// Request the server provide runtime statistics
     Stat,
+}
+
+impl Message<'_, '_> {
+    /// Return a [`Message::Spawn`] variant's parameters
+    pub fn get_spawn_params(&self) -> Option<&SpawnParamsCommon> {
+        match self {
+            Message::Spawn { params, .. } => Some(params),
+            _ => None,
+        }
+    }
+
+    /// Return a [`Message::Spawn`] variant's payload
+    pub fn get_spawn_payload(&self) -> Option<&SpawnPayload<'_>> {
+        match self {
+            Message::Spawn { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
 }
 
 impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
@@ -147,13 +203,28 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                 )
                 .as_union_value()
             }
-            Message::Spawn { uid, gid, payload } => {
+            Message::Spawn { params, payload } => {
                 let packed_payload = payload.marshal(builder);
                 inner::Spawn::create(
                     builder,
                     &inner::SpawnArgs {
-                        uid: uid.unwrap_or(-1),
-                        gid: gid.unwrap_or(-1),
+                        uid: params.uid.unwrap_or(-1),
+                        gid: params.gid.unwrap_or(-1),
+                        priority_initial: params.priority_initial.unwrap_or(<i32>::MAX),
+                        priority_final: params.priority_final.unwrap_or(<i32>::MAX),
+                        cap_effective: params
+                            .cap_effective
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
+                        cap_permitted: params
+                            .cap_permitted
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
+                        cap_inheritable: params
+                            .cap_inheritable
+                            .map(|cap| cap.bits())
+                            .unwrap_or(RawCap::MAX),
+                        cap_bound: params.cap_bound.map(|cap| cap.bits()).unwrap_or(RawCap::MAX),
                         payload_type: payload.inner_type(),
                         payload: Some(packed_payload),
                     },
@@ -205,9 +276,42 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
 
                 let uid = if spawn.uid() > 0 { Some(spawn.uid()) } else { None };
                 let gid = if spawn.gid() > 0 { Some(spawn.gid()) } else { None };
+
+                let priority_initial = if (-20..20).contains(&spawn.priority_initial()) {
+                    Some(spawn.priority_initial())
+                } else {
+                    None
+                };
+                let priority_final = if (-20..20).contains(&spawn.priority_final()) {
+                    Some(spawn.priority_final())
+                } else {
+                    None
+                };
+
+                let cap_effective = (spawn.cap_effective() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_effective()));
+                let cap_permitted = (spawn.cap_permitted() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_permitted()));
+                let cap_inheritable = (spawn.cap_inheritable() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_inheritable()));
+                let cap_bound = (spawn.cap_bound() != RawCap::MAX)
+                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_bound()));
+
                 let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
 
-                Ok(Message::Spawn { uid, gid, payload })
+                Ok(Message::Spawn {
+                    params: SpawnParamsCommon {
+                        uid,
+                        gid,
+                        priority_initial,
+                        priority_final,
+                        cap_effective,
+                        cap_permitted,
+                        cap_inheritable,
+                        cap_bound,
+                    },
+                    payload,
+                })
             }
             inner::Message::SpawnResponse => {
                 let spawn_response = parcel.message_as_spawn_response().unwrap();
@@ -238,6 +342,14 @@ pub enum MessageParser {
         /// Primary GID for the new process
         #[arg(long)]
         gid: Option<i32>,
+        /// Initial scheduling priority for child processes immediately after
+        /// forking
+        #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+        priority_initial: Option<i32>,
+        /// Final scheduling priority for child processes immediately before
+        /// entering application code
+        #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+        priority_final: Option<i32>,
         /// Species-specific spawn data
         #[command(subcommand)]
         payload: SpawnPayloadParser,
@@ -251,8 +363,20 @@ impl MessageParser {
         match self {
             MessageParser::Exit => Ok(Message::Exit),
             MessageParser::IdentityQuery => Ok(Message::IdentityQuery),
-            MessageParser::Spawn { uid, gid, payload } => {
-                Ok(Message::Spawn { uid: *uid, gid: *gid, payload: payload.to_spawn_payload()? })
+            MessageParser::Spawn { uid, gid, priority_initial, priority_final, payload } => {
+                Ok(Message::Spawn {
+                    params: SpawnParamsCommon {
+                        uid: *uid,
+                        gid: *gid,
+                        priority_initial: *priority_initial,
+                        priority_final: *priority_final,
+                        cap_effective: None,
+                        cap_permitted: None,
+                        cap_inheritable: None,
+                        cap_bound: None,
+                    },
+                    payload: payload.to_spawn_payload()?,
+                })
             }
             MessageParser::Stat => Ok(Message::Stat),
         }

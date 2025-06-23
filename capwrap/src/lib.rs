@@ -21,6 +21,7 @@
 // document.
 #![allow(missing_docs)]
 
+use anyhow::{bail, Result};
 use bitflags::bitflags;
 
 use zygote_sys::{libc_result_from_int_with_payload, libc_result_from_int_with_void, LibcResult};
@@ -33,13 +34,117 @@ type CapDataPair = [__user_cap_data_struct; 2];
 
 const CAP_HEADER_V3: __user_cap_header_struct = cap_header(CapabilitiesVersion::V3, 0);
 
+/// A representation of *capabilities* (not _flags_)
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u32)]
+#[allow(non_camel_case_types)]
+pub enum Capability {
+    CHOWN = 0,
+    DAC_OVERRIDE = 1,
+    DAC_READ_SEARCH = 2,
+    FOWNER = 3,
+    FSETID = 4,
+    KILL = 5,
+    SETGID = 6,
+    SETUID = 7,
+    SETPCAP = 8,
+    LINUX_IMMUTABLE = 9,
+    NET_BIND_SERVICE = 10,
+    NET_BROADCAST = 11,
+    NET_ADMIN = 12,
+    NET_RAW = 13,
+    IPC_LOCK = 14,
+    IPC_OWNER = 15,
+    SYS_MODULE = 16,
+    SYS_RAWIO = 17,
+    SYS_CHROOT = 18,
+    SYS_PTRACE = 19,
+    SYS_PACCT = 20,
+    SYS_ADMIN = 21,
+    SYS_BOOT = 22,
+    SYS_NICE = 23,
+    SYS_RESOURCE = 24,
+    SYS_TIME = 25,
+    SYS_TTY_CONFIG = 26,
+    MKNOD = 27,
+    LEASE = 28,
+    AUDIT_WRITE = 29,
+    AUDIT_CONTROL = 30,
+    SETFCAP = 31,
+    MAC_OVERRIDE = 32,
+    MAC_ADMIN = 33,
+    SYSLOG = 34,
+    WAKE_ALARM = 35,
+    BLOCK_SUSPEND = 36,
+    AUDIT_READ = 37,
+    PERFMON = 38,
+    BPF = 39,
+    CHECKPOINT_RESTORE = 40,
+}
+
+impl TryFrom<u32> for Capability {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Capability::CHOWN),
+            1 => Ok(Capability::DAC_OVERRIDE),
+            2 => Ok(Capability::DAC_READ_SEARCH),
+            3 => Ok(Capability::FOWNER),
+            4 => Ok(Capability::FSETID),
+            5 => Ok(Capability::KILL),
+            6 => Ok(Capability::SETGID),
+            7 => Ok(Capability::SETUID),
+            8 => Ok(Capability::SETPCAP),
+            9 => Ok(Capability::LINUX_IMMUTABLE),
+            10 => Ok(Capability::NET_BIND_SERVICE),
+            11 => Ok(Capability::NET_BROADCAST),
+            12 => Ok(Capability::NET_ADMIN),
+            13 => Ok(Capability::NET_RAW),
+            14 => Ok(Capability::IPC_LOCK),
+            15 => Ok(Capability::IPC_OWNER),
+            16 => Ok(Capability::SYS_MODULE),
+            17 => Ok(Capability::SYS_RAWIO),
+            18 => Ok(Capability::SYS_CHROOT),
+            19 => Ok(Capability::SYS_PTRACE),
+            20 => Ok(Capability::SYS_PACCT),
+            21 => Ok(Capability::SYS_ADMIN),
+            22 => Ok(Capability::SYS_BOOT),
+            23 => Ok(Capability::SYS_NICE),
+            24 => Ok(Capability::SYS_RESOURCE),
+            25 => Ok(Capability::SYS_TIME),
+            26 => Ok(Capability::SYS_TTY_CONFIG),
+            27 => Ok(Capability::MKNOD),
+            28 => Ok(Capability::LEASE),
+            29 => Ok(Capability::AUDIT_WRITE),
+            30 => Ok(Capability::AUDIT_CONTROL),
+            31 => Ok(Capability::SETFCAP),
+            32 => Ok(Capability::MAC_OVERRIDE),
+            33 => Ok(Capability::MAC_ADMIN),
+            34 => Ok(Capability::SYSLOG),
+            35 => Ok(Capability::WAKE_ALARM),
+            36 => Ok(Capability::BLOCK_SUSPEND),
+            37 => Ok(Capability::AUDIT_READ),
+            38 => Ok(Capability::PERFMON),
+            39 => Ok(Capability::BPF),
+            40 => Ok(Capability::CHECKPOINT_RESTORE),
+            _ => {
+                bail!("Invalid capability value: {}", value)
+            }
+        }
+    }
+}
+
+/// The storage type for capability flags
+pub type RawCap = u64;
+
 bitflags! {
     /// Bitflags representing Linux capabilities
     ///
     /// See: `man capabilities`
     #[repr(transparent)]
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct CapabilityFlags: u64 {
+    pub struct CapabilityFlags: RawCap {
         const CHOWN = 1 << 0;
         const DAC_OVERRIDE = 1 << 1;
         const DAC_READ_SEARCH = 1 << 2;
@@ -109,17 +214,26 @@ impl CapabilitiesSet {
     }
 
     /// Construct a [`CapabilitiesSet`] from a pair of `libcap` structs
-    fn from_raw(data: &CapDataPair) -> Self {
+    fn from_cap_data_pair(data: &CapDataPair) -> Self {
         Self {
             effective: CapabilityFlags::from_bits_truncate(
-                data[0].effective as u64 | (data[1].effective as u64) << 32,
+                data[0].effective as RawCap | (data[1].effective as RawCap) << 32,
             ),
             permitted: CapabilityFlags::from_bits_truncate(
-                data[0].permitted as u64 | (data[1].permitted as u64) << 32,
+                data[0].permitted as RawCap | (data[1].permitted as RawCap) << 32,
             ),
             inheritable: CapabilityFlags::from_bits_truncate(
-                data[0].inheritable as u64 | (data[1].inheritable as u64) << 32,
+                data[0].inheritable as RawCap | (data[1].inheritable as RawCap) << 32,
             ),
+        }
+    }
+
+    /// Creates a new [`CapabilitiesSet`] from the raw bitmasks
+    pub fn from_raw(effective: RawCap, permitted: RawCap, inheritable: RawCap) -> Self {
+        Self {
+            effective: CapabilityFlags::from_bits_truncate(effective),
+            permitted: CapabilityFlags::from_bits_truncate(permitted),
+            inheritable: CapabilityFlags::from_bits_truncate(inheritable),
         }
     }
 
@@ -136,17 +250,28 @@ impl CapabilitiesSet {
             //         stack frame. The return value is checked and wrapped in
             //         a `LibcResult`.
             unsafe { sys::capget(std::ptr::addr_of_mut!(header), data.as_mut_ptr()) },
-            || Self::from_raw(&data),
+            || Self::from_cap_data_pair(&data),
         )
     }
 
-    /// Creates a new [`CapabilitiesSet`] from the raw bitmasks
-    pub fn new(effective: u64, permitted: u64, inheritable: u64) -> Self {
-        Self {
-            effective: CapabilityFlags::from_bits_truncate(effective),
-            permitted: CapabilityFlags::from_bits_truncate(permitted),
-            inheritable: CapabilityFlags::from_bits_truncate(inheritable),
-        }
+    /// The base constructor for [`CapabilitiesSet`]
+    pub fn new(
+        effective: CapabilityFlags,
+        permitted: CapabilityFlags,
+        inheritable: CapabilityFlags,
+    ) -> Self {
+        Self { effective, permitted, inheritable }
+    }
+
+    /// Build a new [`CapabilitiesSet`], replacing any capability classes if
+    /// [`Some`] values are provided
+    pub fn replace_some(
+        &self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> Self {
+        *self.clone().overwrite_some(effective, permitted, inheritable)
     }
 
     /// Creates a new [`CapabilitiesSet`] by combining the flags of `self` and
@@ -157,6 +282,17 @@ impl CapabilitiesSet {
             permitted: self.permitted | other.permitted,
             inheritable: self.inheritable | other.inheritable,
         }
+    }
+
+    /// Build a new [`CapabilitiesSet`], adding any new capabilities if
+    /// provided with [`Some`] values
+    pub fn with_some(
+        &self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> Self {
+        *self.clone().add_some(effective, permitted, inheritable)
     }
 
     /// Return a new [`CapabilitiesSet`] with the provided flags added to the
@@ -256,7 +392,7 @@ impl CapabilitiesSet {
     }
 
     /// Adds the flags of `other` to this struct's bitmasks
-    pub fn add(&mut self, other: &Self) -> &Self {
+    pub fn add(&mut self, other: &Self) -> &mut Self {
         self.effective |= other.effective;
         self.permitted |= other.permitted;
         self.inheritable |= other.inheritable;
@@ -264,22 +400,42 @@ impl CapabilitiesSet {
         self
     }
 
+    /// Add capabilities to classes when provided with [`Some`] values
+    pub fn add_some(
+        &mut self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> &mut Self {
+        if let Some(caps) = effective {
+            self.effective |= caps;
+        }
+        if let Some(caps) = permitted {
+            self.permitted |= caps;
+        }
+        if let Some(caps) = inheritable {
+            self.inheritable |= caps;
+        }
+
+        self
+    }
+
     /// Add the provided flags to the effective set
-    pub fn add_effective(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective |= flags;
 
         self
     }
 
     /// Add the provided flags to the permitted set
-    pub fn add_permitted(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted |= flags;
 
         self
     }
 
     /// Add the provided flags to the inheritable set
-    pub fn add_inheritable(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn add_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable |= flags;
 
         self
@@ -316,8 +472,28 @@ impl CapabilitiesSet {
         self.inheritable.contains(flags)
     }
 
+    /// Replace existing capability classes when provided with [`Some`] values
+    pub fn overwrite_some(
+        &mut self,
+        effective: Option<CapabilityFlags>,
+        permitted: Option<CapabilityFlags>,
+        inheritable: Option<CapabilityFlags>,
+    ) -> &mut Self {
+        if let Some(caps) = effective {
+            self.effective = caps;
+        }
+        if let Some(caps) = permitted {
+            self.permitted = caps;
+        }
+        if let Some(caps) = inheritable {
+            self.inheritable = caps;
+        }
+
+        self
+    }
+
     /// Removes the flags of `other` to this struct's bitmasks
-    pub fn remove(&mut self, other: &Self) -> &Self {
+    pub fn remove(&mut self, other: &Self) -> &mut Self {
         self.effective &= !other.effective;
         self.permitted &= !other.permitted;
         self.inheritable &= !other.inheritable;
@@ -326,39 +502,45 @@ impl CapabilitiesSet {
     }
 
     /// Remove the provided flags from the effective set
-    pub fn remove_effective(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective &= !flags;
 
         self
     }
 
     /// Remove the provided flags from the permitted set
-    pub fn remove_permitted(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted &= !flags;
 
         self
     }
 
     /// Remove the provided flags from the inheritable set
-    pub fn remove_inheritable(&mut self, flags: CapabilityFlags) -> &Self {
+    pub fn remove_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable &= !flags;
 
         self
     }
 
     /// Set the effective capabilities
-    pub fn set_effective(&mut self, flags: CapabilityFlags) {
+    pub fn set_effective(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.effective = flags;
+
+        self
     }
 
     /// Set the permitted capabilities
-    pub fn set_permitted(&mut self, flags: CapabilityFlags) {
+    pub fn set_permitted(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.permitted = flags;
+
+        self
     }
 
     /// Set the inheritable capabilities
-    pub fn set_inheritable(&mut self, flags: CapabilityFlags) {
+    pub fn set_inheritable(&mut self, flags: CapabilityFlags) -> &mut Self {
         self.inheritable = flags;
+
+        self
     }
 }
 
@@ -384,14 +566,31 @@ const fn cap_header(version: CapabilitiesVersion, pid: i32) -> __user_cap_header
     __user_cap_header_struct { version: version.value(), pid }
 }
 
+/// Drop a bounding capability.  This capability can never be re-gained
+pub fn cap_drop_bound(cap: Capability) -> Result<()> {
+    // SAFETY: This function takes no pointers and return value is checked and
+    //         wrapped in a `Result` type.
+    if unsafe { sys::cap_drop_bound(cap as sys::cap_value_t) } == 0 {
+        Ok(())
+    } else {
+        bail!("Failed to drop capability bound: {:?}", cap)
+    }
+}
+
+/// Test to see if a capability is within the bounding set
+pub fn cap_within_bound(cap: Capability) -> bool {
+    // SAFETY: This function takes no pointers and return value is converted
+    //         into a Boolean
+    unsafe { sys::cap_get_bound(cap as sys::cap_value_t) >= 0 }
+}
+
 /// Returns the maximum capability bit that is defined in `libcap`.  If the
 /// kernel returns a capability with a higher value then we need to update
 /// `libcap`.
 ///
 /// TODO: Implement tests to check when either this library or libcap are out
 ///       of date.
-#[allow(dead_code)]
-fn cap_max_bits() -> cap_value_t {
+pub fn cap_max_bits() -> cap_value_t {
     // SAFETY: This function takes no arguments and can't fail.
     unsafe { sys::cap_max_bits() }
 }

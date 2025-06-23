@@ -19,14 +19,17 @@ use core::ffi::CStr;
 
 use log::warn;
 
+use capwrap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 use zygote_sys as sys;
+
+use crate::messages::SpawnParamsCommon;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 
 /// Perform child-process initialization tasks that are available on all
 /// supported platforms. All species-specific re-initialization code must
 /// be called before calling [`re_init_common`].
-pub(crate) fn re_init_common() {
+pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
     sys::prctl_set_name(&ZYGOTE_CHILD_PROCESS_INITIAL_NAME.to_bytes());
 
     match sys::prctl_set_securebits(libc::SECBIT_KEEP_CAPS) {
@@ -39,15 +42,40 @@ pub(crate) fn re_init_common() {
         _ => {}
     }
 
-    // TODO: Set inherited capabilities
-    // TODO: Drop capabilities bounding set
+    if let Some(cap_permitted) = spawn_params.cap_permitted {
+        CapabilitiesSet::new(CapabilityFlags::empty(), CapabilityFlags::empty(), cap_permitted)
+            .store_additive()
+            .unwrap();
+    }
+
+    // Drop capabilities bounding set if requested
+    if let Some(cap_bound) = spawn_params.cap_bound {
+        for flag in cap_bound.complement().iter() {
+            let cap = Capability::try_from(flag.bits().trailing_zeros()).unwrap();
+            if capwrap::cap_within_bound(cap) {
+                capwrap::cap_drop_bound(cap).unwrap();
+            }
+        }
+    }
+
+    // TODO: Create new process group
     // TODO: Set rlimits
     // TODO: Add additional groups to the process
     // TODO: Set SEComp filters
     // TODO: Set the scheduling policy
     // TODO: Set cgroup
     // TODO: Set new real and effective uid and gid
-    // TODO: Finalize capabilities
+
+    CapabilitiesSet::load()
+        .unwrap()
+        .overwrite_some(
+            spawn_params.cap_effective,
+            spawn_params.cap_permitted,
+            spawn_params.cap_inheritable,
+        )
+        .store_overwrite()
+        .unwrap();
+
     // TODO: Set SELinux context
 }
 
