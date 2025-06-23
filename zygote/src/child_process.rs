@@ -81,6 +81,7 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
 
 /// Perform child-process initialization tasks that are specific to Android.
 #[cfg(target_os = "android")]
+#[inline(always)]
 pub(crate) fn re_init_android(fds_error_level: sys::android::FDSanErrorLevel) {
     crate::introspection::debug_assert_single_threaded();
 

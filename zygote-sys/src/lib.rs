@@ -1333,6 +1333,7 @@ pub mod android {
     /// and stack protection is enabled, the program will crash.
     ///
     /// TODO: Make this function take a `noreturn` thunk.
+    #[inline(always)]
     pub fn reset_stack_guards() {
         libc_fill::android_reset_stack_guards();
     }
