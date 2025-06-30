@@ -16,6 +16,8 @@
 //! This module provides classes and functions for configuring a Zygote
 //! process.
 
+use std::str::FromStr;
+
 use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use clap::Parser;
@@ -196,7 +198,7 @@ impl Server {
 
 /// Parse a string into a [`log::LevelFilter`]
 pub fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
-    match parse_arg {
+    LevelFilter::from_str(parse_arg).or(match parse_arg {
         "0" => Ok(LevelFilter::Off),
         "1" => Ok(LevelFilter::Error),
         "2" => Ok(LevelFilter::Warn),
@@ -204,7 +206,7 @@ pub fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
         "4" => Ok(LevelFilter::Debug),
         "5" => Ok(LevelFilter::Trace),
         level => bail!("Invalid log level: {}", level),
-    }
+    })
 }
 
 fn socket_arg_parser(parse_arg: &str) -> Result<String> {

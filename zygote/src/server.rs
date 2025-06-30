@@ -517,74 +517,109 @@ impl Server {
 
         let re_init_data = self.species.gather_reinitialization_data();
 
+        let clone_args = sys::clone_args::new();
+
         // SAFETY: This is called in a single-threaded context.
         //
-        //         The `fork()` function can produce the following errors:
-        //         EAGAIN, ENOMEM, ENOSYS, ERESTARTNOINTR.
+        //         The `clone3()` function can produce the following errors:
+        //         EACCES, EAGAIN, EBUSY, EEXIST, EINVAL, ENOSPC, ENOMEM,
+        //         EOPNOTSUPP, EPERM, ERESTARTNOINTR, EUSERS.
         //
-        //         The Zygote can not recover from EAGAIN or ENOMEM.  ENOSYS
-        //         will not trigger as the Zygote is designed for systems that
-        //         provide `fork()`.  ERESTARTNOINTR will not trigger during
-        //         normal operations as signals are handled via a signalfd and
-        //         not asynchronous signal handlers.
-        let new_pid = unsafe { sys::fork() }.unwrap();
+        //         The Zygote can not recover from EAGAIN or ENOMEM.
+        //         ERESTARTNOINTR will not trigger during normal operations as
+        //         signals are handled via a signalfd and not asynchronous
+        //         signal handlers.  Errors are logged below.
+        match unsafe { sys::clone3(&clone_args) } {
+            Ok(0) => {
+                // Child process
 
-        if new_pid == 0 {
-            // Child process
+                if let Some(priority) = spawn_params.priority_initial {
+                    if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
+                        // EINVAL, EPERM, and ESRCH only apply when setting the
+                        // priority of other processes.
+                        warn!("Insufficient permissions to set priority: {priority}");
+                    }
+                }
 
-            if let Some(priority) = spawn_params.priority_initial {
-                if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
-                    // EINVAL, EPERM, and ESRCH only apply when setting the
-                    // priority of other processes.
-                    warn!("Insufficient permissions to set priority: {priority}");
+                // SAFETY: The contents of this message were received from a bound
+                //         UNIX Domain socket.  Processes with permission to read
+                //         and write to this socket are considered authorized to
+                //         spawn processes from this server.
+                //
+                //         The message data will only be read in the child process
+                //         once the server and configuration structs are dropped.
+                //         This ensures that all file descriptor registry actions
+                //         are taken before control is passed to the species code.
+                let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
+
+                // Creating local copies avoids capturing additional references.
+                let species: SpeciesRef = self.species;
+
+                Break(ClientLoopControl::Child(move || {
+                    debug_assert_single_threaded();
+
+                    // This function call must occur here, at the top of the child
+                    // process's stack, to avoid segfaults from changing the stack
+                    // guard in a callee and then segfaulting when return to the
+                    // caller's frame.
+                    #[cfg(target_os = "android")]
+                    sys::android::reset_stack_guards();
+
+                    // Unpack the message in the child process
+                    let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+                    let spawn_payload = message.get_spawn_payload().unwrap();
+
+                    child_process::re_initialize(species, re_init_data, &spawn_params);
+
+                    species.gestate(&spawn_params, spawn_payload);
+                }))
+            }
+            Ok(new_pid) => {
+                // Server process
+                info!("Spawned process {new_pid}");
+                let response = Message::SpawnResponse { pid: new_pid };
+                match Self::send_response(fd, response.to_parcel().finished_data()) {
+                    Ok(_) => Continue,
+                    Err(errno) => {
+                        error!("Failed to send Spawn response: {errno}");
+                        Break(ClientLoopControl::Error(fd, errno.into()))
+                    }
                 }
             }
+            Err(errno) => {
+                // Server process
 
-            // SAFETY: The contents of this message were received from a bound
-            //         UNIX Domain socket.  Processes with permission to read
-            //         and write to this socket are considered authorized to
-            //         spawn processes from this server.
-            //
-            //         The message data will only be read in the child process
-            //         once the server and configuration structs are dropped.
-            //         This ensures that all file descriptor registry actions
-            //         are taken before control is passed to the species code.
-            let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
-
-            // Creating local copies avoids capturing additional references.
-            let species: SpeciesRef = self.species;
-
-            Break(ClientLoopControl::Child(move || {
-                debug_assert_single_threaded();
-
-                // This function call must occur here, at the top of the child
-                // process's stack, to avoid segfaults from changing the stack
-                // guard in a callee and then segfaulting when return to the
-                // caller's frame.
-                #[cfg(target_os = "android")]
-                sys::android::reset_stack_guards();
-
-                // Unpack the message in the child process
-                let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
-                let spawn_payload = message.get_spawn_payload().unwrap();
-
-                child_process::re_initialize(species, re_init_data, &spawn_params);
-
-                species.gestate(&spawn_params, spawn_payload);
-            }))
-        } else {
-            // Server process
-            info!("Spawned process {new_pid}");
-            let response = Message::SpawnResponse { pid: new_pid };
-            match Self::send_response(fd, response.to_parcel().finished_data()) {
-                Ok(_) => Continue,
-                Err(errno) => {
-                    error!("Failed to send Spawn response: {errno}");
-                    Break(ClientLoopControl::Error(
-                        fd,
-                        anyhow!("Failed to send Spawn response: {errno}"),
-                    ))
+                if errno.is(libc::EACCES) {
+                    // TODO: Print the actual cgroup path once it is present in the spawn params.
+                    error!("Version 2 cgroup membership criteria are not met: <TODO>");
+                } else if errno.is(libc::EAGAIN) {
+                    error!("System has too many running processes");
+                } else if errno.is(libc::EBUSY) {
+                    // TODO: Print the actual cgroup path once it is present in the spawn params.
+                    error!("Version 2 cgroup contains an enabled domain controller: <TODO>");
+                } else if errno.is(libc::EEXIST) {
+                    error!("`set_tid` value already exists in the current namespace");
+                } else if errno.is(libc::EINVAL) {
+                    error!(
+                        "Invalid argument combination to `clone3()` (see man page for details): {:?}",
+                        clone_args
+                    );
+                } else if errno.is(libc::ENOMEM) {
+                    error!("Cannot allocate sufficient memory for a new process");
+                } else if errno.is(libc::ENOSPC) {
+                    error!(
+                        "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {:?}",
+                        clone_args);
+                } else if errno.is(libc::EOPNOTSUPP) {
+                    // TODO: Print the actual cgroup path once it is present in the spawn params.
+                    error!("Destination version 2 cgroup is currently in a domain invalid state: <TODO>");
+                } else if errno.is(libc::EPERM) {
+                    error!("Server lacks the correct permissions to clone with the provided arguments: {:?}", clone_args);
+                } else {
+                    error!("Unexpected error code returned by call to `clone3()`: {}", errno);
                 }
+
+                Break(ClientLoopControl::Error(fd, errno.into()))
             }
         }
     }

@@ -33,6 +33,8 @@ use zerocopy::FromBytes;
 
 mod libc_fill;
 
+pub use libc_fill::clone_args;
+
 /// A platform-dependent type alias for rlimit resources
 #[allow(non_camel_case_types)]
 #[cfg(all(not(target_os = "android"), target_env = "gnu"))]
@@ -564,6 +566,22 @@ pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> 
             std::mem::size_of::<SockAddrType>() as libc::socklen_t,
         )
     })
+}
+
+/// An unsafe wrapper around the `clone3` system call
+///
+/// See: `man clone`
+///
+/// # Safety
+/// The safety requirements for `clone3` are complex, with multiple sets of
+/// mutually-incompatible arguments.  The full description of the safety
+/// requirements of this call are listed in the manual pages.  Any non-trivial
+/// invocation of `clone3` will involve lengthy justifications for all
+/// arguments.
+pub unsafe fn clone3(args: &clone_args) -> LibcResult<libc::pid_t> {
+    // SAFETY: The pointer argument is derived from a valid reference and the
+    //         result value is checked and wrapped in a LibcResult.
+    libc_result_from_int(unsafe { libc_fill::clone3(args) as libc::pid_t })
 }
 
 /// A safe wrapper around [`libc::close`].
