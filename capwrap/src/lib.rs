@@ -217,13 +217,13 @@ impl CapabilitiesSet {
     fn from_cap_data_pair(data: &CapDataPair) -> Self {
         Self {
             effective: CapabilityFlags::from_bits_truncate(
-                data[0].effective as RawCap | (data[1].effective as RawCap) << 32,
+                data[0].effective as RawCap | ((data[1].effective as RawCap) << 32),
             ),
             permitted: CapabilityFlags::from_bits_truncate(
-                data[0].permitted as RawCap | (data[1].permitted as RawCap) << 32,
+                data[0].permitted as RawCap | ((data[1].permitted as RawCap) << 32),
             ),
             inheritable: CapabilityFlags::from_bits_truncate(
-                data[0].inheritable as RawCap | (data[1].inheritable as RawCap) << 32,
+                data[0].inheritable as RawCap | ((data[1].inheritable as RawCap) << 32),
             ),
         }
     }
