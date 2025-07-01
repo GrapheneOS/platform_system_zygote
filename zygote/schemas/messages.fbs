@@ -43,6 +43,8 @@ table Spawn {
     cap_inheritable: uint64;
     cap_bound: uint64;
 
+    secondary_groups: [uint32];
+
     payload: SpawnPayload (required);
 }
 

@@ -24,9 +24,13 @@ use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use clap::Subcommand;
 use flatbuffers::UnionWIPOffset;
+use itertools::Itertools;
 
 use crate::species::{self, SpeciesRef};
 use capwrap::{CapabilityFlags, RawCap};
+
+/// Default size for GID vectors
+pub const GID_VECTOR_SIZE: usize = 32;
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
@@ -73,7 +77,7 @@ where
 }
 
 /// Parameters common to all spawn operations
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct SpawnParamsCommon {
     /// UID for the new process
     pub uid: Option<i32>,
@@ -93,6 +97,8 @@ pub struct SpawnParamsCommon {
     pub cap_inheritable: Option<CapabilityFlags>,
     /// Bounding capabilities for the child process
     pub cap_bound: Option<CapabilityFlags>,
+    /// Secondary groups for the new process
+    pub secondary_groups: ArrayVec<libc::gid_t, GID_VECTOR_SIZE>,
 }
 
 impl SpawnParamsCommon {
@@ -107,6 +113,13 @@ impl SpawnParamsCommon {
             cap_permitted: self.cap_permitted.or(other.cap_permitted),
             cap_inheritable: self.cap_inheritable.or(other.cap_inheritable),
             cap_bound: self.cap_bound.or(other.cap_bound),
+            secondary_groups: self
+                .secondary_groups
+                .iter()
+                .cloned()
+                .chain(other.secondary_groups.iter().cloned())
+                .unique()
+                .collect(),
         }
     }
 }
@@ -204,6 +217,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                 .as_union_value()
             }
             Message::Spawn { params, payload } => {
+                let packed_groups = params.secondary_groups.to_packed(builder);
                 let packed_payload = payload.marshal(builder);
                 inner::Spawn::create(
                     builder,
@@ -225,6 +239,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                             .map(|cap| cap.bits())
                             .unwrap_or(RawCap::MAX),
                         cap_bound: params.cap_bound.map(|cap| cap.bits()).unwrap_or(RawCap::MAX),
+                        secondary_groups: Some(packed_groups),
                         payload_type: payload.inner_type(),
                         payload: Some(packed_payload),
                     },
@@ -297,6 +312,11 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                 let cap_bound = (spawn.cap_bound() != RawCap::MAX)
                     .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_bound()));
 
+                let secondary_groups = spawn
+                    .secondary_groups()
+                    .map(|groups| groups.iter().collect())
+                    .unwrap_or_default();
+
                 let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
 
                 Ok(Message::Spawn {
@@ -309,6 +329,7 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                         cap_permitted,
                         cap_inheritable,
                         cap_bound,
+                        secondary_groups,
                     },
                     payload,
                 })
@@ -350,6 +371,9 @@ pub enum MessageParser {
         /// entering application code
         #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
         priority_final: Option<i32>,
+        /// Secondary group IDs for the new process
+        #[arg(long)]
+        secondary_groups: Vec<libc::gid_t>,
         /// Species-specific spawn data
         #[command(subcommand)]
         payload: SpawnPayloadParser,
@@ -363,21 +387,27 @@ impl MessageParser {
         match self {
             MessageParser::Exit => Ok(Message::Exit),
             MessageParser::IdentityQuery => Ok(Message::IdentityQuery),
-            MessageParser::Spawn { uid, gid, priority_initial, priority_final, payload } => {
-                Ok(Message::Spawn {
-                    params: SpawnParamsCommon {
-                        uid: *uid,
-                        gid: *gid,
-                        priority_initial: *priority_initial,
-                        priority_final: *priority_final,
-                        cap_effective: None,
-                        cap_permitted: None,
-                        cap_inheritable: None,
-                        cap_bound: None,
-                    },
-                    payload: payload.to_spawn_payload()?,
-                })
-            }
+            MessageParser::Spawn {
+                uid,
+                gid,
+                priority_initial,
+                priority_final,
+                secondary_groups,
+                payload,
+            } => Ok(Message::Spawn {
+                params: SpawnParamsCommon {
+                    uid: *uid,
+                    gid: *gid,
+                    priority_initial: *priority_initial,
+                    priority_final: *priority_final,
+                    cap_effective: None,
+                    cap_permitted: None,
+                    cap_inheritable: None,
+                    cap_bound: None,
+                    secondary_groups: secondary_groups.iter().cloned().collect(),
+                },
+                payload: payload.to_spawn_payload()?,
+            }),
             MessageParser::Stat => Ok(Message::Stat),
         }
     }
@@ -534,7 +564,7 @@ impl SpawnPayloadParser {
 }
 
 trait ToPacked<'builder> {
-    type PackedType: ?Sized;
+    type PackedType: flatbuffers::Push;
     fn to_packed(&self, builder: &mut flatbuffers::FlatBufferBuilder<'builder>)
         -> Self::PackedType;
 }
@@ -561,7 +591,7 @@ impl<'builder> ToPacked<'builder> for &str {
     }
 }
 
-impl<'builder, const N: usize> ToPacked<'builder> for &ArrayVec<&str, N> {
+impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<&str, N> {
     type PackedType = flatbuffers::WIPOffset<
         flatbuffers::Vector<'builder, flatbuffers::ForwardsUOffset<&'builder str>>,
     >;
@@ -572,6 +602,18 @@ impl<'builder, const N: usize> ToPacked<'builder> for &ArrayVec<&str, N> {
     ) -> Self::PackedType {
         let packed_strings: Vec<_> = self.iter().map(|s| builder.create_string(s)).collect();
         builder.create_vector(&packed_strings)
+    }
+}
+
+impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<u32, N> {
+    type PackedType =
+        flatbuffers::WIPOffset<flatbuffers::Vector<'builder, <u32 as flatbuffers::Push>::Output>>;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        builder.create_vector_from_iter(self.iter())
     }
 }
 

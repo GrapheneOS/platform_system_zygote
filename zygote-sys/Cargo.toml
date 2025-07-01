@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.97"
+arrayvec = "0.7.6"
 libc = "0.2.168"
 static_assertions = "1.1.0"
 zerocopy = "0.8.21"
