@@ -1,3 +1,11 @@
+// Helper types
+
+struct RLimitData {
+    resource: uint32;
+    hard: uint64;
+    soft: uint64;
+}
+
 // Zygote management messages
 
 table Ack {}
@@ -44,6 +52,7 @@ table Spawn {
     cap_bound: uint64;
 
     secondary_groups: [uint32];
+    rlimits: [RLimitData] (required);
 
     payload: SpawnPayload (required);
 }

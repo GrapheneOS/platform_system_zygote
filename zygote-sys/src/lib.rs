@@ -33,6 +33,16 @@ use zerocopy::FromBytes;
 
 mod libc_fill;
 
+/// A platform-dependent type alias for rlimit resources
+#[allow(non_camel_case_types)]
+#[cfg(not(target_os = "android"))]
+pub type rlimit_resource_t = libc::__rlimit_resource_t;
+
+/// A platform-dependent type alias for rlimit resources
+#[allow(non_camel_case_types)]
+#[cfg(target_os = "android")]
+pub type rlimit_resource_t = c_int;
+
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
 /// [`libc::setpriority`].
 #[allow(non_camel_case_types)]
@@ -798,6 +808,17 @@ pub fn getpid() -> libc::pid_t {
     unsafe { libc::getpid() }
 }
 
+/// A safe wrapper around [`libc::getrlimit`]
+///
+/// See: `man getrlimit`
+pub fn getrlimit(resource: rlimit_resource_t) -> LibcResult<libc::rlimit> {
+    let mut rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+
+    // SAFETY: The pointer argument is derived from a local stack reference and
+    //         the return value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_payload(unsafe { libc::getrlimit(resource, &mut rlimit) }, || rlimit)
+}
+
 /// A safe wrapper around [`libc::getsockopt`].
 ///
 /// See: `man getsockopt`
@@ -1162,6 +1183,15 @@ pub fn setreuid(ruid: libc::uid_t, euid: libc::uid_t) -> LibcResult<()> {
     // SAFETY: The `libc::setreuid` function takes no pointers and the return
     //         value is checked and wrapped in a LibcResult.
     libc_result_from_int_with_void(unsafe { libc::setreuid(ruid, euid) })
+}
+
+/// A safe wrapper around [`libc::setrlimit`]
+///
+/// See: `man setrlimit`
+pub fn setrlimit(resource: rlimit_resource_t, rlimit: &libc::rlimit) -> LibcResult<()> {
+    // SAFETY: The pointer argument is derived from a valid reference and the
+    //         return value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setrlimit(resource, rlimit) })
 }
 
 /// A safe wrapper around [`libc::sigaddset`]

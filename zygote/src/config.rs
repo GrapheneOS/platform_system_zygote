@@ -17,6 +17,7 @@
 //! process.
 
 use anyhow::{bail, Result};
+use arrayvec::ArrayVec;
 use clap::Parser;
 use log::LevelFilter;
 
@@ -104,6 +105,7 @@ impl Launch {
             cap_inheritable: None,
             cap_bound: None,
             secondary_groups: self.secondary_groups.iter().cloned().collect(),
+            rlimits: ArrayVec::new(),
         }
     }
 }
@@ -187,6 +189,7 @@ impl Server {
             cap_inheritable: None,
             cap_bound: None,
             secondary_groups: self.secondary_groups.iter().cloned().collect(),
+            rlimits: ArrayVec::new(),
         }
     }
 }

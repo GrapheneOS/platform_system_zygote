@@ -68,7 +68,15 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
         sys::setgroups(spawn_params.secondary_groups.as_slice()).unwrap();
     }
 
-    // TODO: Set rlimits
+    // Set rlimits
+    for rlimit in &spawn_params.rlimits {
+        sys::setrlimit(
+            rlimit.resource,
+            &libc::rlimit { rlim_cur: rlimit.soft, rlim_max: rlimit.hard },
+        )
+        .unwrap();
+    }
+
     // TODO: Set SecComp filters
     // TODO: Set the scheduling policy
     // TODO: Set new real and effective uid and gid

@@ -28,9 +28,12 @@ use itertools::Itertools;
 
 use crate::species::{self, SpeciesRef};
 use capwrap::{CapabilityFlags, RawCap};
+use zygote_sys as sys;
 
 /// Default size for GID vectors
 pub const GID_VECTOR_SIZE: usize = 32;
+/// Default size for rlimit vectors
+pub const RLIMIT_VECTOR_SIZE: usize = 16;
 
 /// Default size for all message parsing and passing.
 pub const MESSAGE_BUFFER_SIZE: usize = 512;
@@ -76,6 +79,17 @@ where
     fn try_from_parcel(buffer: &'a [u8]) -> Result<Self>;
 }
 
+/// Data necessary to call [`zygote_sys::setrlimits`]
+#[derive(Debug, Clone, Copy)]
+pub struct RLimitData {
+    /// Resource ID
+    pub resource: sys::rlimit_resource_t,
+    /// The current resource limit
+    pub soft: libc::rlim_t,
+    /// The maximum resource limit
+    pub hard: libc::rlim_t,
+}
+
 /// Parameters common to all spawn operations
 #[derive(Debug, Clone)]
 pub struct SpawnParamsCommon {
@@ -97,8 +111,10 @@ pub struct SpawnParamsCommon {
     pub cap_inheritable: Option<CapabilityFlags>,
     /// Bounding capabilities for the child process
     pub cap_bound: Option<CapabilityFlags>,
-    /// Secondary groups for the new process
+    /// Secondary groups for the child process
     pub secondary_groups: ArrayVec<libc::gid_t, GID_VECTOR_SIZE>,
+    /// Resource limits for the child process
+    pub rlimits: ArrayVec<RLimitData, RLIMIT_VECTOR_SIZE>,
 }
 
 impl SpawnParamsCommon {
@@ -120,6 +136,7 @@ impl SpawnParamsCommon {
                 .chain(other.secondary_groups.iter().cloned())
                 .unique()
                 .collect(),
+            rlimits: self.rlimits.iter().cloned().chain(other.rlimits.iter().cloned()).collect(),
         }
     }
 }
@@ -218,6 +235,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
             }
             Message::Spawn { params, payload } => {
                 let packed_groups = params.secondary_groups.to_packed(builder);
+                let packed_rlimits = params.rlimits.to_packed(builder);
                 let packed_payload = payload.marshal(builder);
                 inner::Spawn::create(
                     builder,
@@ -240,6 +258,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                             .unwrap_or(RawCap::MAX),
                         cap_bound: params.cap_bound.map(|cap| cap.bits()).unwrap_or(RawCap::MAX),
                         secondary_groups: Some(packed_groups),
+                        rlimits: Some(packed_rlimits),
                         payload_type: payload.inner_type(),
                         payload: Some(packed_payload),
                     },
@@ -317,6 +336,16 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                     .map(|groups| groups.iter().collect())
                     .unwrap_or_default();
 
+                let rlimits = spawn
+                    .rlimits()
+                    .iter()
+                    .map(|rlimit| RLimitData {
+                        resource: rlimit.resource() as _,
+                        soft: rlimit.soft() as _,
+                        hard: rlimit.hard() as _,
+                    })
+                    .collect();
+
                 let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
 
                 Ok(Message::Spawn {
@@ -330,6 +359,7 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                         cap_inheritable,
                         cap_bound,
                         secondary_groups,
+                        rlimits,
                     },
                     payload,
                 })
@@ -405,6 +435,7 @@ impl MessageParser {
                     cap_inheritable: None,
                     cap_bound: None,
                     secondary_groups: secondary_groups.iter().cloned().collect(),
+                    rlimits: ArrayVec::new(),
                 },
                 payload: payload.to_spawn_payload()?,
             }),
@@ -614,6 +645,26 @@ impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<u32, N> {
         builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
     ) -> Self::PackedType {
         builder.create_vector_from_iter(self.iter())
+    }
+}
+
+impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<RLimitData, N> {
+    type PackedType = flatbuffers::WIPOffset<
+        flatbuffers::Vector<'builder, <inner::RLimitData as flatbuffers::Push>::Output>,
+    >;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        let packed_rlimit_data = self.iter().map(|rlimit_data| {
+            inner::RLimitData::new(
+                rlimit_data.resource as _,
+                rlimit_data.soft as _,
+                rlimit_data.hard as _,
+            )
+        });
+        builder.create_vector_from_iter(packed_rlimit_data)
     }
 }
 
