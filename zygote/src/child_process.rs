@@ -30,8 +30,11 @@ const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 /// supported platforms. All species-specific re-initialization code must
 /// be called before calling [`re_init_common`].
 pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
+    // Set the process name
     sys::prctl_set_name(&ZYGOTE_CHILD_PROCESS_INITIAL_NAME.to_bytes());
 
+    // Tell the kernel that this thread should keep its capabilities after it
+    // changes it UID.
     match sys::prctl_set_securebits(libc::SECBIT_KEEP_CAPS) {
         Err(errno) if errno.is(libc::EPERM) => {
             warn!("Insufficient permissions to set SECBIT_KEEP_CAPS in child process");
@@ -42,6 +45,8 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
         _ => {}
     }
 
+    // Temporarily add the permitted capabilities to our inherited capabilities
+    // set.
     if let Some(cap_permitted) = spawn_params.cap_permitted {
         CapabilitiesSet::new(CapabilityFlags::empty(), CapabilityFlags::empty(), cap_permitted)
             .store_additive()
@@ -58,12 +63,14 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
         }
     }
 
-    // TODO: Create new process group
+    // Add the process to any secondary groups if requested
+    if !spawn_params.secondary_groups.is_empty() {
+        sys::setgroups(spawn_params.secondary_groups.as_slice()).unwrap();
+    }
+
     // TODO: Set rlimits
-    // TODO: Add additional groups to the process
-    // TODO: Set SEComp filters
+    // TODO: Set SecComp filters
     // TODO: Set the scheduling policy
-    // TODO: Set cgroup
     // TODO: Set new real and effective uid and gid
 
     CapabilitiesSet::load()

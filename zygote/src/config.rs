@@ -79,6 +79,10 @@ pub struct Launch {
     /// entering application code
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
     pub priority_final: Option<i32>,
+
+    /// Secondary group IDs for the new process
+    #[arg(long)]
+    secondary_groups: Vec<libc::gid_t>,
 }
 
 impl Launch {
@@ -99,6 +103,7 @@ impl Launch {
             cap_permitted: None,
             cap_inheritable: None,
             cap_bound: None,
+            secondary_groups: self.secondary_groups.iter().cloned().collect(),
         }
     }
 }
@@ -163,6 +168,10 @@ pub struct Server {
     /// entering application code
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
     pub priority_final: Option<i32>,
+
+    /// Secondary group IDs for the new process
+    #[arg(long)]
+    secondary_groups: Vec<libc::gid_t>,
 }
 
 impl Server {
@@ -177,6 +186,7 @@ impl Server {
             cap_permitted: None,
             cap_inheritable: None,
             cap_bound: None,
+            secondary_groups: self.secondary_groups.iter().cloned().collect(),
         }
     }
 }

@@ -27,6 +27,7 @@ use std::{
 };
 
 use anyhow::Result;
+use arrayvec::ArrayVec;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 
@@ -766,10 +767,27 @@ pub fn getpriority(which: which_t, who: libc::id_t) -> LibcResult<c_int> {
 
 /// A safe wrapper around [`libc::getgid`].
 ///
-/// See `man getgid`
+/// See: `man getgid`
 pub fn getgid() -> libc::gid_t {
     // SAFETY: The `libc::getgid` function can not fail.
     unsafe { libc::getgid() }
+}
+
+/// A safe wrapper around [`libc::getgroups`]
+///
+/// See: `man getgroups`
+pub fn getgroups<const N: usize>() -> LibcResult<ArrayVec<libc::gid_t, N>> {
+    let mut buffer = [0; N];
+
+    // SAFETY: The pointer argument refers to a stack-allocated buffer
+    //         parameterized by N.  The result value is checked and wrapped in
+    //         LibcResult.
+    let result = unsafe { libc::getgroups(N as c_int, buffer.as_mut_ptr()) };
+
+    match result {
+        -1 => Err(errno()),
+        n => Ok(ArrayVec::from_iter(buffer.into_iter().take(n as usize))),
+    }
 }
 
 /// A safe wrapper around [`libc::getpid`].
@@ -1091,6 +1109,16 @@ pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
     //         allocated inside this function.  The return value is checked and
     //         wrapped in a LibcResult.
     retry_eintr!(libc_result_from_int(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) }))
+}
+
+/// A safe wrapper around [`libc::setgroups`]
+///
+/// See: `man setgroups`
+pub fn setgroups(groups: &[libc::gid_t]) -> LibcResult<()> {
+    // SAFETY: The length and pointer arguments are derived from a reference
+    //         that outlives the call, and the return value is wrapped in a
+    //         LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::setgroups(groups.len(), groups.as_ptr()) })
 }
 
 /// A safe wrapper around [`libc::setpgid`].
