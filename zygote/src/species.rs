@@ -22,6 +22,7 @@ use std::str::FromStr;
 
 use crate::messages::{SpawnParamsCommon, SpawnPayload};
 
+#[cfg(target_os = "android")]
 pub mod android_native;
 pub mod lib_app;
 #[cfg(any(test, feature = "test"))]
@@ -72,13 +73,14 @@ pub(crate) const fn socket_entry(
 /// A reference type for a statically allocated Species VTable.
 pub type SpeciesRef = &'static (dyn Species + Sync);
 
-/// All production species.
-#[cfg(not(any(test, feature = "test")))]
-const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &lib_app::App];
-
-/// All production and test species.
-#[cfg(any(test, feature = "test"))]
-const SPECIES_LIST: &[SpeciesRef] = &[&android_native::App, &lib_app::App, &mock::Turtle];
+/// All configured species.
+const SPECIES_LIST: &[SpeciesRef] = &[
+    #[cfg(target_os = "android")]
+    &android_native::App,
+    &lib_app::App,
+    #[cfg(any(test, feature = "test"))]
+    &mock::Turtle,
+];
 
 /// A collection of callbacks implemented by Zygote payloads that determine
 /// runtime behaviors such as preloading, process creation, and transfer

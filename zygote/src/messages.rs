@@ -513,6 +513,7 @@ impl EnumToFlatBufferUnion<inner::SpawnPayload> for SpawnPayload<'_> {
 #[command(rename_all = "verbatim")]
 pub enum SpawnPayloadParser {
     /// Request the creation of an AndroidNative process
+    #[cfg(target_os = "android")]
     AndroidNative {
         /// The package to execute
         #[arg(required(true))]
@@ -540,6 +541,7 @@ impl SpawnPayloadParser {
     /// Fetch a reference to the species associated with this payload type
     pub fn species(&self) -> SpeciesRef {
         match self {
+            #[cfg(target_os = "android")]
             SpawnPayloadParser::AndroidNative { .. } => &species::android_native::App,
             SpawnPayloadParser::LibApp { .. } => &species::lib_app::App,
             #[cfg(any(test, feature = "test"))]
@@ -550,6 +552,7 @@ impl SpawnPayloadParser {
     /// Construct a [`SpawnPayload`] from this enum
     pub fn to_spawn_payload(&self) -> Result<SpawnPayload<'_>> {
         match self {
+            #[cfg(target_os = "android")]
             SpawnPayloadParser::AndroidNative { package } => {
                 Ok(SpawnPayload::AndroidNative { package: package.as_str() })
             }
