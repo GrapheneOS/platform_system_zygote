@@ -47,6 +47,10 @@ impl Species for App {
         false
     }
 
+    fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
+        super::ReInitWrapper::LibApp
+    }
+
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
         matches!(message, SpawnPayload::LibApp { .. })
     }
@@ -111,5 +115,13 @@ impl Species for App {
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
         None
+    }
+
+    fn re_initialize_prologue(&self, _re_init_data: super::ReInitWrapper) {
+        // Nothing to do here
+    }
+
+    fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon) {
+        // Nothing to do here
     }
 }

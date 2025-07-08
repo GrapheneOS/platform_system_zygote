@@ -82,6 +82,30 @@ const SPECIES_LIST: &[SpeciesRef] = &[
     &mock::Turtle,
 ];
 
+/// Re-initialization data that is gathered and then consumed by species code
+pub enum ReInitWrapper {
+    /// Android specific data
+    #[cfg(target_os = "android")]
+    AndroidNative(android_native::ReInitData),
+    /// LibApp specific data
+    LibApp,
+    /// Mock specific data
+    #[cfg(any(test, feature = "test"))]
+    Mock,
+}
+
+impl ReInitWrapper {
+    /// Retrieve a reference to this enum's [`android_native::ReInitData`]
+    /// struct
+    #[cfg(target_os = "android")]
+    pub fn as_android_native(&self) -> anyhow::Result<&android_native::ReInitData> {
+        match self {
+            ReInitWrapper::AndroidNative(data) => Ok(data),
+            _ => Err(anyhow::anyhow!("Invalid re-initialization data type")),
+        }
+    }
+}
+
 /// A collection of callbacks implemented by Zygote payloads that determine
 /// runtime behaviors such as preloading, process creation, and transfer
 /// of control flow.
@@ -90,6 +114,8 @@ pub trait Species {
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_is_allowed(&self, name: &str) -> bool;
+    /// Gather data that will later be used to re-initialize the child process
+    fn gather_reinitialization_data(&self) -> ReInitWrapper;
     /// Return true if the provided payload is associated with this species
     fn is_spawn_payload_type(&self, message: &SpawnPayload) -> bool;
     /// Returns the name of the species
@@ -100,6 +126,10 @@ pub trait Species {
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
+    /// Child-process re-initialization logic that runs before [`child_process::re_initialize`]
+    fn re_initialize_prologue(&self, re_init_data: ReInitWrapper);
+    /// A callback for setting SecComp filters
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon);
 
     // Helper functions
 

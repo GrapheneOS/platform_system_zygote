@@ -22,14 +22,25 @@ use log::warn;
 use capwrap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 use zygote_sys as sys;
 
-use crate::messages::SpawnParamsCommon;
+use crate::{
+    messages::SpawnParamsCommon,
+    species::{ReInitWrapper, SpeciesRef},
+};
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 
 /// Perform child-process initialization tasks that are available on all
 /// supported platforms. All species-specific re-initialization code must
 /// be called before calling [`re_init_common`].
-pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
+pub(crate) fn re_initialize(
+    species: SpeciesRef,
+    re_init_data: ReInitWrapper,
+    spawn_params: &SpawnParamsCommon,
+) {
+    // Perform any species-specific re-initialization before we adjust
+    // capabilities and user/group IDs.
+    species.re_initialize_prologue(re_init_data);
+
     // Set the process name
     sys::prctl_set_name(&ZYGOTE_CHILD_PROCESS_INITIAL_NAME.to_bytes());
 
@@ -77,7 +88,9 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
         .unwrap();
     }
 
-    // TODO: Set SecComp filters
+    // Set SecComp filters
+    species.set_seccomp_filters(spawn_params);
+
     // TODO: Set the scheduling policy
     // TODO: Set new real and effective uid and gid
 
@@ -92,26 +105,4 @@ pub(crate) fn re_init_common(spawn_params: &SpawnParamsCommon) {
         .unwrap();
 
     // TODO: Set SELinux context
-}
-
-/// Perform child-process initialization tasks that are specific to Android.
-#[cfg(target_os = "android")]
-#[inline(always)]
-pub(crate) fn re_init_android(fds_error_level: sys::android::FDSanErrorLevel) {
-    crate::introspection::debug_assert_single_threaded();
-
-    sys::android::reset_stack_guards();
-
-    // SAFETY: This is called in a single-threaded context
-    unsafe {
-        sys::android::fdsan_set_error_level(fds_error_level);
-    }
-
-    if sys::android::set_zygote_child().is_err() {
-        log::error!("Failed to android_mallopt(M_SET_ZYGOTE_CHILD)");
-    }
-
-    if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
-        log::error!("Failed to mallopt(M_DECAY_TIME): {}", errno);
-    }
 }

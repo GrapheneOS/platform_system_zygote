@@ -54,9 +54,8 @@ cc_library_headers {
     ],
 }
 
-rust_library {
-    name: "libzygote",
-    crate_name: "zygote",
+rust_defaults {
+    name: "libzygote_defaults",
     host_supported: true,
     edition: "2021",
     srcs: [
@@ -78,34 +77,27 @@ rust_library {
         "libzerocopy",
         "libzygote_sys",
     ],
+    target: {
+        android: {
+            shared_libs: [
+                "libseccomp_policy",
+            ],
+        },
+    },
+}
+
+rust_library {
+    name: "libzygote",
+    crate_name: "zygote",
+    defaults: ["libzygote_defaults"],
 }
 
 rust_library {
     name: "libzygote_test",
     crate_name: "zygote",
-    host_supported: true,
-    edition: "2021",
+    defaults: ["libzygote_defaults"],
     features: [
         "test",
-    ],
-    srcs: [
-        "src/lib.rs",
-        ":libzygote_schemas-rust",
-    ],
-    rustlibs: [
-        "libanyhow",
-        "libarrayvec",
-        "libcapwrap",
-        "libclap",
-        "libflatbuffers",
-        "libitertools",
-        "liblibc",
-        "liblibloading",
-        "liblogger",
-        "liblog_rust",
-        "libstatic_assertions",
-        "libzerocopy",
-        "libzygote_sys",
     ],
 }
 
@@ -168,29 +160,9 @@ rust_binary {
 
 rust_test_host {
     name: "zygote_next_unit_tests",
-    edition: "2021",
+    defaults: ["libzygote_defaults"],
     features: [
         "test",
-    ],
-    srcs: [
-        "src/lib.rs",
-        ":libzygote_schemas-rust",
-    ],
-    rustlibs: [
-        "libanyhow",
-        "libarrayvec",
-        "libcapwrap",
-        "libclap",
-        "libflatbuffers",
-        "libitertools",
-        "liblibc",
-        "liblibloading",
-        "liblogger",
-        "liblog_rust",
-        "libstatic_assertions",
-        "libzygote_sys",
-        "libzerocopy",
-        "libzygote_sys",
     ],
 }
 

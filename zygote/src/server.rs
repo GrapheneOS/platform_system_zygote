@@ -513,9 +513,7 @@ impl Server {
         //       parameters, preventing them from being set by a spawn message.
         let spawn_params = message.get_spawn_params().unwrap().or(&self.spawn_params);
 
-        #[cfg(target_os = "android")]
-        // SAFETY: This is called in a single-threaded context
-        let fds_error_level = unsafe { sys::android::fdsan_get_error_level() };
+        let re_init_data = self.species.gather_reinitialization_data();
 
         // SAFETY: This is called in a single-threaded context.
         //
@@ -557,15 +555,20 @@ impl Server {
             Break(ClientLoopControl::Child(move || {
                 debug_assert_single_threaded();
 
+                // This function call must occur here, at the top of the child
+                // process's stack, to avoid segfaults from changing the stack
+                // guard in a callee and then segfaulting when return to the
+                // caller's frame.
                 #[cfg(target_os = "android")]
-                child_process::re_init_android(fds_error_level);
-
-                child_process::re_init_common(&spawn_params);
+                sys::android::reset_stack_guards();
 
                 // Unpack the message in the child process
                 let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+                let spawn_payload = message.get_spawn_payload().unwrap();
 
-                species.gestate(&spawn_params, message.get_spawn_payload().unwrap());
+                child_process::re_initialize(species, re_init_data, &spawn_params);
+
+                species.gestate(&spawn_params, spawn_payload);
             }))
         } else {
             // Server process

@@ -59,6 +59,17 @@ unsafe extern "C" {
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
 }
 
+#[cfg(target_os = "android")]
+unsafe extern "system" {
+    /// Apply Android's application seccomp filters
+    #[link_name = "_Z22set_app_seccomp_filterv"]
+    pub safe fn set_app_seccomp_filter();
+
+    /// Apply Android's system seccomp filters
+    #[link_name = "_Z25set_system_seccomp_filterv"]
+    pub safe fn set_system_seccomp_filter();
+}
+
 #[cfg(not(target_env = "musl"))]
 unsafe extern "C" {
     /// Get a pointer to an immutable string containing the name of the error

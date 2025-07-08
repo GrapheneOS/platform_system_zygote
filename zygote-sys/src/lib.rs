@@ -1265,9 +1265,12 @@ pub mod android {
 
     use crate::libc_fill;
 
+    pub use libc_fill::{set_app_seccomp_filter, set_system_seccomp_filter};
+
     /// Error levels for Android's File Descriptor Sanitizer
     ///
     /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
+    #[derive(Clone, Copy, Debug)]
     #[repr(C)]
     pub enum FDSanErrorLevel {
         /// No errors
@@ -1347,7 +1350,7 @@ pub mod android {
         GetDecayTimeEnabled = 12,
     }
 
-    /// A safe wrapper around [`libc_fill::android_fdsan_get_error_level`]
+    /// A wrapper around [`libc_fill::android_fdsan_get_error_level`]
     ///
     /// # Safety
     /// This function is not thread safe.
@@ -1358,7 +1361,7 @@ pub mod android {
         fdsan_error_level(unsafe { libc_fill::android_fdsan_get_error_level() })
     }
 
-    /// A safe wrapper around [`libc_fill::android_fdsan_get_error_level`]
+    /// A wrapper around [`libc_fill::android_fdsan_get_error_level`]
     ///
     /// # Safety
     /// This function is not thread safe.

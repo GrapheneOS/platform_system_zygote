@@ -19,9 +19,18 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
+    introspection::debug_assert_single_threaded,
     messages::{self, SpawnParamsCommon, SpawnPayload},
     species::Species,
 };
+use zygote_sys as sys;
+
+const AID_APP_START: i32 = 10000;
+
+/// Re-initialization data for AndroidNative applications
+pub struct ReInitData {
+    fds_error_level: sys::android::FDSanErrorLevel,
+}
 
 /// Behaviors for launching native Android applications.
 pub struct App;
@@ -33,6 +42,15 @@ impl Species for App {
 
     fn bound_socket_is_allowed(&self, _path: &str) -> bool {
         false
+    }
+
+    fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
+        debug_assert_single_threaded();
+
+        super::ReInitWrapper::AndroidNative(ReInitData {
+            // SAFETY: This is called in a single-threaded context
+            fds_error_level: unsafe { sys::android::fdsan_get_error_level() },
+        })
     }
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
@@ -63,5 +81,32 @@ impl Species for App {
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
         None
+    }
+
+    fn re_initialize_prologue(&self, re_init_data: super::ReInitWrapper) {
+        debug_assert_single_threaded();
+
+        // SAFETY: This is called in a single-threaded context
+        unsafe {
+            sys::android::fdsan_set_error_level(
+                re_init_data.as_android_native().unwrap().fds_error_level,
+            );
+        }
+
+        if sys::android::set_zygote_child().is_err() {
+            log::error!("Failed to android_mallopt(M_SET_ZYGOTE_CHILD)");
+        }
+
+        if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
+            log::error!("Failed to mallopt(M_DECAY_TIME): {}", errno);
+        }
+    }
+
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {
+        if spawn_params.uid.expect("No UID specified") >= AID_APP_START {
+            sys::android::set_app_seccomp_filter();
+        } else {
+            sys::android::set_system_seccomp_filter();
+        }
     }
 }
