@@ -35,12 +35,12 @@ mod libc_fill;
 
 /// A platform-dependent type alias for rlimit resources
 #[allow(non_camel_case_types)]
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), target_env = "gnu"))]
 pub type rlimit_resource_t = libc::__rlimit_resource_t;
 
 /// A platform-dependent type alias for rlimit resources
 #[allow(non_camel_case_types)]
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", not(target_env = "gnu")))]
 pub type rlimit_resource_t = c_int;
 
 /// Platform-dependent type alias for use with [`libc::getpriority`] and
