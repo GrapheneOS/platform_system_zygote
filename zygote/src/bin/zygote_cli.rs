@@ -76,6 +76,10 @@ fn handle_command_transaction(builder: FlatBufferBuilder, client_socket: RawFd) 
         Message::SpawnResponse { pid } => {
             info!("Spawn successful; New process pid: {}", pid);
         }
+        Message::StatResponse { .. } => {
+            info!("Stat response: {:?}", response);
+            println!("{:?}", response);
+        }
         msg => {
             error!("Unexpected response message: {:?}", msg);
         }
