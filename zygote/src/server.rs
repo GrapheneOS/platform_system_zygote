@@ -110,8 +110,7 @@ impl<T> ServerControl<T> {
 enum ClientLoopControl<T> {
     Child(T),
     NextSocket,
-    // TODO: Change the error type to be anyhow::Error
-    Error(RawFd, sys::Errno),
+    Error(RawFd, anyhow::Error),
     Shutdown,
 }
 
@@ -314,9 +313,9 @@ impl Server {
                         ClientLoopControl::NextSocket => {
                             // Zero-length read from socket, continue and wait for SIGHUP
                         }
-                        ClientLoopControl::Error(fd, errno) => {
+                        ClientLoopControl::Error(fd, err) => {
                             error!(
-                                "Error encountered while responding to client socket {fd}: {errno}"
+                                "Error encountered while responding to client socket {fd}: {err}"
                             );
 
                             self.remove_client_socket(fd);
@@ -489,7 +488,10 @@ impl Server {
             Ok(_) => Continue,
             Err(errno) => {
                 error!("Failed to send IdentityQuery response: {errno}");
-                Break(ClientLoopControl::Error(fd, errno))
+                Break(ClientLoopControl::Error(
+                    fd,
+                    anyhow!("IdentityQuery response failed: {errno}"),
+                ))
             }
         }
     }
@@ -575,7 +577,10 @@ impl Server {
                 Ok(_) => Continue,
                 Err(errno) => {
                     error!("Failed to send Spawn response: {}", errno);
-                    Break(ClientLoopControl::Error(fd, errno))
+                    Break(ClientLoopControl::Error(
+                        fd,
+                        anyhow!("Failed to send Spawn response: {errno}"),
+                    ))
                 }
             }
         }
@@ -594,7 +599,10 @@ impl Server {
             }
             Err(errno) => {
                 error!("Failed to send Stat response: {}", errno);
-                Break(ClientLoopControl::Error(fd, errno))
+                Break(ClientLoopControl::Error(
+                    fd,
+                    anyhow!("Failed to send Stat response: {errno}"),
+                ))
             }
         }
     }
