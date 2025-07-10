@@ -51,6 +51,7 @@ impl Species for App {
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
         debug_assert_single_threaded();
 
+        // TODO: Add TopApp information
         super::ReInitWrapper::AndroidNative(ReInitData {
             // SAFETY: This is called in a single-threaded context
             fds_error_level: unsafe { sys::android::fdsan_get_error_level() },
@@ -111,6 +112,14 @@ impl Species for App {
         if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
             log::error!("Failed to mallopt(M_DECAY_TIME): {errno}");
         }
+
+        // Set the cpuset policy and panic on failure
+        if sys::android::cpusets_enabled() {
+            sys::android::set_cpuset_policy(0, sys::android::SchedPolicy::Default).unwrap();
+        }
+
+        // Set the scheduling policy and panic on failure
+        sys::android::set_sched_policy(0, sys::android::SchedPolicy::Default).unwrap();
     }
 
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {

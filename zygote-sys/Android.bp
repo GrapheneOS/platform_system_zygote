@@ -36,6 +36,7 @@ rust_library {
         android: {
             shared_libs: [
                 "libdl_android",
+                "libprocessgroup",
             ],
         },
     },
