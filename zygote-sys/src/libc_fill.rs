@@ -156,35 +156,6 @@ pub unsafe fn clone3(args: &clone_args) -> c_long {
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {
-    /// Return the current process's FDSan error level
-    ///
-    /// # Safety
-    /// This function is not thread safe.
-    ///
-    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-    pub fn android_fdsan_get_error_level() -> c_uint;
-
-    /// Sets the process's FDSan error level and returns the previous value
-    ///
-    /// # Safety
-    /// This function is not thread safe.
-    ///
-    /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-    pub fn android_fdsan_set_error_level(level: c_uint) -> c_uint;
-
-    /// Set Android-specific allocation options.
-    ///
-    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/android_mallopt.cpp
-    pub fn android_mallopt(opcode: c_int, arg: *mut c_void, arg_size: usize) -> bool;
-
-    /// Reset the thread's stack protection salt
-    ///
-    /// The caller should not return after calling this function.  If it does,
-    /// and stack protection is enabled, the program will crash.
-    ///
-    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/__libc_init_main_thread.cpp;l=104
-    pub safe fn android_reset_stack_guards();
-
     /// This variant of `dup` is used by
     /// [`file_descriptor::FileDescriptorEntry::execute`] to ensure that the
     /// correct flags (e.g. libc::O_CLOEXEC) are set during the duplication
@@ -192,22 +163,6 @@ unsafe extern "C" {
     ///
     /// See `man dup`
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
-
-    /// Set the target SDK version for the app.
-    ///
-    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
-    pub safe fn android_set_application_target_sdk_version(target: c_int);
-}
-
-#[cfg(target_os = "android")]
-unsafe extern "system" {
-    /// Apply Android's application seccomp filters
-    #[link_name = "_Z22set_app_seccomp_filterv"]
-    pub safe fn set_app_seccomp_filter();
-
-    /// Apply Android's system seccomp filters
-    #[link_name = "_Z25set_system_seccomp_filterv"]
-    pub safe fn set_system_seccomp_filter();
 }
 
 #[cfg(not(target_env = "musl"))]
