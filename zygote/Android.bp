@@ -119,6 +119,9 @@ rust_binary {
         "libzygote",
         "libzygote_sys",
     ],
+    init_rc: [
+        "zygote_next.rc",
+    ],
 }
 
 rust_binary {
