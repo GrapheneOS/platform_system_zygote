@@ -35,7 +35,7 @@ use zygote_sys::{
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
-    introspection::{debug_assert_single_threaded, get_proc_fd_path},
+    introspection::{debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     messages::{
         self, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel, MESSAGE_BUFFER_SIZE,
     },
@@ -110,8 +110,7 @@ impl<T> ServerControl<T> {
 enum ClientLoopControl<T> {
     Child(T),
     NextSocket,
-    // TODO: Change the error type to be anyhow::Error
-    Error(RawFd, sys::Errno),
+    Error(RawFd, anyhow::Error),
     Shutdown,
 }
 
@@ -314,9 +313,9 @@ impl Server {
                         ClientLoopControl::NextSocket => {
                             // Zero-length read from socket, continue and wait for SIGHUP
                         }
-                        ClientLoopControl::Error(fd, errno) => {
+                        ClientLoopControl::Error(fd, err) => {
                             error!(
-                                "Error encountered while responding to client socket {fd}: {errno}"
+                                "Error encountered while responding to client socket {fd}: {err}"
                             );
 
                             self.remove_client_socket(fd);
@@ -489,7 +488,10 @@ impl Server {
             Ok(_) => Continue,
             Err(errno) => {
                 error!("Failed to send IdentityQuery response: {errno}");
-                Break(ClientLoopControl::Error(fd, errno))
+                Break(ClientLoopControl::Error(
+                    fd,
+                    anyhow!("IdentityQuery response failed: {errno}"),
+                ))
             }
         }
     }
@@ -578,7 +580,10 @@ impl Server {
                 Ok(_) => Continue,
                 Err(errno) => {
                     error!("Failed to send Spawn response: {}", errno);
-                    Break(ClientLoopControl::Error(fd, errno))
+                    Break(ClientLoopControl::Error(
+                        fd,
+                        anyhow!("Failed to send Spawn response: {errno}"),
+                    ))
                 }
             }
         }
@@ -589,15 +594,38 @@ impl Server {
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
         info!("Received message: (Stat)");
+        let proc = match ProcStat::get() {
+            Ok(proc) => proc,
+            Err(err) => {
+                error!("Failed to get ProcStat: {:?}", err);
+                return Break(ClientLoopControl::Error(fd, err));
+            }
+        };
+        let response = Message::StatResponse {
+            pid: proc.pid,
+            pgrp: proc.pgrp,
+            minflt: proc.minflt,
+            cminflt: proc.cminflt,
+            majflt: proc.majflt,
+            cmajflt: proc.cmajflt,
+            utime: proc.utime,
+            stime: proc.stime,
+            num_threads: proc.num_threads,
+            vsize: proc.vsize,
+            rss: proc.rss,
+        };
 
-        match Self::send_response(fd, Message::AckResponse.to_parcel().finished_data()) {
+        match Self::send_response(fd, response.to_parcel().finished_data()) {
             Ok(_) => {
                 // Continue the `recvmsg` loop
                 Continue
             }
             Err(errno) => {
-                error!("Failed to send Stat response: {}", errno);
-                Break(ClientLoopControl::Error(fd, errno))
+                error!("Failed to send Stat response: {errno}");
+                Break(ClientLoopControl::Error(
+                    fd,
+                    anyhow!("Failed to send Stat response: {errno}"),
+                ))
             }
         }
     }

@@ -174,6 +174,31 @@ pub enum Message<'a, 'b> {
     },
     /// Request the server provide runtime statistics
     Stat,
+    /// Response to a [`Message::Stat`]
+    StatResponse {
+        /// Process ID
+        pid: u32,
+        /// Process group ID
+        pgrp: u32,
+        /// Number of minor faults
+        minflt: u64,
+        /// Number of minor faults in waited-for children
+        cminflt: u64,
+        /// Number of major faults
+        majflt: u64,
+        /// Number of major faults in waited-for children
+        cmajflt: u64,
+        /// User time
+        utime: u64,
+        /// System time
+        stime: u64,
+        /// Number of threads in the process
+        num_threads: u64,
+        /// Virtual memory size in bytes
+        vsize: u64,
+        /// Resident set size in number of pages
+        rss: u64,
+    },
 }
 
 impl Message<'_, '_> {
@@ -204,6 +229,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
             Message::Spawn { .. } => inner::Message::Spawn,
             Message::SpawnResponse { .. } => inner::Message::SpawnResponse,
             Message::Stat => inner::Message::Stat,
+            Message::StatResponse { .. } => inner::Message::StatResponse,
         }
     }
 
@@ -270,6 +296,35 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                     .as_union_value()
             }
             Message::Stat => inner::Stat::create(builder, &inner::StatArgs {}).as_union_value(),
+            Message::StatResponse {
+                pid,
+                pgrp,
+                minflt,
+                cminflt,
+                majflt,
+                cmajflt,
+                utime,
+                stime,
+                num_threads,
+                vsize,
+                rss,
+            } => inner::StatResponse::create(
+                builder,
+                &inner::StatResponseArgs {
+                    pid: *pid,
+                    pgrp: *pgrp,
+                    minflt: *minflt,
+                    cminflt: *cminflt,
+                    majflt: *majflt,
+                    cmajflt: *cmajflt,
+                    utime: *utime,
+                    stime: *stime,
+                    num_threads: *num_threads,
+                    vsize: *vsize,
+                    rss: *rss,
+                },
+            )
+            .as_union_value(),
         }
     }
 }
@@ -369,6 +424,22 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                 Ok(Message::SpawnResponse { pid: spawn_response.pid() })
             }
             inner::Message::Stat => Ok(Message::Stat),
+            inner::Message::StatResponse => {
+                let stat = parcel.message_as_stat_response().unwrap();
+                Ok(Message::StatResponse {
+                    pid: stat.pid(),
+                    pgrp: stat.pgrp(),
+                    minflt: stat.minflt(),
+                    cminflt: stat.cminflt(),
+                    majflt: stat.majflt(),
+                    cmajflt: stat.cmajflt(),
+                    utime: stat.utime(),
+                    stime: stat.stime(),
+                    num_threads: stat.num_threads(),
+                    vsize: stat.vsize(),
+                    rss: stat.rss(),
+                })
+            }
             inner::Message(tag) => {
                 bail!("Unknown Message type: {tag}")
             }

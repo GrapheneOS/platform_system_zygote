@@ -63,6 +63,20 @@ table SpawnResponse {
 
 table Stat {}
 
+table StatResponse {
+    pid: uint32;
+    pgrp: uint32;
+    minflt: uint64;
+    cminflt: uint64;
+    majflt: uint64;
+    cmajflt: uint64;
+    utime: uint64;
+    stime: uint64;
+    num_threads: uint64;
+    vsize: uint64;
+    rss: uint64;
+}
+
 union Message {
     Ack,
     Exit,
@@ -71,6 +85,7 @@ union Message {
     Spawn,
     SpawnResponse,
     Stat,
+    StatResponse,
 }
 
 table Parcel {
