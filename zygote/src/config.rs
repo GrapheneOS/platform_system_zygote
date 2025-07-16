@@ -30,8 +30,6 @@ use crate::{
     species::SpeciesRef,
 };
 
-const ENV_VAR_SOCKET: &str = "ZYGOTE_SOCKET";
-
 /// Configuration values used by the Zygote command line interface.  This API
 /// is temporary as the message types evolve.
 #[derive(Parser)]
@@ -143,9 +141,14 @@ pub struct Server {
     pub preload_uid: Option<libc::uid_t>,
 
     /// A string representing a valid server socket FD or a location to bind a
-    /// new socket
-    #[arg(long, default_value = "default", value_parser(socket_arg_parser))]
-    pub socket: String,
+    /// new socket.
+    ///
+    /// When --species=android-native-app is used and this is unspecified, the
+    /// value can be looked up using the following fallback values:
+    /// - environment variable named ANDROID_SOCKET_<name>
+    /// - the path /dev/socket/<name>
+    #[arg(long)]
+    pub socket: Option<String>,
 
     /// A runtime-defined reference to Species-specific behavior
     /// implementations.
@@ -207,16 +210,4 @@ pub fn log_level_parser(parse_arg: &str) -> Result<LevelFilter> {
         "5" => Ok(LevelFilter::Trace),
         level => bail!("Invalid log level: {}", level),
     })
-}
-
-fn socket_arg_parser(parse_arg: &str) -> Result<String> {
-    if parse_arg == "default" {
-        if let Ok(env_arg) = std::env::var(ENV_VAR_SOCKET) {
-            Ok(env_arg)
-        } else {
-            Ok("".to_owned())
-        }
-    } else {
-        Ok(parse_arg.to_owned())
-    }
 }

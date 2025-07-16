@@ -17,14 +17,19 @@
 
 use core::ffi::CStr;
 use native_activity_thread::run_native_activity_thread;
+use std::env;
 
 use crate::{
+    config,
     file_descriptors::Action,
     introspection::debug_assert_single_threaded,
     messages::{self, SpawnParamsCommon, SpawnPayload},
     species::Species,
 };
 use zygote_sys as sys;
+
+const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";
+const ANDROID_SOCKET_DIR: &str = "/dev/socket";
 
 const AID_APP_START: i32 = 10000;
 
@@ -40,6 +45,18 @@ pub struct ReInitData {
 pub struct App;
 
 impl Species for App {
+    fn resolve_socket(&self, config: &config::Server) -> Option<String> {
+        if let Some(socket_from_config) = config.socket.as_ref() {
+            Some(socket_from_config.clone())
+        } else if let Ok(socket_from_env) =
+            env::var(format!("{}{}", ANDROID_SOCKET_ENV_PREFIX, config.name))
+        {
+            Some(socket_from_env)
+        } else {
+            Some(format!("{}/{}", ANDROID_SOCKET_DIR, config.name))
+        }
+    }
+
     fn abstract_socket_is_allowed(&self, _name: &str) -> bool {
         false
     }

@@ -20,7 +20,10 @@
 use core::ffi::CStr;
 use std::str::FromStr;
 
-use crate::messages::{SpawnParamsCommon, SpawnPayload};
+use crate::{
+    config,
+    messages::{SpawnParamsCommon, SpawnPayload},
+};
 
 #[cfg(target_os = "android")]
 pub mod android_native;
@@ -110,6 +113,10 @@ impl ReInitWrapper {
 /// runtime behaviors such as preloading, process creation, and transfer
 /// of control flow.
 pub trait Species {
+    /// Determines the socket to listen on from command line options
+    fn resolve_socket(&self, config: &config::Server) -> Option<String> {
+        config.socket.to_owned()
+    }
     /// Returns true if an abstract socket name is allowed to be registered
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
