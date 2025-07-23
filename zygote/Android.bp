@@ -82,6 +82,9 @@ rust_defaults {
             shared_libs: [
                 "libseccomp_policy",
             ],
+            rustlibs: [
+                "libnative_activity_thread",
+            ]
         },
     },
 }

@@ -16,6 +16,7 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use core::ffi::CStr;
+use native_activity_thread::run_native_activity_thread;
 
 use crate::{
     file_descriptors::Action,
@@ -66,14 +67,15 @@ impl Species for App {
     }
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
-        if let SpawnPayload::AndroidNative { package } = spawn_payload {
+        if let SpawnPayload::AndroidNative { package, start_seq } = spawn_payload {
             // TODO: Handle process dumpability
             // TODO: Enable debugging
             // TODO: Set heap tagging level
             // TODO: Disable heap zero-initialization
 
             println!("Hello from the child process.  My name is {}", package);
-            std::process::exit(0)
+
+            run_native_activity_thread(*start_seq);
         } else {
             panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
