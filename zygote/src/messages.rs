@@ -531,6 +531,8 @@ pub enum SpawnPayload<'a> {
         package: &'a str,
         /// Id of the spawn request
         start_seq: i64,
+        /// The target SDK version for the app.
+        target_sdk_version: i32,
     },
     /// Spawn data for [`species::lib_app::App`]
     LibApp {
@@ -555,6 +557,7 @@ impl<'a> SpawnPayload<'a> {
                 Ok(SpawnPayload::AndroidNative {
                     package: payload.package(),
                     start_seq: payload.start_seq(),
+                    target_sdk_version: payload.target_sdk_version(),
                 })
             }
             inner::SpawnPayload::SpawnLibApp => {
@@ -589,13 +592,14 @@ impl EnumToFlatBufferUnion<inner::SpawnPayload> for SpawnPayload<'_> {
         builder: &mut flatbuffers::FlatBufferBuilder<'_>,
     ) -> flatbuffers::WIPOffset<UnionWIPOffset> {
         match self {
-            SpawnPayload::AndroidNative { package, start_seq } => {
+            SpawnPayload::AndroidNative { package, start_seq, target_sdk_version } => {
                 let packed_package = package.to_packed(builder);
                 inner::SpawnAndroidNative::create(
                     builder,
                     &inner::SpawnAndroidNativeArgs {
                         package: Some(packed_package),
                         start_seq: *start_seq,
+                        target_sdk_version: *target_sdk_version,
                     },
                 )
                 .as_union_value()
@@ -631,6 +635,9 @@ pub enum SpawnPayloadParser {
         /// Id of the spawn request
         #[arg(required(true))]
         start_seq: i64,
+        /// The target SDK version for the app.
+        #[arg(required(true))]
+        target_sdk_version: i32,
     },
     /// Request the creation of a LibApp process
     LibApp {
@@ -666,8 +673,12 @@ impl SpawnPayloadParser {
     pub fn to_spawn_payload(&self) -> Result<SpawnPayload<'_>> {
         match self {
             #[cfg(target_os = "android")]
-            SpawnPayloadParser::AndroidNative { package, start_seq } => {
-                Ok(SpawnPayload::AndroidNative { package: package.as_str(), start_seq: *start_seq })
+            SpawnPayloadParser::AndroidNative { package, start_seq, target_sdk_version } => {
+                Ok(SpawnPayload::AndroidNative {
+                    package: package.as_str(),
+                    start_seq: *start_seq,
+                    target_sdk_version: *target_sdk_version,
+                })
             }
             SpawnPayloadParser::LibApp { path, args } => Ok(SpawnPayload::LibApp {
                 path: path.as_str(),

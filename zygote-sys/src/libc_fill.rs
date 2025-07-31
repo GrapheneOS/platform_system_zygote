@@ -57,6 +57,11 @@ unsafe extern "C" {
     ///
     /// See `man dup`
     pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
+
+    /// Set the target SDK version for the app.
+    ///
+    /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
+    pub safe fn android_set_application_target_sdk_version(target: c_int);
 }
 
 #[cfg(target_os = "android")]

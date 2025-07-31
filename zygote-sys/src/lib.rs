@@ -1416,4 +1416,9 @@ pub mod android {
     pub fn reset_stack_guards() {
         libc_fill::android_reset_stack_guards();
     }
+
+    /// A wrapper around [`libc_fill::android_set_application_target_sdk_version`]
+    pub fn set_application_target_sdk_version(target: i32) {
+        libc_fill::android_set_application_target_sdk_version(target);
+    }
 }

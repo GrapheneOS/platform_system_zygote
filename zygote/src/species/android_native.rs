@@ -28,6 +28,9 @@ use zygote_sys as sys;
 
 const AID_APP_START: i32 = 10000;
 
+// Must be the same value as `SdkVersion::kUnset` in art/libartbase/base/sdk_version.h.
+const SDK_VERSION_UNSET: i32 = 0;
+
 /// Re-initialization data for AndroidNative applications
 pub struct ReInitData {
     fds_error_level: sys::android::FDSanErrorLevel,
@@ -67,11 +70,17 @@ impl Species for App {
     }
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
-        if let SpawnPayload::AndroidNative { package, start_seq } = spawn_payload {
+        if let SpawnPayload::AndroidNative { package, start_seq, target_sdk_version } =
+            spawn_payload
+        {
             // TODO: Handle process dumpability
             // TODO: Enable debugging
             // TODO: Set heap tagging level
             // TODO: Disable heap zero-initialization
+
+            let target =
+                if *target_sdk_version <= 0 { SDK_VERSION_UNSET } else { *target_sdk_version };
+            sys::android::set_application_target_sdk_version(target);
 
             println!("Hello from the child process.  My name is {}", package);
 
