@@ -102,7 +102,7 @@ impl Errno {
 
     /// Test if the wrapped code matches any of the provided error numbers
     pub fn matches<const N: usize>(&self, query_codes: &[c_int; N]) -> bool {
-        query_codes.iter().any(|&query_code| self.code == query_code)
+        query_codes.contains(&self.code)
     }
 }
 
