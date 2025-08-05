@@ -15,6 +15,7 @@
 
 //! Implementation of the Species trait for Android Native Applications.
 
+use bitflags::bitflags;
 use core::ffi::CStr;
 use native_activity_thread::run_native_activity_thread;
 
@@ -30,6 +31,36 @@ const AID_APP_START: i32 = 10000;
 
 // Must be the same value as `SdkVersion::kUnset` in art/libartbase/base/sdk_version.h.
 const SDK_VERSION_UNSET: i32 = 0;
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct RuntimeFlags: u32 {
+        /// Runtime flag constants.
+        /// Must be the same values as RuntimeFlags in frameworks/base/core/jni/com_android_internal_os_Zygote.cpp.
+        const DEBUG_ENABLE_JDWP = 1;
+        const PROFILE_SYSTEM_SERVER = 1 << 14;
+        const PROFILE_FROM_SHELL = 1 << 15;
+        const MEMORY_TAG_LEVEL_MASK = (1 << 19) | (1 << 20);
+        const MEMORY_TAG_LEVEL_TBI = 1 << 19;
+        const MEMORY_TAG_LEVEL_ASYNC = 2 << 19;
+        const MEMORY_TAG_LEVEL_SYNC = 3 << 19;
+        const GWP_ASAN_LEVEL_MASK = (1 << 21) | (1 << 22);
+        const GWP_ASAN_LEVEL_NEVER = 0 << 21;
+        const GWP_ASAN_LEVEL_LOTTERY = 1 << 21;
+        const GWP_ASAN_LEVEL_ALWAYS = 2 << 21;
+        const GWP_ASAN_LEVEL_DEFAULT = 3 << 21;
+        const NATIVE_HEAP_ZERO_INIT_ENABLED = 1 << 23;
+        const PROFILEABLE = 1 << 24;
+        const DEBUG_ENABLE_PTRACE = 1 << 25;
+        const ENABLE_PAGE_SIZE_APP_COMPAT = 1 << 26;
+    }
+}
+
+impl RuntimeFlags {
+    fn is_native_heap_zero_init_enabled(&self) -> bool {
+        self.contains(Self::NATIVE_HEAP_ZERO_INIT_ENABLED)
+    }
+}
 
 /// Re-initialization data for AndroidNative applications
 pub struct ReInitData {
@@ -71,13 +102,32 @@ impl Species for App {
     }
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
-        if let SpawnPayload::AndroidNative { package, start_seq, target_sdk_version } =
-            spawn_payload
+        if let SpawnPayload::AndroidNative {
+            package,
+            start_seq,
+            target_sdk_version,
+            runtime_flags,
+        } = spawn_payload
         {
             // TODO: Handle process dumpability
             // TODO: Enable debugging
             // TODO: Set heap tagging level
-            // TODO: Disable heap zero-initialization
+
+            match RuntimeFlags::from_bits(*runtime_flags) {
+                Some(flags) => {
+                    if !flags.is_native_heap_zero_init_enabled() {
+                        if let Err(errno) = sys::mallopt(libc::M_BIONIC_ZERO_INIT, 0) {
+                            log::warn!("Failed to mallopt(M_BIONIC_ZERO_INIT): {}", errno);
+                        }
+                    }
+                }
+                None => {
+                    log::warn!(
+                        "runtime_flags doesn't have a valid representation: {}",
+                        *runtime_flags
+                    );
+                }
+            }
 
             let target =
                 if *target_sdk_version <= 0 { SDK_VERSION_UNSET } else { *target_sdk_version };
