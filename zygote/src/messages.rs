@@ -97,6 +97,8 @@ pub struct SpawnParamsCommon {
     pub uid: Option<i32>,
     /// Primary GID for the new process
     pub gid: Option<i32>,
+    /// Name of the new process
+    pub process_name: Option<String>,
     /// Initial scheduling priority for child processes immediately after
     /// forking
     pub priority_initial: Option<i32>,
@@ -123,6 +125,7 @@ impl SpawnParamsCommon {
         SpawnParamsCommon {
             uid: self.uid.or(other.uid),
             gid: self.gid.or(other.gid),
+            process_name: self.process_name.clone().or(other.process_name.clone()),
             priority_initial: self.priority_initial.or(other.priority_initial),
             priority_final: self.priority_final.or(other.priority_final),
             cap_effective: self.cap_effective.or(other.cap_effective),
@@ -260,6 +263,8 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                 .as_union_value()
             }
             Message::Spawn { params, payload } => {
+                let process_name = params.process_name.clone().unwrap_or("".to_string());
+                let packed_process_name = (&process_name).to_packed(builder);
                 let packed_groups = params.secondary_groups.to_packed(builder);
                 let packed_rlimits = params.rlimits.to_packed(builder);
                 let packed_payload = payload.marshal(builder);
@@ -268,6 +273,7 @@ impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
                     &inner::SpawnArgs {
                         uid: params.uid.unwrap_or(-1),
                         gid: params.gid.unwrap_or(-1),
+                        process_name: Some(packed_process_name),
                         priority_initial: params.priority_initial.unwrap_or(<i32>::MAX),
                         priority_final: params.priority_final.unwrap_or(<i32>::MAX),
                         cap_effective: params
@@ -366,6 +372,8 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                 let uid = if spawn.uid() > 0 { Some(spawn.uid()) } else { None };
                 let gid = if spawn.gid() > 0 { Some(spawn.gid()) } else { None };
 
+                let process_name = spawn.process_name().map(|s| s.to_string());
+
                 let priority_initial = if (-20..20).contains(&spawn.priority_initial()) {
                     Some(spawn.priority_initial())
                 } else {
@@ -407,6 +415,7 @@ impl<'a> FromParcel<'a> for Message<'a, 'a> {
                     params: SpawnParamsCommon {
                         uid,
                         gid,
+                        process_name,
                         priority_initial,
                         priority_final,
                         cap_effective,
@@ -464,6 +473,8 @@ pub enum MessageParser {
         /// Primary GID for the new process
         #[arg(long)]
         gid: Option<i32>,
+        /// Name of the new process
+        process_name: Option<String>,
         /// Initial scheduling priority for child processes immediately after
         /// forking
         #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
@@ -491,6 +502,7 @@ impl MessageParser {
             MessageParser::Spawn {
                 uid,
                 gid,
+                process_name,
                 priority_initial,
                 priority_final,
                 secondary_groups,
@@ -499,6 +511,7 @@ impl MessageParser {
                 params: SpawnParamsCommon {
                     uid: *uid,
                     gid: *gid,
+                    process_name: process_name.clone(),
                     priority_initial: *priority_initial,
                     priority_final: *priority_final,
                     cap_effective: None,

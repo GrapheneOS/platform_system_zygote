@@ -45,6 +45,8 @@ table Spawn {
     uid: int32;
     gid: int32;
 
+    process_name: string;
+
     priority_initial: int32;
     priority_final: int32;
 

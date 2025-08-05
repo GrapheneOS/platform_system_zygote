@@ -15,7 +15,7 @@
 
 //! Implementation of behaviors for child processes
 
-use core::ffi::CStr;
+use std::ffi::{CStr, CString};
 
 use log::warn;
 
@@ -120,4 +120,10 @@ pub(crate) fn re_initialize(
         .unwrap();
 
     // TODO: Set SELinux context
+
+    if let Some(name) = &spawn_params.process_name {
+        if let Ok(name_cstr) = CString::new(name.clone()) {
+            sys::set_new_process_name(&name_cstr);
+        }
+    }
 }

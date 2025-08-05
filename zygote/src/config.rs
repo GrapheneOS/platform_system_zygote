@@ -73,6 +73,10 @@ pub struct Launch {
     #[arg(long)]
     pub gid: Option<i32>,
 
+    /// Name of the new process
+    #[arg(long)]
+    pub process_name: Option<String>,
+
     /// Initial scheduling priority for child processes immediately after
     /// forking
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
@@ -100,6 +104,7 @@ impl Launch {
         SpawnParamsCommon {
             uid: self.uid,
             gid: self.gid,
+            process_name: self.process_name.clone(),
             priority_initial: self.priority_initial,
             priority_final: self.priority_final,
             cap_effective: None,
@@ -163,6 +168,10 @@ pub struct Server {
     #[arg(long)]
     pub gid: Option<i32>,
 
+    /// Name of the new process
+    #[arg(long)]
+    pub process_name: Option<String>,
+
     /// Initial scheduling priority for child processes immediately after
     /// forking
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
@@ -184,6 +193,7 @@ impl Server {
         SpawnParamsCommon {
             uid: self.uid,
             gid: self.gid,
+            process_name: self.process_name.clone(),
             priority_initial: self.priority_initial,
             priority_final: self.priority_final,
             cap_effective: None,
