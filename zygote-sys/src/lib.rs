@@ -1277,7 +1277,7 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
 /// Android-specific functionality
 #[cfg(target_os = "android")]
 pub mod android {
-    use core::ffi::{c_uint, c_void};
+    use core::ffi::c_uint;
 
     use anyhow::{anyhow, Result};
 
@@ -1396,11 +1396,7 @@ pub mod android {
         // SAFETY: This opcode takes no arguments so a nullptr is passed
         //         instead.
         unsafe {
-            libc_fill::android_mallopt(
-                MalloptOpcode::SetZygoteChild as _,
-                std::ptr::null_mut(),
-                std::mem::size_of::<c_void>(),
-            )
+            libc_fill::android_mallopt(MalloptOpcode::SetZygoteChild as _, std::ptr::null_mut(), 0)
         }
         .then_some(())
         .ok_or_else(|| anyhow!("Call to android_mallopt failed: Opcode = M_SET_ZYGOTE_CHILD"))
