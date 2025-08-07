@@ -91,8 +91,8 @@ enum FileDescriptorInfo {
 impl fmt::Display for FileDescriptorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AbstractSocket { name } => write!(f, "Abstract Socket ({})", name),
-            Self::BoundSocket { path } => write!(f, "Bound Socket ({})", path),
+            Self::AbstractSocket { name } => write!(f, "Abstract Socket ({name})"),
+            Self::BoundSocket { path } => write!(f, "Bound Socket ({path})"),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
             Self::SignalFd => write!(f, "SignalFD"),
@@ -153,7 +153,7 @@ impl FileDescriptorInfo {
         // using F_SETFD - we're single threaded at this point of execution so
         // there won't be any races.
         let fd_flags = sys::fcntl_getfd(fd)
-            .with_context(|| format!("Unable to call fcntl(F_GETFD) for FD {}", fd))?;
+            .with_context(|| format!("Unable to call fcntl(F_GETFD) for FD {fd}"))?;
 
         // File status flags :
         // - File access mode : (O_RDONLY, O_WRONLY...) we'll pass these through
@@ -168,7 +168,7 @@ impl FileDescriptorInfo {
         //   In particular, it can't set O_SYNC and O_DSYNC. We'll have to test for
         //   their presence and pass them in to open().
         let fs_flags = sys::fcntl_getfl(fd)
-            .with_context(|| format!("Unable to call fcntl(F_GETFL) for FD {}", fd))?;
+            .with_context(|| format!("Unable to call fcntl(F_GETFL) for FD {fd}"))?;
 
         // File offset : Ignore the offset for non seekable files.
         let offset = sys::lseek64(fd, 0, libc::SEEK_CUR).unwrap_or_default();
@@ -538,18 +538,18 @@ impl FileDescriptorRegistry {
                     if self.abstract_socket_is_allowed(name) {
                         Action::DupeNull
                     } else {
-                        panic!("Abstract socket name not found in allow list ({}): {}", fd, name);
+                        panic!("Abstract socket name not found in allow list ({fd}): {name}");
                     }
                 }
                 FileDescriptorInfo::BoundSocket { ref path, .. } => {
                     if self.bound_socket_is_allowed(path) {
                         Action::DupeNull
                     } else {
-                        panic!("Bound socket name not found in allow list ({}): {}", fd, path);
+                        panic!("Bound socket name not found in allow list ({fd}): {path}");
                     }
                 }
                 FileDescriptorInfo::Fifo => {
-                    panic!("Unregistered FIFO fd found: {}", fd);
+                    panic!("Unregistered FIFO fd found: {fd}");
                 }
                 FileDescriptorInfo::File { ref path, .. } => {
                     if self.file_is_allowed(path.as_cstr().unwrap()) {
@@ -557,11 +557,11 @@ impl FileDescriptorRegistry {
                             .get_file_action(path.as_cstr().unwrap())
                             .unwrap_or(Action::Reopen)
                     } else {
-                        panic!("File path not found on allow list ({}): {:?}", fd, path);
+                        panic!("File path not found on allow list ({fd}): {path:?}");
                     }
                 }
                 FileDescriptorInfo::SignalFd => {
-                    panic!("Unregistered signal fd found: {}", fd);
+                    panic!("Unregistered signal fd found: {fd}");
                 }
             };
 

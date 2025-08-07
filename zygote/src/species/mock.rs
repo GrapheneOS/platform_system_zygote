@@ -70,7 +70,7 @@ impl Species for Turtle {
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::Mock { name } = spawn_payload {
-            println!("Hello from the child process.  My name is {}", name);
+            println!("Hello from the child process.  My name is {name}");
             std::process::exit(0)
         } else {
             panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);

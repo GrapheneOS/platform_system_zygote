@@ -82,7 +82,7 @@ impl Species for App {
                 if *target_sdk_version <= 0 { SDK_VERSION_UNSET } else { *target_sdk_version };
             sys::android::set_application_target_sdk_version(target);
 
-            println!("Hello from the child process.  My name is {}", package);
+            println!("Hello from the child process.  My name is {package}");
 
             run_native_activity_thread(*start_seq);
         } else {
@@ -109,7 +109,7 @@ impl Species for App {
         }
 
         if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
-            log::error!("Failed to mallopt(M_DECAY_TIME): {}", errno);
+            log::error!("Failed to mallopt(M_DECAY_TIME): {errno}");
         }
     }
 

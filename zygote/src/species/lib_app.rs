@@ -82,7 +82,7 @@ impl Species for App {
             //         checked.
             let library = unsafe { Library::open(Some(library_path), RTLD_NOW | RTLD_GLOBAL) }
                 .unwrap_or_else(|err| {
-                    error!("Failure to load shared library ({:?}): {}", library_path, err);
+                    error!("Failure to load shared library ({library_path:?}): {err}");
                     std::process::exit(1);
                 });
 
@@ -90,7 +90,7 @@ impl Species for App {
             let entry_function: Symbol<unsafe fn(Vec<String>) -> i32> =
                 // SAFETY: The symbol name is part of the API for LibApps.
                 unsafe { library.get(ENTRY_SYMBOL_NAME.to_bytes()) }.unwrap_or_else(|err| {
-                    error!("Symbol `zygote_entry` not found in shared library: {}", err);
+                    error!("Symbol `zygote_entry` not found in shared library: {err}");
                     std::process::exit(1);
                 });
 
@@ -98,7 +98,7 @@ impl Species for App {
                 if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
                     // EINVAL, EPERM, and ESRCH only apply when setting the
                     // priority of other processes.
-                    warn!("Insufficient permissions to set priority: {}", priority);
+                    warn!("Insufficient permissions to set priority: {priority}");
                 }
             }
 

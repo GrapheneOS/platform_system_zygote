@@ -70,18 +70,18 @@ fn handle_command_transaction(builder: FlatBufferBuilder, client_socket: RawFd) 
             info!("Message acknowledged");
         }
         Message::IdentityQueryResponse { .. } => {
-            info!("Identity query successful: {:?}", response);
-            println!("{:?}", response);
+            info!("Identity query successful: {response:?}");
+            println!("{response:?}");
         }
         Message::SpawnResponse { pid } => {
-            info!("Spawn successful; New process pid: {}", pid);
+            info!("Spawn successful; New process pid: {pid}");
         }
         Message::StatResponse { .. } => {
-            info!("Stat response: {:?}", response);
-            println!("{:?}", response);
+            info!("Stat response: {response:?}");
+            println!("{response:?}");
         }
         msg => {
-            error!("Unexpected response message: {:?}", msg);
+            error!("Unexpected response message: {msg:?}");
         }
     }
 

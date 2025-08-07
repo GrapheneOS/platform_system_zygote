@@ -180,7 +180,7 @@ impl Server {
         //           moving between existing ones
         //  * EPERM: Not applicable; calling on self
         if let Err(errno) = sys::setpgid(0, 0) {
-            error!("Failed to create process group for Zygote server: {}", errno);
+            error!("Failed to create process group for Zygote server: {errno}");
             std::process::exit(1);
         }
 
@@ -188,7 +188,7 @@ impl Server {
 
         #[cfg(target_os = "android")]
         if let Err(errno) = sys::mallopt(libc::M_PURGE_ALL, 0) {
-            error!("Failed to mallopt(M_PURGE_ALL): {}", errno);
+            error!("Failed to mallopt(M_PURGE_ALL): {errno}");
         }
 
         server
@@ -267,7 +267,7 @@ impl Server {
         for client_pollfd in partition.clients {
             // POLLERR and POLLNVAL should never occur for a client socket.
             let checked_pollfd = client_pollfd.check().unwrap_or_else(|(fd, error_events)| {
-                panic!("Received polling error for client socket {}: {:?}", fd, error_events)
+                panic!("Received polling error for client socket {fd}: {error_events:?}")
             });
 
             let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
@@ -449,7 +449,7 @@ impl Server {
             }
             Message::Stat => self.handle_message_stat(fd),
             msg => {
-                warn!("Server received invalid message: {:?}", msg);
+                warn!("Server received invalid message: {msg:?}");
 
                 // Continue the `recvmsg` loop
                 Continue
@@ -509,7 +509,7 @@ impl Server {
         debug_assert_ok!(self.registry.audit());
 
         let message = Message::try_from_parcel(&message_buffer).unwrap();
-        info!("Received message: ({:?})", message);
+        info!("Received message: ({message:?})");
 
         // TODO: Implement logic to lock some or all of the common spawn
         //       parameters, preventing them from being set by a spawn message.
@@ -536,7 +536,7 @@ impl Server {
                 if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
                     // EINVAL, EPERM, and ESRCH only apply when setting the
                     // priority of other processes.
-                    warn!("Insufficient permissions to set priority: {}", priority);
+                    warn!("Insufficient permissions to set priority: {priority}");
                 }
             }
 
@@ -574,12 +574,12 @@ impl Server {
             }))
         } else {
             // Server process
-            info!("Spawned process {}", new_pid);
+            info!("Spawned process {new_pid}");
             let response = Message::SpawnResponse { pid: new_pid };
             match Self::send_response(fd, response.to_parcel().finished_data()) {
                 Ok(_) => Continue,
                 Err(errno) => {
-                    error!("Failed to send Spawn response: {}", errno);
+                    error!("Failed to send Spawn response: {errno}");
                     Break(ClientLoopControl::Error(
                         fd,
                         anyhow!("Failed to send Spawn response: {errno}"),
@@ -597,7 +597,7 @@ impl Server {
         let proc = match ProcStat::get() {
             Ok(proc) => proc,
             Err(err) => {
-                error!("Failed to get ProcStat: {:?}", err);
+                error!("Failed to get ProcStat: {err:?}");
                 return Break(ClientLoopControl::Error(fd, err));
             }
         };

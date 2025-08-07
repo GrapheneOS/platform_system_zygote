@@ -21,7 +21,7 @@
 pub fn zygote_entry(args: Vec<String>) -> i32 {
     println!("Hello from MemMark!");
 
-    println!("Arguments: {:?}", args);
+    println!("Arguments: {args:?}");
 
     0
 }

@@ -51,7 +51,7 @@ pub(crate) fn re_initialize(
             warn!("Insufficient permissions to set SECBIT_KEEP_CAPS in child process");
         }
         Err(errno) => {
-            panic!("Failed to set secure bits in child process: {}", errno);
+            panic!("Failed to set secure bits in child process: {errno}");
         }
         _ => {}
     }

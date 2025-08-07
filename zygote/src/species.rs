@@ -151,6 +151,6 @@ impl FromStr for SpeciesRef {
             }
         }
 
-        Err(format!("No species defined with name '{}'", s))
+        Err(format!("No species defined with name '{s}'"))
     }
 }
