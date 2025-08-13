@@ -27,7 +27,7 @@ use crate::{
     messages::{self, SpawnParamsCommon, SpawnPayload},
     species::Species,
 };
-use zygote_sys as sys;
+use zygote_sys::{self as sys, AsCStr};
 
 const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";
 const ANDROID_SOCKET_DIR: &str = "/dev/socket";
@@ -130,6 +130,7 @@ impl Species for App {
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::AndroidNative {
             package,
+            se_info: _,
             start_seq,
             target_sdk_version,
             runtime_flags,
@@ -177,7 +178,41 @@ impl Species for App {
         None
     }
 
-    fn re_initialize_prologue(&self, re_init_data: super::ReInitWrapper) {
+    fn re_initialize_epilogue(
+        &self,
+        spawn_params: &SpawnParamsCommon,
+        spawn_payload: &SpawnPayload,
+        _re_init_data: &super::ReInitWrapper,
+    ) {
+        let uid = spawn_params.uid.expect("No UID specified");
+        let se_info = if let SpawnPayload::AndroidNative { se_info, .. } = spawn_payload {
+            se_info
+        } else {
+            panic!("No SE Linux info specified");
+        };
+
+        let mut se_info_buffer = sys::BUFFER_INIT_CSTRING;
+        se_info_buffer[0..se_info.len()].copy_from_slice(se_info.as_bytes());
+
+        let process_name = spawn_params.process_name.as_ref().expect("No process name specified");
+        let mut process_name_buffer = sys::BUFFER_INIT_CSTRING;
+        process_name_buffer[0..process_name.len()].copy_from_slice(process_name.as_bytes());
+
+        sys::android::set_selinux_context(
+            uid as libc::uid_t,
+            false,
+            se_info_buffer.as_cstr().unwrap(),
+            process_name_buffer.as_cstr().unwrap(),
+        )
+        .expect("Unable to transition SE Linux contexts");
+    }
+
+    fn re_initialize_prologue(
+        &self,
+        _spawn_params: &SpawnParamsCommon,
+        _spawn_payload: &SpawnPayload,
+        re_init_data: &super::ReInitWrapper,
+    ) {
         debug_assert_single_threaded();
 
         // SAFETY: This is called in a single-threaded context

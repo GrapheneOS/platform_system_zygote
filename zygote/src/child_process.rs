@@ -23,7 +23,7 @@ use capwrap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 use zygote_sys as sys;
 
 use crate::{
-    messages::SpawnParamsCommon,
+    messages::{SpawnParamsCommon, SpawnPayload},
     species::{ReInitWrapper, SpeciesRef},
 };
 
@@ -36,10 +36,11 @@ pub(crate) fn re_initialize(
     species: SpeciesRef,
     re_init_data: ReInitWrapper,
     spawn_params: &SpawnParamsCommon,
+    spawn_payload: &SpawnPayload,
 ) {
     // Perform any species-specific re-initialization before we adjust
     // capabilities and user/group IDs.
-    species.re_initialize_prologue(re_init_data);
+    species.re_initialize_prologue(spawn_params, spawn_payload, &re_init_data);
 
     // Set the process name
     sys::set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
@@ -88,12 +89,17 @@ pub(crate) fn re_initialize(
         .unwrap();
     }
 
+    // Set the main group ID
     if let Some(gid) = spawn_params.gid {
         let gid = gid as libc::gid_t;
         sys::setresgid(gid, gid, gid).unwrap();
     }
 
+    // TODO: Set the scheduling policy
+    // Must be called before losing the permission to set scheduler policy.
+
     // Set SecComp filters
+    //
     // Must be called when the new process still has CAP_SYS_ADMIN, in this case,
     // before changing uid from 0, which clears capabilities.  The other
     // alternative is to call prctl(PR_SET_NO_NEW_PRIVS, 1) afterward, but that
@@ -101,14 +107,12 @@ pub(crate) fn re_initialize(
     // privileged syscalls used below still need to be accessible in app process.
     species.set_seccomp_filters(spawn_params);
 
-    // TODO: Set the scheduling policy
-    // Must be called before losing the permission to set scheduler policy.
-
     if let Some(uid) = spawn_params.uid {
         let uid = uid as libc::uid_t;
         sys::setresuid(uid, uid, uid).unwrap();
     }
 
+    // Overwrite the capabilities set with the new values
     CapabilitiesSet::load()
         .unwrap()
         .overwrite_some(
@@ -119,11 +123,12 @@ pub(crate) fn re_initialize(
         .store_overwrite()
         .unwrap();
 
-    // TODO: Set SELinux context
-
+    // Set the process name
     if let Some(name) = &spawn_params.process_name {
         if let Ok(name_cstr) = CString::new(name.clone()) {
             sys::set_new_process_name(&name_cstr);
         }
     }
+
+    species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
 }

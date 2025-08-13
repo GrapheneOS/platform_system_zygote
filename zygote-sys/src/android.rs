@@ -15,7 +15,7 @@
 
 //! This module provides safe wrappers around Android-specific functionality
 
-use core::ffi::c_uint;
+use core::ffi::{c_uint, CStr};
 
 use anyhow::{anyhow, Result};
 
@@ -196,8 +196,21 @@ pub fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()>
     libc_result_from_int_with_void(inner::set_sched_policy(tid, policy))
 }
 
+/// A wrapper around Android's SELinux context switching mechanism.
+pub fn set_selinux_context(
+    uid: libc::uid_t,
+    is_system_server: bool,
+    se_info: &CStr,
+    name: &CStr,
+) -> LibcResult<()> {
+    // SAFETY: Both `seinfo` and `name` are valid, null-terminated, C-strings
+    libc_result_from_int_with_void(unsafe {
+        inner::selinux_android_setcontext(uid, is_system_server, se_info.as_ptr(), name.as_ptr())
+    })
+}
+
 mod inner {
-    use core::ffi::{c_int, c_uint, c_void};
+    use core::ffi::{c_char, c_int, c_uint, c_void};
 
     use super::SchedPolicy;
 
@@ -235,6 +248,13 @@ mod inner {
         ///
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
         pub safe fn android_set_application_target_sdk_version(target: c_int);
+
+        pub fn selinux_android_setcontext(
+            uid: libc::uid_t,
+            is_system_server: bool,
+            seinfo: *const c_char,
+            name: *const c_char,
+        ) -> c_int;
     }
 
     #[allow(dead_code)]

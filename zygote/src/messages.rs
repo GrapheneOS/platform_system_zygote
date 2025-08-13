@@ -15,7 +15,7 @@
 
 //! Generated Rust bindings for the FlatBuffer schema defined in `schemas/messages.fbs`
 
-#[allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
+#[allow(dead_code, mismatched_lifetime_syntaxes, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
 mod inner {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
@@ -542,6 +542,8 @@ pub enum SpawnPayload<'a> {
     AndroidNative {
         /// Name of the package to start
         package: &'a str,
+        /// SELinux labels for the new process
+        se_info: &'a str,
         /// Id of the spawn request
         start_seq: i64,
         /// The target SDK version for the app.
@@ -571,6 +573,7 @@ impl<'a> SpawnPayload<'a> {
                     spawn.payload_as_spawn_android_native().unwrap();
                 Ok(SpawnPayload::AndroidNative {
                     package: payload.package(),
+                    se_info: payload.se_info(),
                     start_seq: payload.start_seq(),
                     target_sdk_version: payload.target_sdk_version(),
                     runtime_flags: payload.runtime_flags(),
@@ -610,15 +613,18 @@ impl EnumToFlatBufferUnion<inner::SpawnPayload> for SpawnPayload<'_> {
         match self {
             SpawnPayload::AndroidNative {
                 package,
+                se_info,
                 start_seq,
                 target_sdk_version,
                 runtime_flags,
             } => {
                 let packed_package = package.to_packed(builder);
+                let packed_se_info = se_info.to_packed(builder);
                 inner::SpawnAndroidNative::create(
                     builder,
                     &inner::SpawnAndroidNativeArgs {
                         package: Some(packed_package),
+                        se_info: Some(packed_se_info),
                         start_seq: *start_seq,
                         target_sdk_version: *target_sdk_version,
                         runtime_flags: *runtime_flags,
@@ -654,6 +660,9 @@ pub enum SpawnPayloadParser {
         /// The package to execute
         #[arg(required(true))]
         package: String,
+        /// SELinux labels for the new process
+        #[arg(required(true))]
+        se_info: String,
         /// Id of the spawn request
         #[arg(required(true))]
         start_seq: i64,
@@ -700,11 +709,13 @@ impl SpawnPayloadParser {
             #[cfg(target_os = "android")]
             SpawnPayloadParser::AndroidNative {
                 package,
+                se_info,
                 start_seq,
                 target_sdk_version,
                 runtime_flags,
             } => Ok(SpawnPayload::AndroidNative {
                 package: package.as_str(),
+                se_info: se_info.as_str(),
                 start_seq: *start_seq,
                 target_sdk_version: *target_sdk_version,
                 runtime_flags: *runtime_flags,

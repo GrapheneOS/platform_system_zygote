@@ -133,8 +133,22 @@ pub trait Species {
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
-    /// Child-process re-initialization logic that runs before [`child_process::re_initialize`]
-    fn re_initialize_prologue(&self, re_init_data: ReInitWrapper);
+    /// Child-process re-initialization logic that runs before the rest of the
+    /// code in [`child_process::re_initialize`]
+    fn re_initialize_epilogue(
+        &self,
+        spawn_params: &SpawnParamsCommon,
+        spawn_payload: &SpawnPayload,
+        re_init_data: &ReInitWrapper,
+    );
+    /// Child-process re-initialization logic that runs before the rest of the
+    /// code in [`child_process::re_initialize`]
+    fn re_initialize_prologue(
+        &self,
+        spawn_params: &SpawnParamsCommon,
+        spawn_payload: &SpawnPayload,
+        re_init_data: &ReInitWrapper,
+    );
     /// A callback for setting SecComp filters
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon);
 

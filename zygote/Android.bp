@@ -82,6 +82,7 @@ rust_defaults {
         android: {
             shared_libs: [
                 "libseccomp_policy",
+                "libselinux",
             ],
             rustlibs: [
                 "libnative_activity_thread",

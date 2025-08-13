@@ -74,7 +74,8 @@ const_assert!(
 // TODO: Consider making this an ArrayVec
 /// Buffers used for static string allocations
 pub type CStringBuffer = [u8; BUFFER_SIZE_STRINGS];
-const BUFFER_INIT_CSTRING: CStringBuffer = [0u8; BUFFER_SIZE_STRINGS];
+/// A zero-initialized buffer, ensuring null-terminated strings
+pub const BUFFER_INIT_CSTRING: CStringBuffer = [0u8; BUFFER_SIZE_STRINGS];
 
 /// Helper trait for converting types into `CStr`s
 pub trait AsCStr {

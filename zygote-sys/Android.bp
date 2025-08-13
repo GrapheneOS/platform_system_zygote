@@ -37,6 +37,7 @@ rust_library {
             shared_libs: [
                 "libdl_android",
                 "libprocessgroup",
+                "libselinux",
             ],
         },
     },
