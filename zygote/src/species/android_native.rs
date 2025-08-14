@@ -16,7 +16,7 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use bitflags::bitflags;
-use core::ffi::CStr;
+use core::ffi::{c_int, CStr};
 use native_activity_thread::run_native_activity_thread;
 
 use crate::{
@@ -57,6 +57,15 @@ bitflags! {
 }
 
 impl RuntimeFlags {
+    fn get_heap_tagging_level(&self) -> c_int {
+        match self.intersection(Self::MEMORY_TAG_LEVEL_MASK) {
+            Self::MEMORY_TAG_LEVEL_TBI => libc::M_HEAP_TAGGING_LEVEL_TBI,
+            Self::MEMORY_TAG_LEVEL_ASYNC => libc::M_HEAP_TAGGING_LEVEL_ASYNC,
+            Self::MEMORY_TAG_LEVEL_SYNC => libc::M_HEAP_TAGGING_LEVEL_SYNC,
+            _ => libc::M_HEAP_TAGGING_LEVEL_NONE,
+        }
+    }
+
     fn is_native_heap_zero_init_enabled(&self) -> bool {
         self.contains(Self::NATIVE_HEAP_ZERO_INIT_ENABLED)
     }
@@ -111,10 +120,16 @@ impl Species for App {
         {
             // TODO: Handle process dumpability
             // TODO: Enable debugging
-            // TODO: Set heap tagging level
 
             match RuntimeFlags::from_bits(*runtime_flags) {
                 Some(flags) => {
+                    if let Err(errno) = sys::mallopt(
+                        libc::M_BIONIC_SET_HEAP_TAGGING_LEVEL,
+                        flags.get_heap_tagging_level(),
+                    ) {
+                        log::warn!("Failed to mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL): {}", errno);
+                    }
+
                     if !flags.is_native_heap_zero_init_enabled() {
                         if let Err(errno) = sys::mallopt(libc::M_BIONIC_ZERO_INIT, 0) {
                             log::warn!("Failed to mallopt(M_BIONIC_ZERO_INIT): {}", errno);
