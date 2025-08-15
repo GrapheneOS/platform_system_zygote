@@ -20,6 +20,7 @@ log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
 zerocopy = "0.8.21"
 zygote-sys = { path = "../zygote-sys" }
+zygote_proc_macros = { path = "../zygote-proc-macros" }
 
 [build-dependencies]
 which = "7.0.3"

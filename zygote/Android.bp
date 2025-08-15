@@ -78,6 +78,7 @@ rust_defaults {
         "libzerocopy",
         "libzygote_sys",
     ],
+    proc_macros: ["libzygote_proc_macros"],
     target: {
         android: {
             shared_libs: [
@@ -121,6 +122,7 @@ rust_binary {
         "libzygote",
         "libzygote_sys",
     ],
+    proc_macros: ["libzygote_proc_macros"],
     init_rc: [
         "zygote_next.rc",
     ],
