@@ -145,7 +145,8 @@ impl Server {
         let (server_socket, server_socket_path) = Self::get_server_socket(config).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
 
-        let sigset = sys::build_sigset(&[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]).unwrap();
+        let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
+        // These masks are unblocked in Server::drop.
         sys::sigprocmask(libc::SIG_BLOCK, &sigset).unwrap();
         let signal_fd = sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).unwrap();
         registry.register(signal_fd, file_descriptors::Action::Close);
@@ -192,6 +193,10 @@ impl Server {
         }
 
         server
+    }
+
+    const fn blocked_signals() -> &'static [libc::c_int] {
+        &[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]
     }
 
     /// Produce a socket file descriptor by one of the following methods:
@@ -781,6 +786,7 @@ impl Drop for Server {
             self.registry.execute_actions();
         }
 
-        // TODO: Restore signal mask
+        let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
+        sys::sigprocmask(libc::SIG_UNBLOCK, &sigset).unwrap();
     }
 }
