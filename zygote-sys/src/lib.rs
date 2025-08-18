@@ -260,7 +260,7 @@ macro_rules! from_bytes_c {
     }
 }
 
-from_bytes_c!(libc::ucred, libc::signalfd_siginfo);
+from_bytes_c!(c_int, libc::ucred, libc::signalfd_siginfo);
 
 // SAFETY: Passing raw byte arrays to `libc` calls is safe.  This leaves the
 //         safety of casting to and from bytes up to the caller.
@@ -465,6 +465,11 @@ pub fn create_bound_socket(path: &str, protocol: c_int) -> Result<RawFd> {
 /// Select the file-type bits from the `mode` value
 pub fn get_file_type(stat: libc::stat) -> libc::mode_t {
     (stat.st_mode as libc::mode_t) & libc::S_IFMT
+}
+
+/// Get the socket type of a UNIX domain socket.
+pub fn get_socket_type(fd: RawFd) -> LibcResult<c_int> {
+    getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE)
 }
 
 /// Get the PID, UID, and GID for the remote end of a UNIX domain socket.

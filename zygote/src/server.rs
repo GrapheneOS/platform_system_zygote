@@ -45,7 +45,6 @@ use crate::{
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
 const BUFFER_SIZE_POLL: usize = 64;
 const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
-const ZYGOTE_SOCKET_PREFIX: &str = "/dev/socket/";
 
 type PollBuffer = ArrayVec<PollFd, BUFFER_SIZE_POLL>;
 
@@ -204,18 +203,11 @@ impl Server {
     ///   * Opening a new socket and binding it to the provided path
     ///   * Opening a new socket and binding it to a default path
     fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
-        if config.socket.is_empty() {
-            let mut socket_path = std::path::PathBuf::from(ZYGOTE_SOCKET_PREFIX);
-            socket_path.push(config.name.clone());
-
-            std::fs::create_dir_all(ZYGOTE_SOCKET_PREFIX).unwrap();
-            let socket_fd =
-                sys::create_bound_socket(socket_path.to_str().unwrap(), libc::SOCK_SEQPACKET)?;
-            sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
-            sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
-
-            Ok((socket_fd, Some(socket_path.to_str().unwrap().to_owned())))
-        } else if let Ok(fd) = config.socket.parse::<RawFd>() {
+        let socket_path_or_fd = config
+            .species
+            .resolve_socket(config)
+            .ok_or_else(|| anyhow!("Could not determine a socket to listen to"))?;
+        if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {
                 bail!("Provided integer argument does not refer to an open file: {}", fd);
             }
@@ -225,26 +217,30 @@ impl Server {
                 bail!("Provided file descriptor does not refer to a valid socket: {}", fd);
             }
 
+            if sys::get_socket_type(fd)? != libc::SOCK_SEQPACKET {
+                bail!("Provided file descriptor does not refer to a seqpacket socket: {}", fd);
+            }
+
             sys::fcntl_setfl(fd, libc::O_NONBLOCK)?;
             sys::listen(fd, SERVER_SOCKET_BACKLOG)?;
 
             Ok((fd, None))
         } else {
-            let arg_path = Path::new(&config.socket);
+            let arg_path = Path::new(&socket_path_or_fd);
 
             if arg_path.exists() {
-                bail!("Socket argument paths already exists: {}", &config.socket);
+                bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
             }
 
             std::fs::create_dir_all(
                 arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
             )?;
 
-            let socket_fd = sys::create_bound_socket(&config.socket, libc::SOCK_SEQPACKET)?;
+            let socket_fd = sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?;
             sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
             sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
 
-            Ok((socket_fd, Some(config.socket.clone())))
+            Ok((socket_fd, Some(socket_path_or_fd.clone())))
         }
     }
 
