@@ -34,12 +34,13 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
+use itertools::{EitherOrBoth, Itertools};
 use zerocopy::IntoBytes;
 
 use zygote_sys::{self as sys, AsCStr, CStringBuffer};
 
 use crate::{
-    introspection::{self, debug_assert_single_threaded, get_proc_fd_link_info},
+    introspection::{debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator},
     species::SpeciesRef,
 };
 
@@ -394,30 +395,30 @@ impl FileDescriptorRegistry {
     pub fn audit(&self) -> Result<usize> {
         debug_assert_single_threaded();
 
-        let open_fds: Vec<RawFd> = introspection::get_open_file_descriptors().unwrap();
-        for index in 0..std::cmp::max(self.data.len(), open_fds.len()) {
-            if open_fds.len() <= index || self.data[index].fd < open_fds[index] {
-                bail!(
-                    "File descriptor {} ({}) was CLOSED unexpectedly.",
-                    self.data[index].fd,
-                    self.data[index].info
-                );
-            } else if self.data.len() <= index || self.data[index].fd > open_fds[index] {
-                bail!(
-                    "File descriptor {} ({}) was OPENED unexpectedly.",
-                    open_fds[index],
-                    FileDescriptorInfo::try_from(open_fds[index]).unwrap()
-                );
-            } else
-            /* if self.data[index].fd == open_fds[index] */
-            {
-                let current_info = FileDescriptorInfo::try_from(open_fds[index]).unwrap();
-                if self.data[index].info != current_info {
-                    bail!(
-                        "File descriptor {} ({}) has been REOPENED or MODIFIED",
-                        self.data[index].fd,
-                        self.data[index].info
-                    );
+        for item in self.data.iter().zip_longest(ProcFdIterator::new()?) {
+            match item {
+                EitherOrBoth::Both(entry, Ok(open_fd)) => {
+                    if entry.fd != open_fd {
+                        bail!("Registry out of sync: expected {} but found {}", entry.fd, open_fd);
+                    }
+                    let current_info = FileDescriptorInfo::try_from(open_fd)?;
+                    if entry.info != current_info {
+                        bail!(
+                            "File descriptor {} ({}) has been REOPENED or MODIFIED",
+                            entry.fd,
+                            entry.info
+                        );
+                    }
+                }
+                EitherOrBoth::Left(entry) => {
+                    bail!("File descriptor {} ({}) was CLOSED unexpectedly.", entry.fd, entry.info)
+                }
+                EitherOrBoth::Right(Ok(open_fd)) => {
+                    let fd = FileDescriptorInfo::try_from(open_fd)?;
+                    bail!("File descriptor {} ({}) was OPENED unexpectedly.", open_fd, fd)
+                }
+                EitherOrBoth::Both(_, Err(e)) | EitherOrBoth::Right(Err(e)) => {
+                    bail!(e)
                 }
             }
         }
@@ -525,9 +526,8 @@ impl FileDescriptorRegistry {
         let mut registry_index: usize = 0;
         let num_preexisting_entries = self.data.len();
 
-        let open_fds: Vec<RawFd> = introspection::get_open_file_descriptors().unwrap();
-
-        for fd in open_fds {
+        for fd in ProcFdIterator::new().unwrap() {
+            let fd = fd.unwrap();
             if self.is_registered(fd, &mut registry_index, num_preexisting_entries) {
                 continue;
             }
@@ -582,7 +582,8 @@ impl FileDescriptorRegistry {
 
         println!("Scanning open file descriptors:");
 
-        for fd in introspection::get_open_file_descriptors().unwrap() {
+        for fd in ProcFdIterator::new().unwrap() {
+            let fd = fd.unwrap();
             println!("\t{} -> {}", fd, FileDescriptorInfo::try_from(fd).unwrap());
         }
     }

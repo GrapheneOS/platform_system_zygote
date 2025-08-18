@@ -231,7 +231,6 @@ impl PollFdChecked<'_> {
     }
 }
 
-// TODO: Consider adding [`closedir`] as a destructor.
 /// Wrapper class for a `libc::DIR` pointer
 pub struct LibcDir {
     inner: NonNull<libc::DIR>,
@@ -242,6 +241,15 @@ impl LibcDir {
     /// Module-private constructor for [`LibcDir`]
     fn from_raw(inner: NonNull<libc::DIR>) -> Self {
         Self { inner }
+    }
+}
+
+impl Drop for LibcDir {
+    fn drop(&mut self) {
+        // SAFETY: The LibcDir argument can only be constructed by the `opendir`
+        //         function which also checks to ensure that the pointer is
+        //         non-null.
+        unsafe { libc::closedir(self.inner.as_ptr()) };
     }
 }
 
