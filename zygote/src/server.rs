@@ -518,7 +518,7 @@ impl Server {
 
         let re_init_data = self.species.gather_reinitialization_data();
 
-        let clone_args = sys::clone_args::new();
+        // let clone_args = sys::clone_args::new();
 
         // SAFETY: This is called in a single-threaded context.
         //
@@ -530,7 +530,9 @@ impl Server {
         //         ERESTARTNOINTR will not trigger during normal operations as
         //         signals are handled via a signalfd and not asynchronous
         //         signal handlers.  Errors are logged below.
-        match unsafe { sys::clone3(&clone_args) } {
+        //
+        // TODO: Revert to using `clone3` after b/439747272 is resolved
+        match unsafe { sys::fork() } {
             Ok(0) => {
                 // Child process
 
@@ -600,20 +602,20 @@ impl Server {
                     error!("Version 2 cgroup contains an enabled domain controller: <TODO>");
                 } else if errno.is(libc::EEXIST) {
                     error!("`set_tid` value already exists in the current namespace");
-                } else if errno.is(libc::EINVAL) {
-                    error!(
-                        "Invalid argument combination to `clone3()` (see man page for details): {clone_args:?}"
-                    );
+                // } else if errno.is(libc::EINVAL) {
+                //     error!(
+                //         "Invalid argument combination to `clone3()` (see man page for details): {clone_args:?}"
+                //     );
                 } else if errno.is(libc::ENOMEM) {
                     error!("Cannot allocate sufficient memory for a new process");
-                } else if errno.is(libc::ENOSPC) {
-                    error!(
-                        "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {clone_args:?}");
+                // } else if errno.is(libc::ENOSPC) {
+                //     error!(
+                //         "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {clone_args:?}");
                 } else if errno.is(libc::EOPNOTSUPP) {
                     // TODO: Print the actual cgroup path once it is present in the spawn params.
                     error!("Destination version 2 cgroup is currently in a domain invalid state: <TODO>");
-                } else if errno.is(libc::EPERM) {
-                    error!("Server lacks the correct permissions to clone with the provided arguments: {clone_args:?}");
+                // } else if errno.is(libc::EPERM) {
+                //     error!("Server lacks the correct permissions to clone with the provided arguments: {clone_args:?}");
                 } else {
                     error!("Unexpected error code returned by call to `clone3()`: {errno}");
                 }
