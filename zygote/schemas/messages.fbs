@@ -24,6 +24,7 @@ table SpawnAndroidNative {
     package: string (required);
     start_seq: int64;
     target_sdk_version: int32;
+    runtime_flags: uint32;
 }
 
 table SpawnMock {
