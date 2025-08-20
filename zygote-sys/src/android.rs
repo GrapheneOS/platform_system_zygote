@@ -15,7 +15,7 @@
 
 //! This module provides safe wrappers around Android-specific functionality
 
-use core::ffi::{c_uint, c_void};
+use core::ffi::c_uint;
 
 use anyhow::{anyhow, Result};
 
@@ -163,15 +163,9 @@ pub unsafe fn fdsan_set_error_level(level: FDSanErrorLevel) -> FDSanErrorLevel {
 pub fn set_zygote_child() -> Result<()> {
     // SAFETY: This opcode takes no arguments so a nullptr is passed
     //         instead.
-    unsafe {
-        inner::android_mallopt(
-            MalloptOpcode::SetZygoteChild as _,
-            std::ptr::null_mut(),
-            std::mem::size_of::<c_void>(),
-        )
-    }
-    .then_some(())
-    .ok_or_else(|| anyhow!("Call to android_mallopt failed: Opcode = M_SET_ZYGOTE_CHILD"))
+    unsafe { inner::android_mallopt(MalloptOpcode::SetZygoteChild as _, std::ptr::null_mut(), 0) }
+        .then_some(())
+        .ok_or_else(|| anyhow!("Call to android_mallopt failed: Opcode = M_SET_ZYGOTE_CHILD"))
 }
 
 /// Reset the thread local stack protection salt.
