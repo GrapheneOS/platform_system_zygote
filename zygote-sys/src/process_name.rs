@@ -118,7 +118,7 @@ pub mod android {
     /// # Safety
     /// This function assumes the C runtime passes valid arguments, which is a specific behavior to
     /// some libc implementations (including bionic).
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn args_initializer(
         argc: c_int,
         argv: *mut *mut c_char,
@@ -138,7 +138,7 @@ pub mod android {
         *arg = Some(ArgumentRegion { argv0: argv0_ptr, capacity });
     }
 
-    #[link_section = ".init_array"]
+    #[unsafe(link_section = ".init_array")]
     #[used]
     static CONSTRUCTOR_PTR: unsafe extern "C" fn(c_int, *mut *mut c_char, *mut *mut c_char) =
         args_initializer;

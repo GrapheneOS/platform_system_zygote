@@ -57,7 +57,7 @@ cc_library_headers {
 rust_defaults {
     name: "libzygote_defaults",
     host_supported: true,
-    edition: "2021",
+    edition: "2024",
     srcs: [
         "src/lib.rs",
         ":libzygote_schemas-rust",
@@ -86,7 +86,7 @@ rust_defaults {
             ],
             rustlibs: [
                 "libnative_activity_thread",
-            ]
+            ],
         },
     },
 }

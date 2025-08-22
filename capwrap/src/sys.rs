@@ -63,7 +63,7 @@ pub(crate) type cap_user_data_const_t = *const __user_cap_data_struct;
 #[allow(non_camel_case_types)]
 pub(crate) type cap_value_t = c_int;
 
-extern "C" {
+unsafe extern "C" {
     pub(crate) fn cap_drop_bound(cap: cap_value_t) -> c_int;
     pub(crate) fn cap_get_bound(cap: cap_value_t) -> c_int;
     pub(crate) fn cap_max_bits() -> cap_value_t;

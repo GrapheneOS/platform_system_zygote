@@ -48,8 +48,8 @@ const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
 
 type PollBuffer = ArrayVec<PollFd, BUFFER_SIZE_POLL>;
 
-impl std::convert::From<&mut Server> for PollBuffer {
-    fn from(server: &mut Server) -> PollBuffer {
+impl std::convert::From<&Server> for PollBuffer {
+    fn from(server: &Server) -> PollBuffer {
         let mut poll_buffer = PollBuffer::new();
 
         poll_buffer.push(PollFd::new(server.signal_fd, libc::POLLIN));
@@ -429,7 +429,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce()>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
         match Message::try_from_parcel(&message_buffer).unwrap() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
@@ -755,9 +755,9 @@ impl Server {
     /// server before control flow is transferred to the species-specific
     /// code.  This allows resources to be cleaned up and possibly sensitive
     /// data to be deallocated.
-    pub fn serve(&mut self) -> Option<impl FnOnce()> {
+    pub fn serve(&mut self) -> Option<impl FnOnce() + use<>> {
         loop {
-            let mut poll_array = PollBuffer::from(&mut *self);
+            let mut poll_array = PollBuffer::from(&*self);
 
             // Discard the number of ready file descriptors for now.
             sys::poll(&mut poll_array, -1).unwrap();
