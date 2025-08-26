@@ -136,6 +136,13 @@ pub enum MalloptOpcode {
     GetDecayTimeEnabled = 12,
 }
 
+/// A wrapper around `libprocessgroup`'s `DropTaskProfilesResourceCaching`
+///
+/// See: `system/core/libprocessgroup/include/processgroup/processgroup.h`
+pub fn drop_task_profiles_resource_caching() {
+    inner::DropTaskProfilesResourceCaching();
+}
+
 /// A wrapper around [`inner::android_fdsan_get_error_level`]
 ///
 /// # Safety
@@ -249,16 +256,18 @@ mod inner {
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
         pub safe fn android_set_application_target_sdk_version(target: c_int);
 
+        /// Drop the FD cache for the cgroup path.
+        #[link_name = "_Z31DropTaskProfilesResourceCachingv"]
+        pub safe fn DropTaskProfilesResourceCaching();
+
+        /// Set the SELinux context for the current process
         pub fn selinux_android_setcontext(
             uid: libc::uid_t,
             is_system_server: bool,
             seinfo: *const c_char,
             name: *const c_char,
         ) -> c_int;
-    }
 
-    #[allow(dead_code)]
-    unsafe extern "system" {
         /// Apply Android's application seccomp filters
         #[link_name = "_Z22set_app_seccomp_filterv"]
         pub safe fn set_app_seccomp_filter();

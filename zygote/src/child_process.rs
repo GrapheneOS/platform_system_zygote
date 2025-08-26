@@ -95,9 +95,6 @@ pub(crate) fn re_initialize(
         sys::setresgid(gid, gid, gid).unwrap();
     }
 
-    // TODO: Set the scheduling policy
-    // Must be called before losing the permission to set scheduler policy.
-
     // Set SecComp filters
     //
     // Must be called when the new process still has CAP_SYS_ADMIN, in this case,

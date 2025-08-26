@@ -15,7 +15,7 @@
 
 //! Generated Rust bindings for the FlatBuffer schema defined in `schemas/messages.fbs`
 
-#[allow(dead_code, mismatched_lifetime_syntaxes, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
+#[allow(dead_code, missing_docs, unsafe_op_in_unsafe_fn, unused_imports, clippy::all)]
 mod inner {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }

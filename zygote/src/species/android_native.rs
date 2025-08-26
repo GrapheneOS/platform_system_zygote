@@ -235,8 +235,15 @@ impl Species for App {
             sys::android::set_cpuset_policy(0, sys::android::SchedPolicy::Default).unwrap();
         }
 
-        // Set the scheduling policy and panic on failure
+        // Set the scheduling policy and panic on failure.  Must be called
+        // before losing the permission to set scheduler policy.
         sys::android::set_sched_policy(0, sys::android::SchedPolicy::Default).unwrap();
+
+        // We are going to lose the permission to set scheduler policy during
+        // the specialization, so make sure that we don't cache the fd of
+        // cgroup path that may cause sepolicy violation by writing value to
+        // the cached fd directly when creating new thread.
+        sys::android::drop_task_profiles_resource_caching();
     }
 
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {
