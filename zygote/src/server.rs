@@ -228,19 +228,26 @@ impl Server {
         } else {
             let arg_path = Path::new(&socket_path_or_fd);
 
-            if arg_path.exists() {
-                bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
-            }
-
-            std::fs::create_dir_all(
-                arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
-            )?;
-
-            let socket_fd = sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?;
+            let (socket_fd, server_socket_path) = if let Some(abs_socket_addr) =
+                socket_path_or_fd.strip_prefix("@")
+            {
+                (sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)?, None)
+            } else {
+                if arg_path.exists() {
+                    bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
+                }
+                std::fs::create_dir_all(
+                    arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
+                )?;
+                (
+                    sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?,
+                    Some(socket_path_or_fd.clone()),
+                )
+            };
             sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
             sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
 
-            Ok((socket_fd, Some(socket_path_or_fd.clone())))
+            Ok((socket_fd, server_socket_path))
         }
     }
 
