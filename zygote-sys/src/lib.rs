@@ -351,7 +351,10 @@ macro_rules! retry_eintr {
 
 /// Construct an abstract socket name inside a [`libc::sockaddr_un`] struct
 /// from the provided name and family.
-pub fn abstract_socket_address(name: &str, family: libc::sa_family_t) -> libc::sockaddr_un {
+pub fn abstract_socket_address(
+    name: &str,
+    family: libc::sa_family_t,
+) -> SocketAddr<libc::sockaddr_un> {
     let mut socket_addr = libc::sockaddr_un { sun_family: family, sun_path: [0; 108] };
     let name_view = &name.as_bytes()[0..std::cmp::min(name.len(), socket_addr.sun_path.len() - 1)];
 
@@ -360,19 +363,26 @@ pub fn abstract_socket_address(name: &str, family: libc::sa_family_t) -> libc::s
     socket_addr.sun_path[1..name_view.len() + 1]
         .copy_from_slice(<[c_char]>::ref_from_bytes(name_view).unwrap());
 
-    socket_addr
+    let socklen = offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
+
+    SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t }
 }
 
 /// Construct a bound socket name inside a [`libc::sockaddr_un`] struct from
 /// the provided name and family.
-pub fn bound_socket_address(path: &str, family: libc::sa_family_t) -> libc::sockaddr_un {
+pub fn bound_socket_address(
+    path: &str,
+    family: libc::sa_family_t,
+) -> SocketAddr<libc::sockaddr_un> {
     let mut socket_addr = libc::sockaddr_un { sun_family: family, sun_path: [0; 108] };
     let name_view = &path.as_bytes()[0..std::cmp::min(path.len(), socket_addr.sun_path.len() - 1)];
 
     socket_addr.sun_path[0..name_view.len()]
         .copy_from_slice(<[c_char]>::ref_from_bytes(name_view).unwrap());
 
-    socket_addr
+    let socklen = offset_of!(libc::sockaddr_un, sun_path) + path.len();
+
+    SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t }
 }
 
 /// Construct a [`libc::sigset_t`] containing the provided signals.
@@ -384,6 +394,16 @@ pub fn build_sigset(signals: &[c_int]) -> LibcResult<libc::sigset_t> {
     }
 
     Ok(sigset)
+}
+
+/// A wrapper for socket addresses that includes the address length.
+///
+/// `SockAddrType` is the type that will be casted to [`libc::sockaddr`].
+pub struct SocketAddr<SockAddrType> {
+    /// The socket address.
+    pub address: SockAddrType,
+    /// The length of the socket address.
+    pub socklen: libc::socklen_t,
 }
 
 /// Type for specifying control flow in [`call_until_would_block`]
@@ -573,15 +593,15 @@ pub fn accept(fd: RawFd) -> LibcResult<RawFd> {
 /// A safe wrapper around [`libc::bind`].
 ///
 /// See: `man bind`
-pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> {
+pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> LibcResult<()> {
     // SAFETY: The pointer argument to `libc::bind` is guaranteed to reference
     //         allocated memory and the return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int_with_void(unsafe {
         libc::bind(
             fd,
-            (sockaddr as *const SockAddrType) as *const libc::sockaddr,
-            std::mem::size_of::<SockAddrType>() as libc::socklen_t,
+            (&sockaddr.address as *const SockAddrType) as *const libc::sockaddr,
+            sockaddr.socklen,
         )
     })
 }
@@ -629,15 +649,15 @@ pub fn closedir(dir: LibcDir) -> LibcResult<()> {
 /// A safe wrapper around [`libc::connect`].
 ///
 /// See: `man connect`
-pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SockAddrType) -> LibcResult<()> {
+pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> LibcResult<()> {
     // SAFETY: The pointer argument to `libc::connect` is guaranteed to reference
     //         allocated memory and the return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int_with_void(unsafe {
         libc::connect(
             fd,
-            (sockaddr as *const SockAddrType) as *const libc::sockaddr,
-            std::mem::size_of::<SockAddrType>() as libc::socklen_t,
+            (&sockaddr.address as *const SockAddrType) as *const libc::sockaddr,
+            sockaddr.socklen,
         )
     })
 }

@@ -198,9 +198,14 @@ impl FileDescriptorInfo {
 
         match sun_bytes {
             [0, text @ ..] => Ok(FileDescriptorInfo::AbstractSocket {
-                name: ArrayString::from(CStr::from_bytes_until_nul(text)?.to_str()?).unwrap(),
+                // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
+                // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
+                // paths.
+                name: ArrayString::from(std::str::from_utf8(text)?).unwrap(),
             }),
             text => Ok(FileDescriptorInfo::BoundSocket {
+                // getsockname() on bound sockets always return NUL-terminated names, so use
+                // from_bytes_with_nul() to truncated that here.
                 path: ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
             }),
         }
