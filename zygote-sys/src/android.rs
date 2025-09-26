@@ -212,12 +212,17 @@ pub fn set_selinux_context(
 ) -> LibcResult<()> {
     // SAFETY: Both `seinfo` and `name` are valid, null-terminated, C-strings
     libc_result_from_int_with_void(unsafe {
-        inner::selinux_android_setcontext(uid, is_system_server, se_info.as_ptr(), name.as_ptr())
+        selinux_bindgen::selinux_android_setcontext(
+            uid,
+            is_system_server,
+            se_info.as_ptr(),
+            name.as_ptr(),
+        )
     })
 }
 
 mod inner {
-    use core::ffi::{c_char, c_int, c_uint, c_void};
+    use core::ffi::{c_int, c_uint, c_void};
 
     use super::SchedPolicy;
 
@@ -259,14 +264,6 @@ mod inner {
         /// Drop the FD cache for the cgroup path.
         #[link_name = "_Z31DropTaskProfilesResourceCachingv"]
         pub safe fn DropTaskProfilesResourceCaching();
-
-        /// Set the SELinux context for the current process
-        pub fn selinux_android_setcontext(
-            uid: libc::uid_t,
-            is_system_server: bool,
-            seinfo: *const c_char,
-            name: *const c_char,
-        ) -> c_int;
 
         /// Apply Android's application seccomp filters
         #[link_name = "_Z22set_app_seccomp_filterv"]
