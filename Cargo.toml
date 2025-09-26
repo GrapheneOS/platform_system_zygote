@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "capwrap", "memmark", "zygote", "zygote-proc-macros", "zygote-sys"]
+members = ["memmark", "zygote", "zygote-proc-macros", "zygote-sys"]
 
 [patch.crates-io]
 libc = { path = "../../external/rust/android-crates-io/crates/libc/" }

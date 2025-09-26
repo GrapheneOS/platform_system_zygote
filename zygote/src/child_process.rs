@@ -19,7 +19,7 @@ use std::ffi::{CStr, CString};
 
 use log::warn;
 
-use capwrap::{self, CapabilitiesSet, Capability, CapabilityFlags};
+use cap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 use zygote_sys as sys;
 
 use crate::{
@@ -69,8 +69,8 @@ pub(crate) fn re_initialize(
     if let Some(cap_bound) = spawn_params.cap_bound {
         for flag in cap_bound.complement().iter() {
             let cap = Capability::try_from(flag.bits().trailing_zeros()).unwrap();
-            if capwrap::cap_within_bound(cap) {
-                capwrap::cap_drop_bound(cap).unwrap();
+            if cap::cap_within_bound(cap) {
+                cap::cap_drop_bound(cap).unwrap();
             }
         }
     }
@@ -122,9 +122,10 @@ pub(crate) fn re_initialize(
 
     // Set the process name
     if let Some(name) = &spawn_params.process_name
-        && let Ok(name_cstr) = CString::new(name.clone()) {
-            sys::set_new_process_name(&name_cstr);
-        }
+        && let Ok(name_cstr) = CString::new(name.clone())
+    {
+        sys::set_new_process_name(&name_cstr);
+    }
 
     species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
 }

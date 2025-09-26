@@ -13,7 +13,7 @@ test = ["mock"]
 [dependencies]
 anyhow = "1.0.97"
 arrayvec = "0.7.6"
-capwrap = { path = "../capwrap" }
+cap = { path = "../../../external/libcap/libcap/rust" }
 clap = { version = "4.5.0", features = ["derive"] }
 flatbuffers = "25.1.24"
 itertools = "0.14.0"

@@ -26,7 +26,7 @@ use clap::Subcommand;
 use itertools::Itertools;
 
 use crate::species::{self, SpeciesRef};
-use capwrap::{CapabilityFlags, RawCap};
+use cap::{CapabilityFlags, RawCap};
 use zygote_proc_macros::{FlattenParcel, MarshalParcel, UnmarshalParcel};
 use zygote_sys as sys;
 

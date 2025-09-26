@@ -20,7 +20,6 @@ package {
 phony {
     name: "zygote_all",
     required: [
-        "libcapwrap",
         "libmemmark",
         "libzygote",
         "libzygote_sys",
