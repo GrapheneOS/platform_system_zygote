@@ -110,7 +110,7 @@ rust_library {
 rust_binary {
     name: "zygote_next",
     host_supported: true,
-    edition: "2021",
+    edition: "2024",
     srcs: [
         "src/bin/zygote.rs",
     ],
@@ -131,7 +131,7 @@ rust_binary {
 rust_binary {
     name: "zygote_cli",
     host_supported: true,
-    edition: "2021",
+    edition: "2024",
     srcs: [
         "src/bin/zygote_cli.rs",
     ],
@@ -151,7 +151,7 @@ rust_binary {
 rust_binary {
     name: "zygote_launch",
     host_supported: true,
-    edition: "2021",
+    edition: "2024",
     srcs: [
         "src/bin/zygote_launch.rs",
     ],
@@ -178,7 +178,7 @@ rust_test_host {
 
 rust_test_host {
     name: "zygote_next_integration_test_fd_no_panic",
-    edition: "2021",
+    edition: "2024",
     test_harness: false,
     cfgs: [
         "test",
