@@ -18,7 +18,7 @@
 use bitflags::bitflags;
 use core::ffi::{c_int, CStr};
 use native_activity_thread::run_native_activity_thread;
-use processgroup;
+use rustutils::android;
 use std::env;
 
 use crate::{
@@ -79,7 +79,7 @@ impl RuntimeFlags {
 
 /// Re-initialization data for AndroidNative applications
 pub struct ReInitData {
-    fds_error_level: sys::android::FDSanErrorLevel,
+    fds_error_level: android::process::FDSanErrorLevel,
 }
 
 /// Behaviors for launching native Android applications.
@@ -112,7 +112,7 @@ impl Species for App {
         // TODO: Add TopApp information
         super::ReInitWrapper::AndroidNative(ReInitData {
             // SAFETY: This is called in a single-threaded context
-            fds_error_level: unsafe { sys::android::fdsan_get_error_level() },
+            fds_error_level: unsafe { android::process::fdsan_get_error_level() },
         })
     }
 
@@ -217,12 +217,12 @@ impl Species for App {
 
         // SAFETY: This is called in a single-threaded context
         unsafe {
-            sys::android::fdsan_set_error_level(
+            android::process::fdsan_set_error_level(
                 re_init_data.as_android_native().unwrap().fds_error_level,
             );
         }
 
-        if sys::android::set_zygote_child().is_err() {
+        if android::process::set_zygote_child().is_err() {
             log::error!("Failed to android_mallopt(M_SET_ZYGOTE_CHILD)");
         }
 
@@ -248,9 +248,9 @@ impl Species for App {
 
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {
         if spawn_params.uid.expect("No UID specified") >= AID_APP_START {
-            sys::android::set_app_seccomp_filter();
+            android::process::set_app_seccomp_filter();
         } else {
-            sys::android::set_system_seccomp_filter();
+            android::process::set_system_seccomp_filter();
         }
     }
 }

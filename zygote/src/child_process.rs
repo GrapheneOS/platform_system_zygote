@@ -15,7 +15,10 @@
 
 //! Implementation of behaviors for child processes
 
-use std::ffi::{CStr, CString};
+use std::{
+    convert::Infallible,
+    ffi::{CStr, CString},
+};
 
 use log::warn;
 
@@ -28,6 +31,14 @@ use crate::{
 };
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
+
+pub(crate) fn maybe_reset_stack_guards(continuation: impl FnOnce() -> Infallible) -> Infallible {
+    #[cfg(target_os = "android")]
+    return rustutils::android::process::reset_stack_guards(continuation);
+
+    #[cfg(not(target_os = "android"))]
+    continuation()
+}
 
 /// Perform child-process initialization tasks that are available on all
 /// supported platforms. All species-specific re-initialization code must

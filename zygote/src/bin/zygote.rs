@@ -18,6 +18,8 @@
 //! This executable can be used to preload and initialize resources before
 //! forking child processes.
 
+use std::convert::Infallible;
+
 use anyhow::Result;
 use clap::Parser;
 
@@ -27,7 +29,7 @@ use zygote::{config, server};
 
 fn main() -> Result<()> {
     if let Some(thunk) = run_server() {
-        thunk()
+        thunk();
     }
 
     Ok(())
@@ -38,7 +40,7 @@ fn main() -> Result<()> {
 /// The server is constructed in, and the child-side thunk returned from, this
 /// frame to ensure that the configuration and server resources are dropped
 /// before the thunk is evaluated.
-fn run_server() -> Option<impl FnOnce()> {
+fn run_server() -> Option<impl FnOnce() -> Infallible> {
     let config = config::Server::parse();
 
     logger::init(

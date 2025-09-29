@@ -74,6 +74,7 @@ rust_defaults {
         "liblibloading",
         "liblogger",
         "liblog_rust",
+        "librustutils",
         "libstatic_assertions",
         "libzerocopy",
         "libzygote_sys",

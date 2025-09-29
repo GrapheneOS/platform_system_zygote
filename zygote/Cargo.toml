@@ -21,6 +21,7 @@ libc = "0.2.171"
 libloading = "0.8.6"
 log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
+rustutils = { path = "../../librustutils/ "}
 zerocopy = "0.8.21"
 zygote-sys = { path = "../zygote-sys" }
 zygote_proc_macros = { path = "../zygote-proc-macros" }

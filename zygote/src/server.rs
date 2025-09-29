@@ -18,8 +18,7 @@
 //! This executable can be used to preload and initialize resources before
 //! forking child processes.
 
-use std::ffi::OsStr;
-use std::{os::fd::RawFd, path::Path};
+use std::{convert::Infallible, ffi::OsStr, os::fd::RawFd, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
@@ -259,7 +258,7 @@ impl Server {
     fn check_poll_events(
         &mut self,
         partition: PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() + use<>> {
+    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
         if self.check_signalfd_events(&partition).is_exit() {
             return ServerControl::Shutdown;
         }
@@ -271,7 +270,7 @@ impl Server {
     fn check_client_sockets_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() + use<>> {
+    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
         for client_pollfd in partition.clients {
             // POLLERR and POLLNVAL should never occur for a client socket.
             let checked_pollfd = client_pollfd.check().unwrap_or_else(|(fd, error_events)| {
@@ -379,7 +378,7 @@ impl Server {
     fn check_signalfd_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce()> {
+    ) -> ServerControl<impl FnOnce() -> Infallible> {
         // POLLERR and POLLNVAL should never occur for a signalfd.
         let checked_pollfd = partition.signal.check().unwrap_or_else(|(_, error_events)| {
             panic!("Received polling error for signalfd: {error_events:?}");
@@ -426,17 +425,20 @@ impl Server {
             })
             // The server should exit early iff the handler exited
             // early due to receiving a SIGINT or SIGTERM.
-            .map_or(ServerControl::<fn()>::Continue, |loop_control| match loop_control {
-                LoopExit::Early(_) => ServerControl::Shutdown,
-                LoopExit::WouldBlock => ServerControl::Continue,
-            })
+            .map_or(
+                ServerControl::<fn() -> Infallible>::Continue,
+                |loop_control| match loop_control {
+                    LoopExit::Early(_) => ServerControl::Shutdown,
+                    LoopExit::WouldBlock => ServerControl::Continue,
+                },
+            )
     }
 
     fn dispatch_message_handler(
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
         match Message::try_from_parcel(&message_buffer).unwrap() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
@@ -465,7 +467,7 @@ impl Server {
         }
     }
 
-    fn handle_message_exit<Thunk: FnOnce()>(
+    fn handle_message_exit<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -480,7 +482,7 @@ impl Server {
         Break(ClientLoopControl::Shutdown)
     }
 
-    fn handle_message_identity_query<Thunk: FnOnce()>(
+    fn handle_message_identity_query<Thunk: FnOnce() -> Infallible>(
         &self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -508,7 +510,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
         // The server does not spawn any threads.  Preloaded library
         // initializers should not start any threads.  Any threads created by
         // species-specific code during initialization must be terminated when
@@ -571,21 +573,20 @@ impl Server {
                     // process's stack, to avoid segfaults from changing the stack
                     // guard in a callee and then segfaulting when return to the
                     // caller's frame.
-                    #[cfg(target_os = "android")]
-                    sys::android::reset_stack_guards();
+                    child_process::maybe_reset_stack_guards(move || {
+                        // Unpack the message in the child process
+                        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+                        let spawn_payload = message.get_spawn_payload().unwrap();
 
-                    // Unpack the message in the child process
-                    let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
-                    let spawn_payload = message.get_spawn_payload().unwrap();
+                        child_process::re_initialize(
+                            species,
+                            re_init_data,
+                            &spawn_params,
+                            spawn_payload,
+                        );
 
-                    child_process::re_initialize(
-                        species,
-                        re_init_data,
-                        &spawn_params,
-                        spawn_payload,
-                    );
-
-                    species.gestate(&spawn_params, spawn_payload);
+                        species.gestate(&spawn_params, spawn_payload)
+                    })
                 }))
             }
             Ok(new_pid) => {
@@ -636,7 +637,7 @@ impl Server {
         }
     }
 
-    fn handle_message_stat<Thunk: FnOnce()>(
+    fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -761,7 +762,7 @@ impl Server {
     /// server before control flow is transferred to the species-specific
     /// code.  This allows resources to be cleaned up and possibly sensitive
     /// data to be deallocated.
-    pub fn serve(&mut self) -> Option<impl FnOnce() + use<>> {
+    pub fn serve(&mut self) -> Option<impl FnOnce() -> Infallible + use<>> {
         loop {
             let mut poll_array = PollBuffer::from(&*self);
 
