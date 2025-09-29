@@ -82,11 +82,13 @@ rust_defaults {
     target: {
         android: {
             shared_libs: [
+                "libprocessgroup",
                 "libseccomp_policy",
                 "libselinux",
             ],
             rustlibs: [
                 "libnative_activity_thread",
+                "libprocessgroup_rust",
             ],
         },
     },

@@ -35,6 +35,7 @@ rust_library {
     target: {
         android: {
             rustlibs: [
+                "libprocessgroup_rust",
                 "libselinux_bindgen",
             ],
             shared_libs: [

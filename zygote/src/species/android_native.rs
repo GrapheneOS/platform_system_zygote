@@ -18,6 +18,7 @@
 use bitflags::bitflags;
 use core::ffi::{c_int, CStr};
 use native_activity_thread::run_native_activity_thread;
+use processgroup;
 use std::env;
 
 use crate::{
@@ -230,19 +231,19 @@ impl Species for App {
         }
 
         // Set the cpuset policy and panic on failure
-        if sys::android::cpusets_enabled() {
-            sys::android::set_cpuset_policy(0, sys::android::SchedPolicy::Default).unwrap();
+        if processgroup::cpusets_enabled() {
+            sys::android::set_cpuset_policy(0, processgroup::SchedPolicy::Default).unwrap();
         }
 
         // Set the scheduling policy and panic on failure.  Must be called
         // before losing the permission to set scheduler policy.
-        sys::android::set_sched_policy(0, sys::android::SchedPolicy::Default).unwrap();
+        sys::android::set_sched_policy(0, processgroup::SchedPolicy::Default).unwrap();
 
         // We are going to lose the permission to set scheduler policy during
         // the specialization, so make sure that we don't cache the fd of
         // cgroup path that may cause sepolicy violation by writing value to
         // the cached fd directly when creating new thread.
-        sys::android::drop_task_profiles_resource_caching();
+        processgroup::drop_task_profiles_resource_caching();
     }
 
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {

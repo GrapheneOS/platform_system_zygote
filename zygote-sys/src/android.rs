@@ -18,40 +18,11 @@
 use core::ffi::{c_uint, CStr};
 
 use anyhow::{anyhow, Result};
+use processgroup::{self, SchedPolicy};
+
+pub use inner::{set_app_seccomp_filter, set_system_seccomp_filter};
 
 use crate::{libc_result_from_int_with_void, LibcResult};
-
-pub use inner::{cpusets_enabled, set_app_seccomp_filter, set_system_seccomp_filter};
-
-/// Android scheduling policy constants
-///
-/// See: system/core/libprocessgroup/include/processgroup/sched_policy.h
-#[repr(C)]
-pub enum SchedPolicy {
-    /// Default scheduling policy for non-system processes
-    Default = -1,
-    /// Scheduling policy for applications in the background
-    Background = 0,
-    /// Scheduling policy for applications in the foreground
-    Foreground = 1,
-    /// Scheduling policy for system services
-    System = 2,
-    /// Scheduling policy for audio threads belonging to applications
-    AudioApp = 3,
-    /// Scheduling policy for audio threads belonging to system services
-    AudioSys = 4,
-    /// Scheduling policy for "Top Apps"
-    TopApp = 5,
-    /// Scheduling policy for real-time applications
-    RTApp = 6,
-    /// Scheduling policy for restricted applications
-    Restricted = 7,
-    /// Scheduling policy for foregrounded application windows
-    ForegroundWindow = 8,
-}
-
-/// The default scheduling policy for system processes
-pub const SP_SYSTEM_DEFAULT: SchedPolicy = SchedPolicy::Foreground;
 
 /// Error levels for Android's File Descriptor Sanitizer
 ///
@@ -136,13 +107,6 @@ pub enum MalloptOpcode {
     GetDecayTimeEnabled = 12,
 }
 
-/// A wrapper around `libprocessgroup`'s `DropTaskProfilesResourceCaching`
-///
-/// See: `system/core/libprocessgroup/include/processgroup/processgroup.h`
-pub fn drop_task_profiles_resource_caching() {
-    inner::DropTaskProfilesResourceCaching();
-}
-
 /// A wrapper around [`inner::android_fdsan_get_error_level`]
 ///
 /// # Safety
@@ -191,16 +155,16 @@ pub fn set_application_target_sdk_version(target: i32) {
     inner::android_set_application_target_sdk_version(target);
 }
 
-/// A wrapper function for [`inner::set_cpuset_policy`] that wraps the returned
+/// A wrapper function for [`processgropu::set_cpuset_policy`] that wraps the returned
 /// value in a LibcResult.
 pub fn set_cpuset_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(inner::set_cpuset_policy(tid, policy))
+    libc_result_from_int_with_void(processgroup::set_cpuset_policy(tid, policy))
 }
 
-/// A wrapper function for [`inner::set_sched_policy`] that wraps the returned
+/// A wrapper function for [`processgropu::set_sched_policy`] that wraps the returned
 /// value in a LibcResult.
 pub fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(inner::set_sched_policy(tid, policy))
+    libc_result_from_int_with_void(processgroup::set_sched_policy(tid, policy))
 }
 
 /// A wrapper around Android's SELinux context switching mechanism.
@@ -223,8 +187,6 @@ pub fn set_selinux_context(
 
 mod inner {
     use core::ffi::{c_int, c_uint, c_void};
-
-    use super::SchedPolicy;
 
     unsafe extern "C" {
         /// Return the current process's FDSan error level
@@ -261,10 +223,6 @@ mod inner {
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
         pub safe fn android_set_application_target_sdk_version(target: c_int);
 
-        /// Drop the FD cache for the cgroup path.
-        #[link_name = "_Z31DropTaskProfilesResourceCachingv"]
-        pub safe fn DropTaskProfilesResourceCaching();
-
         /// Apply Android's application seccomp filters
         #[link_name = "_Z22set_app_seccomp_filterv"]
         pub safe fn set_app_seccomp_filter();
@@ -272,20 +230,5 @@ mod inner {
         /// Apply Android's system seccomp filters
         #[link_name = "_Z25set_system_seccomp_filterv"]
         pub safe fn set_system_seccomp_filter();
-
-        /// Check to see if cpusets have been enabled on the system
-        pub safe fn cpusets_enabled() -> bool;
-
-        /// Set the cpuset policy for the specified process.  A TID of 0 means
-        /// that the policy will be applied to the calling thread.
-        ///
-        /// This function takes no pointer arguments and is thread-safe.
-        pub safe fn set_cpuset_policy(tid: libc::pid_t, policy: SchedPolicy) -> c_int;
-
-        /// Set the scheduling policy for the specified process.  A TID of 0
-        /// means that the policy will be applied to the calling thread.
-        ///
-        /// This function takes no pointer arguments and is thread-safe.
-        pub safe fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> c_int;
     }
 }
