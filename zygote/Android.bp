@@ -96,6 +96,18 @@ rust_library {
     name: "libzygote",
     crate_name: "zygote",
     defaults: ["libzygote_defaults"],
+    target: {
+        android: {
+            features: [
+                "android-native",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+            ],
+        },
+    },
 }
 
 rust_library {
@@ -103,6 +115,7 @@ rust_library {
     crate_name: "zygote",
     defaults: ["libzygote_defaults"],
     features: [
+        "mock",
         "test",
     ],
 }
@@ -171,9 +184,21 @@ rust_binary {
 rust_test_host {
     name: "zygote_next_unit_tests",
     defaults: ["libzygote_defaults"],
-    features: [
-        "test",
-    ],
+    target: {
+        android: {
+            features: [
+                "android-native",
+                "test",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+                "mock",
+                "test",
+            ],
+        },
+    },
 }
 
 rust_test_host {
@@ -196,4 +221,20 @@ rust_test_host {
         "libzygote_sys",
         "libzygote_test",
     ],
+    target: {
+        android: {
+            features: [
+                "android-native",
+                "mock",
+                "test",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+                "mock",
+                "test",
+            ],
+        },
+    },
 }

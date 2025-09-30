@@ -17,6 +17,13 @@
 //!
 //! This library contains the logic used by the Zygote executable.
 
+#[cfg(not(any(
+    all(feature = "android-native", target_os = "android"),
+    feature = "libapp",
+    feature = "mock"
+)))]
+compile_error!("At least one species feature must be enabled");
+
 #[cfg(any(test, feature = "test"))]
 pub mod test;
 

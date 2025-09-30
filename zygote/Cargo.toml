@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["test"]
-test = []
+default = ["libapp", "test"]
+android-native = []
+libapp = []
+mock = []
+test = ["mock"]
 
 [dependencies]
 anyhow = "1.0.97"

@@ -115,6 +115,7 @@ fn unmarshal_capability_flags(cap: &RawCap) -> Option<CapabilityFlags> {
     }
 }
 
+#[cfg(feature = "libapp")]
 fn unmarshal_libapp_args<'a>(
     args: &flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>,
 ) -> ArrayVec<&'a str, { crate::species::lib_app::MAX_ARGS }> {
@@ -420,6 +421,7 @@ pub enum SpawnPayload<'a> {
         runtime_flags: u32,
     },
     /// Spawn data for [`species::lib_app::App`]
+    #[cfg(feature = "libapp")]
     #[inner_type_name = "SpawnLibApp"]
     LibApp {
         /// Path to the shared library to load
@@ -444,7 +446,7 @@ pub enum SpawnPayload<'a> {
 #[command(rename_all = "verbatim")]
 pub enum SpawnPayloadParser {
     /// Request the creation of an AndroidNative process
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "android-native"))]
     AndroidNative {
         /// The package to execute
         #[arg(required(true))]
@@ -463,6 +465,7 @@ pub enum SpawnPayloadParser {
         runtime_flags: u32,
     },
     /// Request the creation of a LibApp process
+    #[cfg(feature = "libapp")]
     LibApp {
         /// Path to the library to load
         #[arg(required(true))]
@@ -472,7 +475,7 @@ pub enum SpawnPayloadParser {
         args: Vec<String>,
     },
     /// Request the creation of a Mock process
-    #[cfg(any(test, feature = "test"))]
+    #[cfg(any(test, feature = "mock"))]
     Mock {
         /// The name to print in the new process
         #[arg(required(true))]
@@ -484,10 +487,11 @@ impl SpawnPayloadParser {
     /// Fetch a reference to the species associated with this payload type
     pub fn species(&self) -> SpeciesRef {
         match self {
-            #[cfg(target_os = "android")]
+            #[cfg(all(target_os = "android", feature = "android-native"))]
             SpawnPayloadParser::AndroidNative { .. } => &species::android_native::App,
+            #[cfg(feature = "libapp")]
             SpawnPayloadParser::LibApp { .. } => &species::lib_app::App,
-            #[cfg(any(test, feature = "test"))]
+            #[cfg(any(test, feature = "mock"))]
             SpawnPayloadParser::Mock { .. } => &species::mock::Turtle,
         }
     }
@@ -495,7 +499,7 @@ impl SpawnPayloadParser {
     /// Construct a [`SpawnPayload`] from this enum
     pub fn to_spawn_payload(&self) -> Result<SpawnPayload<'_>> {
         match self {
-            #[cfg(target_os = "android")]
+            #[cfg(all(target_os = "android", feature = "android-native"))]
             SpawnPayloadParser::AndroidNative {
                 package,
                 se_info,
@@ -509,6 +513,7 @@ impl SpawnPayloadParser {
                 target_sdk_version: *target_sdk_version,
                 runtime_flags: *runtime_flags,
             }),
+            #[cfg(feature = "libapp")]
             SpawnPayloadParser::LibApp { path, args } => Ok(SpawnPayload::LibApp {
                 path: path.as_str(),
                 args: args.iter().map(|s| s.as_str()).collect(),

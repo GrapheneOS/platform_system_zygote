@@ -25,10 +25,11 @@ use crate::{
     messages::{SpawnParamsCommon, SpawnPayload},
 };
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "android-native"))]
 pub mod android_native;
+#[cfg(feature = "libapp")]
 pub mod lib_app;
-#[cfg(any(test, feature = "test"))]
+#[cfg(feature = "mock")]
 pub mod mock;
 
 /// An entry structure for file allow lists.  This is marked as test-only
@@ -78,29 +79,32 @@ pub type SpeciesRef = &'static (dyn Species + Sync);
 
 /// All configured species.
 const SPECIES_LIST: &[SpeciesRef] = &[
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "android-native"))]
     &android_native::App,
+    #[cfg(feature = "libapp")]
     &lib_app::App,
-    #[cfg(any(test, feature = "test"))]
+    #[cfg(feature = "mock")]
     &mock::Turtle,
 ];
 
 /// Re-initialization data that is gathered and then consumed by species code
 pub enum ReInitWrapper {
     /// Android specific data
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "android-native"))]
     AndroidNative(android_native::ReInitData),
     /// LibApp specific data
+    #[cfg(feature = "libapp")]
     LibApp,
     /// Mock specific data
-    #[cfg(any(test, feature = "test"))]
+    #[cfg(feature = "mock")]
     Mock,
 }
 
 impl ReInitWrapper {
     /// Retrieve a reference to this enum's [`android_native::ReInitData`]
     /// struct
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "android-native"))]
+    #[allow(unreachable_patterns)]
     pub fn as_android_native(&self) -> anyhow::Result<&android_native::ReInitData> {
         match self {
             ReInitWrapper::AndroidNative(data) => Ok(data),
