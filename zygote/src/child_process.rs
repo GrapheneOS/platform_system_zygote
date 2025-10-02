@@ -121,11 +121,10 @@ pub(crate) fn re_initialize(
         .unwrap();
 
     // Set the process name
-    if let Some(name) = &spawn_params.process_name {
-        if let Ok(name_cstr) = CString::new(name.clone()) {
+    if let Some(name) = &spawn_params.process_name
+        && let Ok(name_cstr) = CString::new(name.clone()) {
             sys::set_new_process_name(&name_cstr);
         }
-    }
 
     species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
 }

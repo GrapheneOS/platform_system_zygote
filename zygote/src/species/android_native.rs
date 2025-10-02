@@ -148,11 +148,10 @@ impl Species for App {
                         log::warn!("Failed to mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL): {}", errno);
                     }
 
-                    if !flags.is_native_heap_zero_init_enabled() {
-                        if let Err(errno) = sys::mallopt(libc::M_BIONIC_ZERO_INIT, 0) {
+                    if !flags.is_native_heap_zero_init_enabled()
+                        && let Err(errno) = sys::mallopt(libc::M_BIONIC_ZERO_INIT, 0) {
                             log::warn!("Failed to mallopt(M_BIONIC_ZERO_INIT): {}", errno);
                         }
-                    }
                 }
                 None => {
                     log::warn!(

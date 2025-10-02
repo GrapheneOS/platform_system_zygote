@@ -543,13 +543,12 @@ impl Server {
             Ok(0) => {
                 // Child process
 
-                if let Some(priority) = spawn_params.priority_initial {
-                    if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
+                if let Some(priority) = spawn_params.priority_initial
+                    && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
                         // EINVAL, EPERM, and ESRCH only apply when setting the
                         // priority of other processes.
                         warn!("Insufficient permissions to set priority: {priority}");
                     }
-                }
 
                 // SAFETY: The contents of this message were received from a bound
                 //         UNIX Domain socket.  Processes with permission to read
