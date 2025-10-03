@@ -13,7 +13,7 @@ test = ["mock"]
 [dependencies]
 anyhow = "1.0.97"
 arrayvec = "0.7.6"
-cap = { path = "../../../external/libcap/libcap/rust" }
+cap = { path = "../../librustutils/cap" }
 clap = { version = "4.5.0", features = ["derive"] }
 flatbuffers = "25.1.24"
 itertools = "0.14.0"
@@ -21,7 +21,7 @@ libc = "0.2.171"
 libloading = "0.8.6"
 log = { version = "0.4", features = ["std"] }
 logger = { path = "../../logging/rust" }
-rustutils = { path = "../../librustutils/ "}
+rustutils = { path = "../../librustutils/rustutils"}
 zerocopy = "0.8.21"
 zygote-sys = { path = "../zygote-sys" }
 zygote_proc_macros = { path = "../zygote-proc-macros" }

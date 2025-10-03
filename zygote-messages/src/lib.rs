@@ -25,7 +25,6 @@ use arrayvec::ArrayVec;
 use clap::Subcommand;
 use itertools::Itertools;
 
-use crate::species::{self, SpeciesRef};
 use cap::{CapabilityFlags, RawCap};
 use zygote_proc_macros::{FlattenParcel, MarshalParcel, UnmarshalParcel};
 use zygote_sys as sys;
@@ -41,6 +40,10 @@ pub const MESSAGE_BUFFER_SIZE: usize = 512;
 pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SIZE];
 /// Statically allocated arrays used for receiving messages.
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
+
+/// The maximum size for buffers holding message arguments.
+#[allow(dead_code)]
+const MESSAGE_ARG_BUFFER_MAX: usize = 32;
 
 /// A trait for helper structs that can be marshaled into a FlatBuffer
 trait MarshalParcel<InnerType> {
@@ -118,7 +121,7 @@ fn unmarshal_capability_flags(cap: &RawCap) -> Option<CapabilityFlags> {
 #[cfg(feature = "libapp")]
 fn unmarshal_libapp_args<'a>(
     args: &flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>,
-) -> ArrayVec<&'a str, { crate::species::lib_app::MAX_ARGS }> {
+) -> ArrayVec<&'a str, { MESSAGE_ARG_BUFFER_MAX }> {
     args.iter().collect()
 }
 
@@ -430,7 +433,7 @@ pub enum SpawnPayload<'a> {
         /// Arguments to pass to the entry function
         #[marshal(packed)]
         #[unmarshal(map = unmarshal_libapp_args)]
-        args: ArrayVec<&'a str, { crate::species::lib_app::MAX_ARGS }>,
+        args: ArrayVec<&'a str, { MESSAGE_ARG_BUFFER_MAX }>,
     },
     /// Spawn data for [`species::mock::Turtle`]
     #[inner_type_name = "SpawnMock"]
@@ -484,18 +487,6 @@ pub enum SpawnPayloadParser {
 }
 
 impl SpawnPayloadParser {
-    /// Fetch a reference to the species associated with this payload type
-    pub fn species(&self) -> SpeciesRef {
-        match self {
-            #[cfg(all(target_os = "android", feature = "android-native"))]
-            SpawnPayloadParser::AndroidNative { .. } => &species::android_native::App,
-            #[cfg(feature = "libapp")]
-            SpawnPayloadParser::LibApp { .. } => &species::lib_app::App,
-            #[cfg(any(test, feature = "mock"))]
-            SpawnPayloadParser::Mock { .. } => &species::mock::Turtle,
-        }
-    }
-
     /// Construct a [`SpawnPayload`] from this enum
     pub fn to_spawn_payload(&self) -> Result<SpawnPayload<'_>> {
         match self {

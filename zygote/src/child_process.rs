@@ -23,12 +23,10 @@ use std::{
 use log::warn;
 
 use cap::{self, CapabilitiesSet, Capability, CapabilityFlags};
-use zygote_sys as sys;
 
-use crate::{
-    messages::{SpawnParamsCommon, SpawnPayload},
-    species::{ReInitWrapper, SpeciesRef},
-};
+use crate::species::{ReInitWrapper, SpeciesRef};
+use zygote_messages::{SpawnParamsCommon, SpawnPayload};
+use zygote_sys as sys;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 

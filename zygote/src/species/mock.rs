@@ -19,9 +19,9 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, SpawnParamsCommon, SpawnPayload},
     species::{file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, Species},
 };
+use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 
 #[rustfmt::skip]
 static ALLOWED_FILE_PATHS: [FileAllowListEntry; 1] = [

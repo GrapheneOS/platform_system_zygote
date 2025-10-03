@@ -18,10 +18,8 @@
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::{
-    config::Launch,
-    messages::{FromParcel, Message, TryToParcel, MESSAGE_BUFFER_INIT},
-};
+use zygote::{config::Launch, species::ToSpecies};
+use zygote_messages::{FromParcel, Message, TryToParcel, MESSAGE_BUFFER_INIT};
 
 fn main() -> Result<()> {
     let config = Launch::parse();
@@ -40,7 +38,7 @@ fn main() -> Result<()> {
 
     let spawn_message = Message::try_from_parcel(&message_buffer)?;
 
-    config.payload.species().gestate(
+    config.payload.to_species().gestate(
         spawn_message.get_spawn_params().unwrap(),
         spawn_message.get_spawn_payload().unwrap(),
     )

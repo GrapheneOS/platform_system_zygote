@@ -23,9 +23,8 @@ use std::convert::Infallible;
 use anyhow::Result;
 use clap::Parser;
 
-use zygote_sys as sys;
-
 use zygote::{config, server};
+use zygote_sys as sys;
 
 fn main() -> Result<()> {
     if let Some(thunk) = run_server() {

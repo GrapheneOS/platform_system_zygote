@@ -22,18 +22,12 @@ use core::ffi::CStr;
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
+use crate::{file_descriptors::Action, species::Species};
+use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 use zygote_sys as sys;
-
-use crate::{
-    file_descriptors::Action,
-    messages::{self, SpawnParamsCommon, SpawnPayload},
-    species::Species,
-};
 
 /// Name of the entry symbol for LibApps
 const ENTRY_SYMBOL_NAME: &CStr = c"zygote_entry";
-/// Maximum number of arguments allowed in a spawn message
-pub const MAX_ARGS: usize = 32;
 
 /// Behaviors for launching native Android applications.
 pub struct App;

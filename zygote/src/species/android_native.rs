@@ -21,12 +21,9 @@ use rustutils::android;
 use std::env;
 
 use crate::{
-    config,
-    file_descriptors::Action,
-    introspection::debug_assert_single_threaded,
-    messages::{self, SpawnParamsCommon, SpawnPayload},
-    species::Species,
+    config, file_descriptors::Action, introspection::debug_assert_single_threaded, species::Species,
 };
+use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 use zygote_sys::{self as sys, AsCStr};
 
 const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";

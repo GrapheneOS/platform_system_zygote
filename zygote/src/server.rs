@@ -25,20 +25,20 @@ use arrayvec::ArrayVec;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
-use zygote_sys::{
-    self as sys, LibcResult,
-    LoopControl::{self, *},
-    LoopExit, PollFd,
-};
-
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path, ProcStat},
-    messages::{
-        self, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel, MESSAGE_BUFFER_SIZE,
-    },
     species::SpeciesRef,
+};
+use zygote_messages::{
+    self as messages, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel,
+    MESSAGE_BUFFER_SIZE,
+};
+use zygote_sys::{
+    self as sys, LibcResult,
+    LoopControl::{self, *},
+    LoopExit, PollFd,
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
@@ -546,11 +546,12 @@ impl Server {
                 // Child process
 
                 if let Some(priority) = spawn_params.priority_initial
-                    && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
-                        // EINVAL, EPERM, and ESRCH only apply when setting the
-                        // priority of other processes.
-                        warn!("Insufficient permissions to set priority: {priority}");
-                    }
+                    && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err()
+                {
+                    // EINVAL, EPERM, and ESRCH only apply when setting the
+                    // priority of other processes.
+                    warn!("Insufficient permissions to set priority: {priority}");
+                }
 
                 // SAFETY: The contents of this message were received from a bound
                 //         UNIX Domain socket.  Processes with permission to read

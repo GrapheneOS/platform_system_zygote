@@ -37,12 +37,11 @@ use arrayvec::{ArrayString, ArrayVec};
 use itertools::{EitherOrBoth, Itertools};
 use zerocopy::IntoBytes;
 
-use zygote_sys::{self as sys, AsCStr, CStringBuffer};
-
 use crate::{
     introspection::{debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator},
     species::SpeciesRef,
 };
+use zygote_sys::{self as sys, AsCStr, CStringBuffer};
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
 const REGISTRY_SIZE: usize = 512;

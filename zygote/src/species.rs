@@ -20,10 +20,8 @@
 use core::ffi::CStr;
 use std::str::FromStr;
 
-use crate::{
-    config,
-    messages::{SpawnParamsCommon, SpawnPayload},
-};
+use crate::config;
+use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
 
 #[cfg(all(target_os = "android", feature = "android-native"))]
 pub mod android_native;
@@ -177,5 +175,33 @@ impl FromStr for SpeciesRef {
         }
 
         Err(format!("No species defined with name '{s}'"))
+    }
+}
+
+impl From<&SpawnPayloadParser> for SpeciesRef {
+    fn from(value: &SpawnPayloadParser) -> Self {
+        match value {
+            #[cfg(all(target_os = "android", feature = "android-native"))]
+            SpawnPayloadParser::AndroidNative { .. } => &android_native::App,
+            #[cfg(feature = "libapp")]
+            SpawnPayloadParser::LibApp { .. } => &lib_app::App,
+            #[cfg(any(test, feature = "mock"))]
+            SpawnPayloadParser::Mock { .. } => &mock::Turtle,
+        }
+    }
+}
+
+/// A helper trait for converting types into species references.
+pub trait ToSpecies {
+    /// Use the value to fetch a species reference.
+    fn to_species(self) -> SpeciesRef;
+}
+
+impl<T> ToSpecies for T
+where
+    SpeciesRef: From<T>,
+{
+    fn to_species(self) -> SpeciesRef {
+        SpeciesRef::from(self)
     }
 }

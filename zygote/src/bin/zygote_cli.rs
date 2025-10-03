@@ -22,12 +22,9 @@ use clap::Parser;
 use flatbuffers::FlatBufferBuilder;
 use log::{error, info};
 
+use zygote::config;
+use zygote_messages::{self as messages, FromParcel, Message, TryToParcel};
 use zygote_sys as sys;
-
-use zygote::{
-    config,
-    messages::{self, FromParcel, Message, TryToParcel},
-};
 
 fn main() -> Result<()> {
     let config = config::Cli::parse();

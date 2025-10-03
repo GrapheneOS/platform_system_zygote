@@ -23,11 +23,9 @@ use arrayvec::ArrayVec;
 use clap::Parser;
 use log::LevelFilter;
 
-use crate::{
-    messages::{
-        Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
-    },
-    species::SpeciesRef,
+use crate::species::SpeciesRef;
+use zygote_messages::{
+    Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
 };
 
 /// Configuration values used by the Zygote command line interface.  This API

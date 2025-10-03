@@ -31,6 +31,5 @@ pub mod child_process;
 pub mod config;
 pub mod file_descriptors;
 pub mod introspection;
-pub mod messages;
 pub mod server;
 pub mod species;
