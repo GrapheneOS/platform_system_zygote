@@ -15,7 +15,7 @@
 
 //! Implementation of a fully native Zygote architecture.
 //!
-//! This library contains the logic used by the Zygote executable.
+//! This library contains the logic used by the Zygote server and executables.
 
 #[cfg(not(any(
     all(feature = "android-native", target_os = "android"),
@@ -24,12 +24,19 @@
 )))]
 compile_error!("At least one species feature must be enabled");
 
-#[cfg(any(test, feature = "test"))]
-pub mod test;
+use core::ffi::{c_char, c_int};
 
+pub(crate) mod arguments;
 pub mod child_process;
 pub mod config;
 pub mod file_descriptors;
 pub mod introspection;
 pub mod server;
 pub mod species;
+#[cfg(any(test, feature = "test"))]
+pub mod test;
+
+#[unsafe(link_section = ".init_array")]
+#[used]
+static CONSTRUCTOR_PTR: unsafe extern "C" fn(c_int, *mut *mut c_char, *mut *mut c_char) =
+    arguments::args_initializer;

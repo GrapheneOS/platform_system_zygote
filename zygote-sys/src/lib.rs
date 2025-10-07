@@ -34,10 +34,8 @@ use zerocopy::FromBytes;
 #[cfg(target_os = "android")]
 pub mod android;
 mod libc_fill;
-mod process_name;
 
 pub use libc_fill::clone_args;
-pub use process_name::set_new_process_name;
 
 /// A platform-dependent type alias for rlimit resources
 #[allow(non_camel_case_types)]

@@ -24,7 +24,10 @@ use log::warn;
 
 use cap::{self, CapabilitiesSet, Capability, CapabilityFlags};
 
-use crate::species::{ReInitWrapper, SpeciesRef};
+use crate::{
+    arguments::ARG,
+    species::{ReInitWrapper, SpeciesRef},
+};
 use zygote_messages::{SpawnParamsCommon, SpawnPayload};
 use zygote_sys as sys;
 
@@ -52,7 +55,7 @@ pub(crate) fn re_initialize(
     species.re_initialize_prologue(spawn_params, spawn_payload, &re_init_data);
 
     // Set the process name
-    sys::set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
+    set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
 
     // Tell the kernel that this thread should keep its capabilities after it
     // changes it UID.
@@ -133,8 +136,33 @@ pub(crate) fn re_initialize(
     if let Some(name) = &spawn_params.process_name
         && let Ok(name_cstr) = CString::new(name.clone())
     {
-        sys::set_new_process_name(&name_cstr);
+        set_new_process_name(&name_cstr);
     }
 
     species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
+}
+
+/// Rename the process.
+pub(crate) fn set_new_process_name(new_name: &CStr) {
+    sys::prctl_set_name(new_name.to_bytes());
+
+    let arg = ARG.lock().unwrap();
+    if let Some(arg) = arg.as_ref() {
+        // SAFETY: Only 1 thread can take the raw pointer and we don't copy the value.
+        let argv0_ptr = unsafe { arg.argv0.as_raw() };
+
+        let len_to_copy = std::cmp::min(new_name.count_bytes(), arg.capacity - 1); // -1 for null
+
+        // SAFETY: The length argument is bounded by the capacity of the target buffer.
+        unsafe {
+            std::ptr::copy_nonoverlapping(new_name.as_ptr(), argv0_ptr, len_to_copy);
+            std::ptr::write_bytes(argv0_ptr.add(len_to_copy), 0, arg.capacity - len_to_copy);
+        }
+
+        // SAFETY: `argv0_ptr` points to a valid C string which has the static lifetime.
+        #[cfg(target_os = "android")]
+        unsafe {
+            sys::android::set_program_name(argv0_ptr)
+        };
+    }
 }

@@ -15,7 +15,7 @@
 
 //! This module provides safe wrappers around Android-specific functionality
 
-use core::ffi::CStr;
+use core::ffi::{c_char, CStr};
 
 use processgroup::{self, SchedPolicy};
 
@@ -38,6 +38,16 @@ pub fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()>
     libc_result_from_int_with_void(processgroup::set_sched_policy(tid, policy))
 }
 
+/// An alias around [`inner::setprogname`]
+///
+/// # Safety
+/// The caller must ensure that `name` points to a valid C-style NULL
+/// terminated string.
+pub unsafe fn set_program_name(name: *const c_char) {
+    // SAFETY: The pointer argument is guaranteed valid by the caller.
+    unsafe { inner::setprogname(name) };
+}
+
 /// A wrapper around Android's SELinux context switching mechanism.
 pub fn set_selinux_context(
     uid: libc::uid_t,
@@ -57,12 +67,20 @@ pub fn set_selinux_context(
 }
 
 mod inner {
-    use core::ffi::c_int;
+    use core::ffi::{c_char, c_int};
 
     unsafe extern "C" {
         /// Set the target SDK version for the app.
         ///
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
         pub safe fn android_set_application_target_sdk_version(target: c_int);
+
+        /// Set the process name.
+        ///
+        /// # Safety
+        /// `progname` must be a pointer to a valid C string which lives while it's set as the process name.
+        ///
+        /// See https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/upstream-openbsd/lib/libc/gen/setprogname.c;l=22
+        pub fn setprogname(progname: *const c_char);
     }
 }
