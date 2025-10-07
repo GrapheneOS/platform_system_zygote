@@ -18,16 +18,14 @@
 use core::ffi::CStr;
 use native_activity_thread::{app_process_init, run_native_activity_thread};
 use rustutils::android;
-use std::env;
 
 use crate::{
-    config, file_descriptors::Action, introspection::debug_assert_single_threaded, species::Species,
+    file_descriptors::Action,
+    introspection::debug_assert_single_threaded,
+    species::{Species, SpeciesTag},
 };
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 use zygote_sys::{self as sys, AsCStr};
-
-const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";
-const ANDROID_SOCKET_DIR: &str = "/dev/socket";
 
 const AID_APP_START: i32 = 10000;
 
@@ -40,18 +38,6 @@ pub struct ReInitData {
 pub struct App;
 
 impl Species for App {
-    fn resolve_socket(&self, config: &config::Server) -> Option<String> {
-        if let Some(socket_from_config) = config.socket.as_ref() {
-            Some(socket_from_config.clone())
-        } else if let Ok(socket_from_env) =
-            env::var(format!("{}{}", ANDROID_SOCKET_ENV_PREFIX, config.name))
-        {
-            Some(socket_from_env)
-        } else {
-            Some(format!("{}/{}", ANDROID_SOCKET_DIR, config.name))
-        }
-    }
-
     fn abstract_socket_is_allowed(&self, _name: &str) -> bool {
         false
     }
@@ -72,10 +58,6 @@ impl Species for App {
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
         matches!(message, SpawnPayload::AndroidNative { .. })
-    }
-
-    fn name(&self) -> &'static str {
-        "android-native-app"
     }
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
@@ -177,5 +159,9 @@ impl Species for App {
         } else {
             android::process::set_system_seccomp_filter();
         }
+    }
+
+    fn tag(&self) -> SpeciesTag {
+        SpeciesTag::AndroidNative
     }
 }

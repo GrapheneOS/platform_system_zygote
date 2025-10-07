@@ -20,7 +20,6 @@
 use core::ffi::CStr;
 use std::str::FromStr;
 
-use crate::config;
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
 
 #[cfg(all(target_os = "android", feature = "android-native"))]
@@ -72,53 +71,10 @@ pub(crate) const fn socket_entry(
     SocketAllowListEntry { data, _reviewer, _reviewed }
 }
 
-/// A reference type for a statically allocated Species VTable.
-pub type SpeciesRef = &'static (dyn Species + Sync);
-
-/// All configured species.
-const SPECIES_LIST: &[SpeciesRef] = &[
-    #[cfg(all(target_os = "android", feature = "android-native"))]
-    &android_native::App,
-    #[cfg(feature = "libapp")]
-    &lib_app::App,
-    #[cfg(feature = "mock")]
-    &mock::Turtle,
-];
-
-/// Re-initialization data that is gathered and then consumed by species code
-pub enum ReInitWrapper {
-    /// Android specific data
-    #[cfg(all(target_os = "android", feature = "android-native"))]
-    AndroidNative(android_native::ReInitData),
-    /// LibApp specific data
-    #[cfg(feature = "libapp")]
-    LibApp,
-    /// Mock specific data
-    #[cfg(feature = "mock")]
-    Mock,
-}
-
-impl ReInitWrapper {
-    /// Retrieve a reference to this enum's [`android_native::ReInitData`]
-    /// struct
-    #[cfg(all(target_os = "android", feature = "android-native"))]
-    #[allow(unreachable_patterns)]
-    pub fn as_android_native(&self) -> anyhow::Result<&android_native::ReInitData> {
-        match self {
-            ReInitWrapper::AndroidNative(data) => Ok(data),
-            _ => Err(anyhow::anyhow!("Invalid re-initialization data type")),
-        }
-    }
-}
-
 /// A collection of callbacks implemented by Zygote payloads that determine
 /// runtime behaviors such as preloading, process creation, and transfer
 /// of control flow.
 pub trait Species {
-    /// Determines the socket to listen on from command line options
-    fn resolve_socket(&self, config: &config::Server) -> Option<String> {
-        config.socket.to_owned()
-    }
     /// Returns true if an abstract socket name is allowed to be registered
     fn abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
@@ -128,7 +84,9 @@ pub trait Species {
     /// Return true if the provided payload is associated with this species
     fn is_spawn_payload_type(&self, message: &SpawnPayload) -> bool;
     /// Returns the name of the species
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &'static str {
+        self.tag().name()
+    }
     /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
     /// Take over control flow for the new process
@@ -153,12 +111,50 @@ pub trait Species {
     );
     /// A callback for setting SecComp filters
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon);
+    /// Get the associated [`SpeciesTag`].  Dyn trait references are not
+    /// guaranteed to be equal, so this allows for dynamic testing of the
+    /// species implementation.
+    fn tag(&self) -> SpeciesTag;
 
     // Helper functions
 
     /// A simple test to check of a provided path string is absolute or not.
     fn path_is_absolute(&self, path_str: &str) -> bool {
         path_str.starts_with("/") && !path_str.contains("/../")
+    }
+}
+
+/// A reference type for a statically allocated Species VTable.
+pub type SpeciesRef = &'static (dyn Species + Sync);
+
+/// All configured species.
+const SPECIES_LIST: &[SpeciesRef] = &[
+    #[cfg(all(target_os = "android", feature = "android-native"))]
+    &android_native::App,
+    #[cfg(feature = "libapp")]
+    &lib_app::App,
+    #[cfg(feature = "mock")]
+    &mock::Turtle,
+];
+
+/// A tag used to dynamically identify species.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeciesTag {
+    /// Tag returned by the AndroidNative species
+    AndroidNative,
+    /// Tag returned by the LibApp species
+    LibApp,
+    /// Tag returned by the Mock species
+    Mock,
+}
+
+impl SpeciesTag {
+    fn name(&self) -> &'static str {
+        match self {
+            SpeciesTag::AndroidNative => "android-native-app",
+            SpeciesTag::LibApp => "lib-app",
+            SpeciesTag::Mock => "mock",
+        }
     }
 }
 
@@ -203,5 +199,31 @@ where
 {
     fn to_species(self) -> SpeciesRef {
         SpeciesRef::from(self)
+    }
+}
+
+/// Re-initialization data that is gathered and then consumed by species code
+pub enum ReInitWrapper {
+    /// Android specific data
+    #[cfg(all(target_os = "android", feature = "android-native"))]
+    AndroidNative(android_native::ReInitData),
+    /// LibApp specific data
+    #[cfg(feature = "libapp")]
+    LibApp,
+    /// Mock specific data
+    #[cfg(feature = "mock")]
+    Mock,
+}
+
+impl ReInitWrapper {
+    /// Retrieve a reference to this enum's [`android_native::ReInitData`]
+    /// struct
+    #[cfg(all(target_os = "android", feature = "android-native"))]
+    #[allow(unreachable_patterns)]
+    pub fn as_android_native(&self) -> anyhow::Result<&android_native::ReInitData> {
+        match self {
+            ReInitWrapper::AndroidNative(data) => Ok(data),
+            _ => Err(anyhow::anyhow!("Invalid re-initialization data type")),
+        }
     }
 }

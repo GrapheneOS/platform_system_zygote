@@ -203,8 +203,7 @@ impl Server {
     ///   * Opening a new socket and binding it to a default path
     fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
         let socket_path_or_fd = config
-            .species
-            .resolve_socket(config)
+            .resolve_socket()
             .ok_or_else(|| anyhow!("Could not determine a socket to listen to"))?;
         if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {

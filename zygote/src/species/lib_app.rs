@@ -22,7 +22,10 @@ use core::ffi::CStr;
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
-use crate::{file_descriptors::Action, species::Species};
+use crate::{
+    file_descriptors::Action,
+    species::{Species, SpeciesTag},
+};
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 use zygote_sys as sys;
 
@@ -47,10 +50,6 @@ impl Species for App {
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
         matches!(message, SpawnPayload::LibApp { .. })
-    }
-
-    fn name(&self) -> &'static str {
-        "lib-app"
     }
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
@@ -89,11 +88,12 @@ impl Species for App {
                 });
 
             if let Some(priority) = spawn_params.priority_final
-                && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
-                    // EINVAL, EPERM, and ESRCH only apply when setting the
-                    // priority of other processes.
-                    warn!("Insufficient permissions to set priority: {priority}");
-                }
+                && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err()
+            {
+                // EINVAL, EPERM, and ESRCH only apply when setting the
+                // priority of other processes.
+                warn!("Insufficient permissions to set priority: {priority}");
+            }
 
             // SAFETY: The function signature is part of the API for LibApps.  An
             //         improper signature will result in undefined behavior.  From
@@ -130,5 +130,9 @@ impl Species for App {
 
     fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon) {
         // Nothing to do here
+    }
+
+    fn tag(&self) -> SpeciesTag {
+        SpeciesTag::LibApp
     }
 }
