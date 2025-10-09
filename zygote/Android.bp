@@ -65,7 +65,6 @@ rust_defaults {
     rustlibs: [
         "libanyhow",
         "libarrayvec",
-        "libbitflags",
         "libcap_rust",
         "libclap",
         "libflatbuffers",
