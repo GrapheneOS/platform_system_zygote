@@ -20,14 +20,13 @@ mod inner {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use arrayvec::ArrayVec;
 use clap::Subcommand;
-use flatbuffers::UnionWIPOffset;
 use itertools::Itertools;
 
-use crate::species::{self, SpeciesRef};
-use capwrap::{CapabilityFlags, RawCap};
+use cap::{CapabilityFlags, RawCap};
+use zygote_proc_macros::{FlattenParcel, MarshalParcel, UnmarshalParcel};
 use zygote_sys as sys;
 
 /// Default size for GID vectors
@@ -42,8 +41,12 @@ pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SI
 /// Statically allocated arrays used for receiving messages.
 pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 
+/// The maximum size for buffers holding message arguments.
+#[allow(dead_code)]
+const MESSAGE_ARG_BUFFER_MAX: usize = 32;
+
 /// A trait for helper structs that can be marshaled into a FlatBuffer
-trait EnumToFlatBufferUnion<InnerType> {
+trait MarshalParcel<InnerType> {
     /// The `flatc` generated union this is a wrapper for
     fn inner_type(&self) -> InnerType;
 
@@ -51,7 +54,7 @@ trait EnumToFlatBufferUnion<InnerType> {
     fn marshal(
         &self,
         builder: &mut flatbuffers::FlatBufferBuilder<'_>,
-    ) -> flatbuffers::WIPOffset<UnionWIPOffset>;
+    ) -> flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>;
 }
 
 /// Traits for things that can be marshalled into a FlatBuffers Parcel as
@@ -90,32 +93,110 @@ pub struct RLimitData {
     pub hard: libc::rlim_t,
 }
 
+fn marshal_capability_flags(
+    cap: &Option<CapabilityFlags>,
+    _builder: &mut flatbuffers::FlatBufferBuilder<'_>,
+) -> RawCap {
+    cap.map(|cap| cap.bits()).unwrap_or(RawCap::MAX)
+}
+
+fn marshal_string<'builder>(
+    s: &Option<String>,
+    builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+) -> Option<flatbuffers::WIPOffset<&'builder str>> {
+    match s.as_ref() {
+        Some(name) => Some(name.to_packed(builder)),
+        None => Some("".to_packed(builder)),
+    }
+}
+
+fn unmarshal_capability_flags(cap: &RawCap) -> Option<CapabilityFlags> {
+    if *cap == RawCap::MAX {
+        None
+    } else {
+        Some(CapabilityFlags::from_bits_truncate(*cap))
+    }
+}
+
+#[cfg(feature = "libapp")]
+fn unmarshal_libapp_args<'a>(
+    args: &flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>,
+) -> ArrayVec<&'a str, { MESSAGE_ARG_BUFFER_MAX }> {
+    args.iter().collect()
+}
+
+fn unmarshal_rlimits(
+    rlimits: &flatbuffers::Vector<'_, inner::RLimitData>,
+) -> ArrayVec<RLimitData, RLIMIT_VECTOR_SIZE> {
+    rlimits
+        .iter()
+        .map(|rlimit| RLimitData {
+            resource: rlimit.resource() as _,
+            soft: rlimit.soft() as _,
+            hard: rlimit.hard() as _,
+        })
+        .collect()
+}
+
+fn unmarshal_secondary_groups(
+    groups: &Option<flatbuffers::Vector<'_, libc::gid_t>>,
+) -> ArrayVec<libc::gid_t, GID_VECTOR_SIZE> {
+    groups.map(|group| group.iter().collect()).unwrap_or_default()
+}
+
+fn unmarshal_string(s: &Option<&str>) -> Option<String> {
+    s.map(|s| s.to_string())
+}
+
 /// Parameters common to all spawn operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FlattenParcel)]
+#[flatten_into_type = "Spawn"]
 pub struct SpawnParamsCommon {
     /// UID for the new process
+    #[marshal(default = -1)]
+    #[unmarshal(valid_range = (1..))]
     pub uid: Option<i32>,
     /// Primary GID for the new process
+    #[marshal(default = -1)]
+    #[unmarshal(valid_range = (1..))]
     pub gid: Option<i32>,
     /// Name of the new process
+    #[marshal(map = marshal_string)]
+    #[unmarshal(map = unmarshal_string)]
     pub process_name: Option<String>,
     /// Initial scheduling priority for child processes immediately after
     /// forking
+    #[marshal(default = i32::MAX)]
+    #[unmarshal(valid_range = (-20..20))]
     pub priority_initial: Option<i32>,
     /// Final scheduling priority for child processes immediately before
     /// entering application code
+    #[marshal(default = i32::MAX)]
+    #[unmarshal(valid_range = (-20..20))]
     pub priority_final: Option<i32>,
     /// Effective capabilities for the child process
+    #[marshal(map = marshal_capability_flags)]
+    #[unmarshal(map = unmarshal_capability_flags)]
     pub cap_effective: Option<CapabilityFlags>,
     /// Permitted capabilities for the child process
+    #[marshal(map = marshal_capability_flags)]
+    #[unmarshal(map = unmarshal_capability_flags)]
     pub cap_permitted: Option<CapabilityFlags>,
     /// Inheritable capabilities for the child process
+    #[marshal(map = marshal_capability_flags)]
+    #[unmarshal(map = unmarshal_capability_flags)]
     pub cap_inheritable: Option<CapabilityFlags>,
     /// Bounding capabilities for the child process
+    #[marshal(map = marshal_capability_flags)]
+    #[unmarshal(map = unmarshal_capability_flags)]
     pub cap_bound: Option<CapabilityFlags>,
     /// Secondary groups for the child process
+    #[marshal(packed)]
+    #[unmarshal(map = unmarshal_secondary_groups)]
     pub secondary_groups: ArrayVec<libc::gid_t, GID_VECTOR_SIZE>,
     /// Resource limits for the child process
+    #[marshal(packed)]
+    #[unmarshal(map = unmarshal_rlimits)]
     pub rlimits: ArrayVec<RLimitData, RLIMIT_VECTOR_SIZE>,
 }
 
@@ -146,9 +227,10 @@ impl SpawnParamsCommon {
 
 /// Messages used in the Zygote server protocol
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Debug, MarshalParcel, UnmarshalParcel)]
 pub enum Message<'a, 'b> {
     /// Acknowledge that a command was received
+    #[inner_type_name = "Ack"]
     AckResponse,
     /// Request the server cleanly shut down
     Exit,
@@ -157,17 +239,22 @@ pub enum Message<'a, 'b> {
     /// Response to an [`Message::IdentityQuery`]
     IdentityQueryResponse {
         /// Name of the server
+        #[marshal(packed)]
         name: &'a str,
         /// Server species
+        #[marshal(packed)]
         species: &'b str,
         /// Server binary architecture
+        #[marshal(packed)]
         arch: &'b str,
     },
     /// Request the server spawn a new process
     Spawn {
         /// Parameters common to all spawn operations
+        #[flatten]
         params: SpawnParamsCommon,
         /// Species-specific spawn data
+        #[union]
         payload: SpawnPayload<'a>,
     },
     /// Response to a [`Message::Spawn`]
@@ -222,119 +309,6 @@ impl Message<'_, '_> {
     }
 }
 
-impl EnumToFlatBufferUnion<inner::Message> for Message<'_, '_> {
-    fn inner_type(&self) -> inner::Message {
-        match self {
-            Message::AckResponse => inner::Message::Ack,
-            Message::Exit => inner::Message::Exit,
-            Message::IdentityQuery => inner::Message::IdentityQuery,
-            Message::IdentityQueryResponse { .. } => inner::Message::IdentityQueryResponse,
-            Message::Spawn { .. } => inner::Message::Spawn,
-            Message::SpawnResponse { .. } => inner::Message::SpawnResponse,
-            Message::Stat => inner::Message::Stat,
-            Message::StatResponse { .. } => inner::Message::StatResponse,
-        }
-    }
-
-    fn marshal(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder<'_>,
-    ) -> flatbuffers::WIPOffset<UnionWIPOffset> {
-        match self {
-            Message::AckResponse => {
-                inner::Ack::create(builder, &inner::AckArgs {}).as_union_value()
-            }
-            Message::Exit => inner::Exit::create(builder, &inner::ExitArgs {}).as_union_value(),
-            Message::IdentityQuery => {
-                inner::IdentityQuery::create(builder, &inner::IdentityQueryArgs {}).as_union_value()
-            }
-            Message::IdentityQueryResponse { name, species, arch } => {
-                let packed_name = name.to_packed(builder);
-                let packed_species = species.to_packed(builder);
-                let packed_arch = arch.to_packed(builder);
-                inner::IdentityQueryResponse::create(
-                    builder,
-                    &inner::IdentityQueryResponseArgs {
-                        name: Some(packed_name),
-                        species: Some(packed_species),
-                        arch: Some(packed_arch),
-                    },
-                )
-                .as_union_value()
-            }
-            Message::Spawn { params, payload } => {
-                let process_name = params.process_name.clone().unwrap_or("".to_string());
-                let packed_process_name = (&process_name).to_packed(builder);
-                let packed_groups = params.secondary_groups.to_packed(builder);
-                let packed_rlimits = params.rlimits.to_packed(builder);
-                let packed_payload = payload.marshal(builder);
-                inner::Spawn::create(
-                    builder,
-                    &inner::SpawnArgs {
-                        uid: params.uid.unwrap_or(-1),
-                        gid: params.gid.unwrap_or(-1),
-                        process_name: Some(packed_process_name),
-                        priority_initial: params.priority_initial.unwrap_or(<i32>::MAX),
-                        priority_final: params.priority_final.unwrap_or(<i32>::MAX),
-                        cap_effective: params
-                            .cap_effective
-                            .map(|cap| cap.bits())
-                            .unwrap_or(RawCap::MAX),
-                        cap_permitted: params
-                            .cap_permitted
-                            .map(|cap| cap.bits())
-                            .unwrap_or(RawCap::MAX),
-                        cap_inheritable: params
-                            .cap_inheritable
-                            .map(|cap| cap.bits())
-                            .unwrap_or(RawCap::MAX),
-                        cap_bound: params.cap_bound.map(|cap| cap.bits()).unwrap_or(RawCap::MAX),
-                        secondary_groups: Some(packed_groups),
-                        rlimits: Some(packed_rlimits),
-                        payload_type: payload.inner_type(),
-                        payload: Some(packed_payload),
-                    },
-                )
-                .as_union_value()
-            }
-            Message::SpawnResponse { pid } => {
-                inner::SpawnResponse::create(builder, &inner::SpawnResponseArgs { pid: *pid })
-                    .as_union_value()
-            }
-            Message::Stat => inner::Stat::create(builder, &inner::StatArgs {}).as_union_value(),
-            Message::StatResponse {
-                pid,
-                pgrp,
-                minflt,
-                cminflt,
-                majflt,
-                cmajflt,
-                utime,
-                stime,
-                num_threads,
-                vsize,
-                rss,
-            } => inner::StatResponse::create(
-                builder,
-                &inner::StatResponseArgs {
-                    pid: *pid,
-                    pgrp: *pgrp,
-                    minflt: *minflt,
-                    cminflt: *cminflt,
-                    majflt: *majflt,
-                    cmajflt: *cmajflt,
-                    utime: *utime,
-                    stime: *stime,
-                    num_threads: *num_threads,
-                    vsize: *vsize,
-                    rss: *rss,
-                },
-            )
-            .as_union_value(),
-        }
-    }
-}
-
 impl ToParcel for Message<'_, '_> {
     fn to_parcel<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
         let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
@@ -347,112 +321,6 @@ impl ToParcel for Message<'_, '_> {
 
         builder.finish(parcel, None);
         builder
-    }
-}
-
-impl<'a> FromParcel<'a> for Message<'a, 'a> {
-    fn try_from_parcel(buffer: &'a [u8]) -> Result<Self> {
-        let parcel: inner::Parcel<'a> = flatbuffers::root::<inner::Parcel>(buffer)?;
-
-        match parcel.message_type() {
-            inner::Message::Ack => Ok(Message::AckResponse),
-            inner::Message::Exit => Ok(Message::Exit),
-            inner::Message::IdentityQuery => Ok(Message::IdentityQuery),
-            inner::Message::IdentityQueryResponse => {
-                let id_query_response = parcel.message_as_identity_query_response().unwrap();
-                Ok(Message::IdentityQueryResponse {
-                    name: id_query_response.name(),
-                    species: id_query_response.species(),
-                    arch: id_query_response.arch(),
-                })
-            }
-            inner::Message::Spawn => {
-                let spawn: inner::Spawn<'a> = parcel.message_as_spawn().unwrap();
-
-                let uid = if spawn.uid() > 0 { Some(spawn.uid()) } else { None };
-                let gid = if spawn.gid() > 0 { Some(spawn.gid()) } else { None };
-
-                let process_name = spawn.process_name().map(|s| s.to_string());
-
-                let priority_initial = if (-20..20).contains(&spawn.priority_initial()) {
-                    Some(spawn.priority_initial())
-                } else {
-                    None
-                };
-                let priority_final = if (-20..20).contains(&spawn.priority_final()) {
-                    Some(spawn.priority_final())
-                } else {
-                    None
-                };
-
-                let cap_effective = (spawn.cap_effective() != RawCap::MAX)
-                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_effective()));
-                let cap_permitted = (spawn.cap_permitted() != RawCap::MAX)
-                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_permitted()));
-                let cap_inheritable = (spawn.cap_inheritable() != RawCap::MAX)
-                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_inheritable()));
-                let cap_bound = (spawn.cap_bound() != RawCap::MAX)
-                    .then(|| CapabilityFlags::from_bits_truncate(spawn.cap_bound()));
-
-                let secondary_groups = spawn
-                    .secondary_groups()
-                    .map(|groups| groups.iter().collect())
-                    .unwrap_or_default();
-
-                let rlimits = spawn
-                    .rlimits()
-                    .iter()
-                    .map(|rlimit| RLimitData {
-                        resource: rlimit.resource() as _,
-                        soft: rlimit.soft() as _,
-                        hard: rlimit.hard() as _,
-                    })
-                    .collect();
-
-                let payload = SpawnPayload::<'a>::from_spawn(&spawn).unwrap();
-
-                Ok(Message::Spawn {
-                    params: SpawnParamsCommon {
-                        uid,
-                        gid,
-                        process_name,
-                        priority_initial,
-                        priority_final,
-                        cap_effective,
-                        cap_permitted,
-                        cap_inheritable,
-                        cap_bound,
-                        secondary_groups,
-                        rlimits,
-                    },
-                    payload,
-                })
-            }
-            inner::Message::SpawnResponse => {
-                let spawn_response = parcel.message_as_spawn_response().unwrap();
-                Ok(Message::SpawnResponse { pid: spawn_response.pid() })
-            }
-            inner::Message::Stat => Ok(Message::Stat),
-            inner::Message::StatResponse => {
-                let stat = parcel.message_as_stat_response().unwrap();
-                Ok(Message::StatResponse {
-                    pid: stat.pid(),
-                    pgrp: stat.pgrp(),
-                    minflt: stat.minflt(),
-                    cminflt: stat.cminflt(),
-                    majflt: stat.majflt(),
-                    cmajflt: stat.cmajflt(),
-                    utime: stat.utime(),
-                    stime: stat.stime(),
-                    num_threads: stat.num_threads(),
-                    vsize: stat.vsize(),
-                    rss: stat.rss(),
-                })
-            }
-            inner::Message(tag) => {
-                bail!("Unknown Message type: {tag}")
-            }
-        }
     }
 }
 
@@ -536,103 +404,44 @@ impl TryToParcel for MessageParser {
 
 /// Species-specific spawn data
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Debug, MarshalParcel, UnmarshalParcel)]
+#[unmarshal_from(source_type = inner::Spawn<'a>, field = payload)]
 pub enum SpawnPayload<'a> {
     /// Spawn data for [`species::android_native::App`]
+    #[inner_type_name = "SpawnAndroidNative"]
     AndroidNative {
         /// Name of the package to start
+        #[marshal(packed)]
         package: &'a str,
+        /// SELinux labels for the new process
+        #[marshal(packed)]
+        se_info: &'a str,
         /// Id of the spawn request
         start_seq: i64,
         /// The target SDK version for the app.
         target_sdk_version: i32,
+        /// Additional flags for the runtime.
+        runtime_flags: u32,
     },
     /// Spawn data for [`species::lib_app::App`]
+    #[cfg(feature = "libapp")]
+    #[inner_type_name = "SpawnLibApp"]
     LibApp {
         /// Path to the shared library to load
+        #[marshal(packed)]
         path: &'a str,
         /// Arguments to pass to the entry function
-        args: ArrayVec<&'a str, { crate::species::lib_app::MAX_ARGS }>,
+        #[marshal(packed)]
+        #[unmarshal(map = unmarshal_libapp_args)]
+        args: ArrayVec<&'a str, { MESSAGE_ARG_BUFFER_MAX }>,
     },
     /// Spawn data for [`species::mock::Turtle`]
+    #[inner_type_name = "SpawnMock"]
     Mock {
         /// Name to print in the new process
+        #[marshal(packed)]
         name: &'a str,
     },
-}
-
-impl<'a> SpawnPayload<'a> {
-    fn from_spawn(spawn: &inner::Spawn<'a>) -> Result<Self> {
-        match spawn.payload_type() {
-            inner::SpawnPayload::SpawnAndroidNative => {
-                let payload: inner::SpawnAndroidNative<'a> =
-                    spawn.payload_as_spawn_android_native().unwrap();
-                Ok(SpawnPayload::AndroidNative {
-                    package: payload.package(),
-                    start_seq: payload.start_seq(),
-                    target_sdk_version: payload.target_sdk_version(),
-                })
-            }
-            inner::SpawnPayload::SpawnLibApp => {
-                let payload: inner::SpawnLibApp<'a> = spawn.payload_as_spawn_lib_app().unwrap();
-                Ok(SpawnPayload::LibApp {
-                    path: payload.path(),
-                    args: payload.args().iter().collect(),
-                })
-            }
-            inner::SpawnPayload::SpawnMock => {
-                let payload: inner::SpawnMock<'a> = spawn.payload_as_spawn_mock().unwrap();
-                Ok(SpawnPayload::Mock { name: payload.name() })
-            }
-            inner::SpawnPayload(tag) => {
-                bail!("Unknown SpawnPayload type: {tag}")
-            }
-        }
-    }
-}
-
-impl EnumToFlatBufferUnion<inner::SpawnPayload> for SpawnPayload<'_> {
-    fn inner_type(&self) -> inner::SpawnPayload {
-        match self {
-            SpawnPayload::AndroidNative { .. } => inner::SpawnPayload::SpawnAndroidNative,
-            SpawnPayload::LibApp { .. } => inner::SpawnPayload::SpawnLibApp,
-            SpawnPayload::Mock { .. } => inner::SpawnPayload::SpawnMock,
-        }
-    }
-
-    fn marshal(
-        &self,
-        builder: &mut flatbuffers::FlatBufferBuilder<'_>,
-    ) -> flatbuffers::WIPOffset<UnionWIPOffset> {
-        match self {
-            SpawnPayload::AndroidNative { package, start_seq, target_sdk_version } => {
-                let packed_package = package.to_packed(builder);
-                inner::SpawnAndroidNative::create(
-                    builder,
-                    &inner::SpawnAndroidNativeArgs {
-                        package: Some(packed_package),
-                        start_seq: *start_seq,
-                        target_sdk_version: *target_sdk_version,
-                    },
-                )
-                .as_union_value()
-            }
-            SpawnPayload::LibApp { path, args } => {
-                let packed_path = path.to_packed(builder);
-                let packed_args = args.to_packed(builder);
-                inner::SpawnLibApp::create(
-                    builder,
-                    &inner::SpawnLibAppArgs { path: Some(packed_path), args: Some(packed_args) },
-                )
-                .as_union_value()
-            }
-            SpawnPayload::Mock { name } => {
-                let packed_name = name.to_packed(builder);
-                inner::SpawnMock::create(builder, &inner::SpawnMockArgs { name: Some(packed_name) })
-                    .as_union_value()
-            }
-        }
-    }
 }
 
 /// Command line parser for building Spawn [`Message`]es
@@ -640,19 +449,26 @@ impl EnumToFlatBufferUnion<inner::SpawnPayload> for SpawnPayload<'_> {
 #[command(rename_all = "verbatim")]
 pub enum SpawnPayloadParser {
     /// Request the creation of an AndroidNative process
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "android-native"))]
     AndroidNative {
         /// The package to execute
         #[arg(required(true))]
         package: String,
+        /// SELinux labels for the new process
+        #[arg(required(true))]
+        se_info: String,
         /// Id of the spawn request
         #[arg(required(true))]
         start_seq: i64,
         /// The target SDK version for the app.
         #[arg(required(true))]
         target_sdk_version: i32,
+        /// Additional flags for the runtime.
+        #[arg(required(true))]
+        runtime_flags: u32,
     },
     /// Request the creation of a LibApp process
+    #[cfg(feature = "libapp")]
     LibApp {
         /// Path to the library to load
         #[arg(required(true))]
@@ -662,7 +478,7 @@ pub enum SpawnPayloadParser {
         args: Vec<String>,
     },
     /// Request the creation of a Mock process
-    #[cfg(any(test, feature = "test"))]
+    #[cfg(any(test, feature = "mock"))]
     Mock {
         /// The name to print in the new process
         #[arg(required(true))]
@@ -671,28 +487,24 @@ pub enum SpawnPayloadParser {
 }
 
 impl SpawnPayloadParser {
-    /// Fetch a reference to the species associated with this payload type
-    pub fn species(&self) -> SpeciesRef {
-        match self {
-            #[cfg(target_os = "android")]
-            SpawnPayloadParser::AndroidNative { .. } => &species::android_native::App,
-            SpawnPayloadParser::LibApp { .. } => &species::lib_app::App,
-            #[cfg(any(test, feature = "test"))]
-            SpawnPayloadParser::Mock { .. } => &species::mock::Turtle,
-        }
-    }
-
     /// Construct a [`SpawnPayload`] from this enum
     pub fn to_spawn_payload(&self) -> Result<SpawnPayload<'_>> {
         match self {
-            #[cfg(target_os = "android")]
-            SpawnPayloadParser::AndroidNative { package, start_seq, target_sdk_version } => {
-                Ok(SpawnPayload::AndroidNative {
-                    package: package.as_str(),
-                    start_seq: *start_seq,
-                    target_sdk_version: *target_sdk_version,
-                })
-            }
+            #[cfg(all(target_os = "android", feature = "android-native"))]
+            SpawnPayloadParser::AndroidNative {
+                package,
+                se_info,
+                start_seq,
+                target_sdk_version,
+                runtime_flags,
+            } => Ok(SpawnPayload::AndroidNative {
+                package: package.as_str(),
+                se_info: se_info.as_str(),
+                start_seq: *start_seq,
+                target_sdk_version: *target_sdk_version,
+                runtime_flags: *runtime_flags,
+            }),
+            #[cfg(feature = "libapp")]
             SpawnPayloadParser::LibApp { path, args } => Ok(SpawnPayload::LibApp {
                 path: path.as_str(),
                 args: args.iter().map(|s| s.as_str()).collect(),

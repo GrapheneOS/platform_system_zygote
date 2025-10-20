@@ -13,15 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 rust_library {
     name: "libzygote_sys",
     crate_name: "zygote_sys",
-    host_supported: true,
-    edition: "2021",
+    defaults: ["zygote_defaults"],
     srcs: [
         "src/lib.rs",
     ],
@@ -34,9 +29,14 @@ rust_library {
     ],
     target: {
         android: {
+            rustlibs: [
+                "libprocessgroup_rust",
+                "libselinux_bindgen",
+            ],
             shared_libs: [
                 "libdl_android",
                 "libprocessgroup",
+                "libselinux",
             ],
         },
     },

@@ -16,6 +16,7 @@
 //! This module provides classes and functions for configuring a Zygote
 //! process.
 
+use std::env;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
@@ -23,12 +24,15 @@ use arrayvec::ArrayVec;
 use clap::Parser;
 use log::LevelFilter;
 
-use crate::{
-    messages::{
-        Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
-    },
-    species::SpeciesRef,
+use crate::species::{SpeciesRef, SpeciesTag};
+use zygote_messages::{
+    Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
 };
+
+/// Prefix for the environment variable used by init to pass sockets in Android
+const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";
+/// Path to location of system sockets on Android
+const ANDROID_SOCKET_DIR: &str = "/dev/socket";
 
 /// Configuration values used by the Zygote command line interface.  This API
 /// is temporary as the message types evolve.
@@ -191,6 +195,23 @@ pub struct Server {
 }
 
 impl Server {
+    /// Possibly use configuration and environment data to synthesize a socket path.
+    pub fn resolve_socket(&self) -> Option<String> {
+        if self.species.tag() == SpeciesTag::AndroidNative {
+            if let Some(socket_from_config) = self.socket.as_ref() {
+                Some(socket_from_config.clone())
+            } else if let Ok(socket_from_env) =
+                env::var(format!("{}{}", ANDROID_SOCKET_ENV_PREFIX, self.name))
+            {
+                Some(socket_from_env)
+            } else {
+                Some(format!("{}/{}", ANDROID_SOCKET_DIR, self.name))
+            }
+        } else {
+            self.socket.to_owned()
+        }
+    }
+
     /// Generate spawn parameters from a Server configuration
     pub fn to_spawn_params(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {

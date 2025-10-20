@@ -19,9 +19,11 @@ use core::ffi::CStr;
 
 use crate::{
     file_descriptors::Action,
-    messages::{self, SpawnParamsCommon, SpawnPayload},
-    species::{file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, Species},
+    species::{
+        file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, {Species, SpeciesTag},
+    },
 };
+use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 
 #[rustfmt::skip]
 static ALLOWED_FILE_PATHS: [FileAllowListEntry; 1] = [
@@ -60,10 +62,6 @@ impl Species for Turtle {
         matches!(message, SpawnPayload::Mock { .. })
     }
 
-    fn name(&self) -> &'static str {
-        "mock"
-    }
-
     fn file_is_allowed(&self, path_str: &CStr) -> bool {
         ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
     }
@@ -81,11 +79,29 @@ impl Species for Turtle {
         None
     }
 
-    fn re_initialize_prologue(&self, _re_init_data: super::ReInitWrapper) {
+    fn re_initialize_epilogue(
+        &self,
+        _spawn_params: &SpawnParamsCommon,
+        _spawn_payload: &SpawnPayload,
+        _re_init_data: &super::ReInitWrapper,
+    ) {
+        // Nothing to do here
+    }
+
+    fn re_initialize_prologue(
+        &self,
+        _spawn_params: &SpawnParamsCommon,
+        _spawn_payload: &SpawnPayload,
+        _re_init_data: &super::ReInitWrapper,
+    ) {
         // Nothing to do here
     }
 
     fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon) {
         // Nothing to do here
+    }
+
+    fn tag(&self) -> SpeciesTag {
+        SpeciesTag::Mock
     }
 }

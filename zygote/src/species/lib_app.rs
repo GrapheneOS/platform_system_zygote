@@ -22,18 +22,15 @@ use core::ffi::CStr;
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
-use zygote_sys as sys;
-
 use crate::{
     file_descriptors::Action,
-    messages::{self, SpawnParamsCommon, SpawnPayload},
-    species::Species,
+    species::{Species, SpeciesTag},
 };
+use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
+use zygote_sys as sys;
 
 /// Name of the entry symbol for LibApps
 const ENTRY_SYMBOL_NAME: &CStr = c"zygote_entry";
-/// Maximum number of arguments allowed in a spawn message
-pub const MAX_ARGS: usize = 32;
 
 /// Behaviors for launching native Android applications.
 pub struct App;
@@ -53,10 +50,6 @@ impl Species for App {
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
         matches!(message, SpawnPayload::LibApp { .. })
-    }
-
-    fn name(&self) -> &'static str {
-        "lib-app"
     }
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
@@ -94,12 +87,12 @@ impl Species for App {
                     std::process::exit(1);
                 });
 
-            if let Some(priority) = spawn_params.priority_final {
-                if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
-                    // EINVAL, EPERM, and ESRCH only apply when setting the
-                    // priority of other processes.
-                    warn!("Insufficient permissions to set priority: {priority}");
-                }
+            if let Some(priority) = spawn_params.priority_final
+                && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err()
+            {
+                // EINVAL, EPERM, and ESRCH only apply when setting the
+                // priority of other processes.
+                warn!("Insufficient permissions to set priority: {priority}");
             }
 
             // SAFETY: The function signature is part of the API for LibApps.  An
@@ -117,11 +110,29 @@ impl Species for App {
         None
     }
 
-    fn re_initialize_prologue(&self, _re_init_data: super::ReInitWrapper) {
+    fn re_initialize_epilogue(
+        &self,
+        _spawn_params: &SpawnParamsCommon,
+        _spawn_payload: &SpawnPayload,
+        _re_init_data: &super::ReInitWrapper,
+    ) {
+        // Nothing to do here
+    }
+
+    fn re_initialize_prologue(
+        &self,
+        _spawn_params: &SpawnParamsCommon,
+        _spawn_payload: &SpawnPayload,
+        _re_init_data: &super::ReInitWrapper,
+    ) {
         // Nothing to do here
     }
 
     fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon) {
         // Nothing to do here
+    }
+
+    fn tag(&self) -> SpeciesTag {
+        SpeciesTag::LibApp
     }
 }

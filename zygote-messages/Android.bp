@@ -1,0 +1,100 @@
+//
+// Copyright (C) 2025 The Android Open-Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+genrule {
+    name: "libzygote_messages_schemas-rust",
+    tools: ["flatc"],
+    cmd: "$(location flatc) --rust --filename-suffix '' -o $$(dirname $(out)) $(in)",
+    srcs: [
+        "schemas/messages.fbs",
+    ],
+    out: [
+        "src/messages.rs",
+    ],
+}
+
+genrule {
+    name: "libzygote_messages_schemas-cpp",
+    tools: ["flatc"],
+    cmd: "mkdir -p $(genDir)/libzygote_messages_schemas && $(location flatc) --cpp --filename-suffix '' -o $(genDir)/libzygote_messages_schemas $(in)",
+    srcs: [
+        "schemas/messages.fbs",
+    ],
+    out: [
+        "libzygote_messages_schemas/messages.h",
+    ],
+    export_include_dirs: [
+        ".",
+    ],
+}
+
+cc_library_headers {
+    name: "libzygote_messages_schema_headers",
+    host_supported: true,
+    generated_headers: ["libzygote_messages_schemas-cpp"],
+    export_generated_headers: ["libzygote_messages_schemas-cpp"],
+    header_libs: [
+        "flatbuffer_headers",
+    ],
+}
+
+rust_defaults {
+    name: "libzygote_messages_defaults",
+    defaults: ["zygote_defaults"],
+    srcs: [
+        "src/lib.rs",
+        ":libzygote_messages_schemas-rust",
+    ],
+    rustlibs: [
+        "libanyhow",
+        "libarrayvec",
+        "libbitflags",
+        "libcap_rust",
+        "libclap",
+        "libflatbuffers",
+        "libitertools",
+        "liblibc",
+        "libzygote_sys",
+    ],
+    proc_macros: ["libzygote_proc_macros"],
+    target: {
+        android: {
+            features: [
+                "android-native",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+            ],
+        },
+    },
+}
+
+rust_library {
+    name: "libzygote_messages",
+    crate_name: "zygote_messages",
+    defaults: ["libzygote_messages_defaults"],
+}
+
+rust_library {
+    name: "libzygote_messages_test",
+    crate_name: "zygote_messages",
+    defaults: ["libzygote_messages_defaults"],
+    features: [
+        "mock",
+        "test",
+    ],
+}

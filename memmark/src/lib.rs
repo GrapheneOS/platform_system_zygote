@@ -17,7 +17,7 @@
 //! Zygote and its child processes.
 
 /// Entry point for the MemMark Zygote LibApp.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn zygote_entry(args: Vec<String>) -> i32 {
     println!("Hello from MemMark!");
 

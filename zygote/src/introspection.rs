@@ -16,7 +16,7 @@
 //! This module provides support for querying the `/proc/` file system for
 //! information about the current process.
 
-use core::{debug_assert, ffi::CStr, iter::Iterator};
+use core::{ffi::CStr, iter::Iterator};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -94,53 +94,49 @@ pub(crate) fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
     std::fs::read_link(PROC_SELF_EXE)
 }
 
-// TODO: Update to return an iterator
-
 /// Read the contents of the /proc/self/fd directory to get a list of open
 /// file descriptors.
-pub(crate) fn get_open_file_descriptors() -> Result<Vec<RawFd>> {
-    let proc_self_fds_path = Path::new(PROC_SELF_FD_DIR_CSTR.to_str()?);
-    assert!(proc_self_fds_path.exists());
+pub(crate) struct ProcFdIterator {
+    dir: sys::LibcDir,
+    dir_fd: RawFd,
+}
 
-    // The `std::fs::read_dir` function will open two file descriptors when
-    // called and there is no way to gain access to their values.  Manually
-    // opening and iterating over the directory allows us to avoid adding
-    // transient file descriptor to the registry.
-    let proc_self_fds_dir = sys::opendir(PROC_SELF_FD_DIR_CSTR)?;
-    let proc_self_fds_fd = sys::dirfd(&proc_self_fds_dir)?;
-
-    let mut fd_vec = Vec::<RawFd>::new();
-    while let Some(dir_entry) = sys::readdir(&proc_self_fds_dir) {
-        // TODO: Provide a safe abstraction via the sys module
-        // SAFETY: Libc guarantees that the dir_entry->d_name member contains
-        //         a valid C string.
-        let dir_entry_str =
-            unsafe { std::ffi::CStr::from_ptr((*dir_entry.as_ptr()).d_name.as_ptr()) };
-
-        if !dir_entry_str.is_empty() {
-            let first_char = dir_entry_str
-                .to_bytes()
-                .first()
-                .ok_or(anyhow!("Failed to read directory entry name"))?;
-
-            if first_char.is_ascii_digit() {
-                let open_fd = dir_entry_str
-                    .to_str()?
-                    .parse()
-                    .context("Failed to parse proc file descriptor entry")?;
-
-                if proc_self_fds_fd != open_fd {
-                    fd_vec.push(open_fd);
-                }
-            }
-        }
+impl ProcFdIterator {
+    pub(crate) fn new() -> Result<Self> {
+        assert!(Path::new(PROC_SELF_FD_DIR_CSTR.to_str()?).exists());
+        // The `std::fs::read_dir` function will open two file descriptors when
+        // called and there is no way to gain access to their values.  Manually
+        // opening and iterating over the directory allows us to avoid adding
+        // transient file descriptor to the registry.
+        let dir = sys::opendir(PROC_SELF_FD_DIR_CSTR)?;
+        let dir_fd = sys::dirfd(&dir)?;
+        Ok(Self { dir, dir_fd })
     }
 
-    sys::closedir(proc_self_fds_dir)?;
+    fn next_fd(&self, dir_entry: &CStr) -> Result<Option<RawFd>> {
+        if !dir_entry.to_bytes().first().is_some_and(|c| c.is_ascii_digit()) {
+            return Ok(None);
+        }
+        let open_fd =
+            dir_entry.to_str()?.parse().context("Failed to parse proc file descriptor entry")?;
+        Ok((self.dir_fd != open_fd).then_some(open_fd))
+    }
+}
 
-    debug_assert!(fd_vec.is_sorted());
+impl Iterator for ProcFdIterator {
+    type Item = Result<RawFd>;
 
-    Ok(fd_vec)
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(dir_entry) = sys::readdir(&self.dir) {
+            // TODO: Provide a safe abstraction via the sys module
+            // SAFETY: Libc guarantees that the dir_entry->d_name member contains a valid C string.
+            let dir_entry = unsafe { CStr::from_ptr((*dir_entry.as_ptr()).d_name.as_ptr()) };
+            if let Some(r) = self.next_fd(dir_entry).transpose() {
+                return Some(r);
+            }
+        }
+        None
+    }
 }
 
 /// Read file descriptor information from procfs into a CStringBuffer.
@@ -231,7 +227,11 @@ mod test {
     #[test]
     fn test_open_file_descriptors() {
         manage_test(|| {
-            assert_eq!(super::get_open_file_descriptors().unwrap(), vec![0, 1, 2]);
+            let mut it = super::ProcFdIterator::new().unwrap();
+            assert!(matches!(it.next(), Some(Ok(0))));
+            assert!(matches!(it.next(), Some(Ok(1))));
+            assert!(matches!(it.next(), Some(Ok(2))));
+            assert!(it.next().is_none());
         });
     }
 }

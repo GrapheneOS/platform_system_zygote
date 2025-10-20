@@ -15,257 +15,72 @@
 
 //! This module provides safe wrappers around Android-specific functionality
 
-use core::ffi::{c_uint, c_void};
+use core::ffi::{c_char, CStr};
 
-use anyhow::{anyhow, Result};
+use processgroup::{self, SchedPolicy};
 
 use crate::{libc_result_from_int_with_void, LibcResult};
 
-pub use inner::{cpusets_enabled, set_app_seccomp_filter, set_system_seccomp_filter};
-
-/// Android scheduling policy constants
-///
-/// See: system/core/libprocessgroup/include/processgroup/sched_policy.h
-#[repr(C)]
-pub enum SchedPolicy {
-    /// Default scheduling policy for non-system processes
-    Default = -1,
-    /// Scheduling policy for applications in the background
-    Background = 0,
-    /// Scheduling policy for applications in the foreground
-    Foreground = 1,
-    /// Scheduling policy for system services
-    System = 2,
-    /// Scheduling policy for audio threads belonging to applications
-    AudioApp = 3,
-    /// Scheduling policy for audio threads belonging to system services
-    AudioSys = 4,
-    /// Scheduling policy for "Top Apps"
-    TopApp = 5,
-    /// Scheduling policy for real-time applications
-    RTApp = 6,
-    /// Scheduling policy for restricted applications
-    Restricted = 7,
-    /// Scheduling policy for foregrounded application windows
-    ForegroundWindow = 8,
-}
-
-/// The default scheduling policy for system processes
-pub const SP_SYSTEM_DEFAULT: SchedPolicy = SchedPolicy::Foreground;
-
-/// Error levels for Android's File Descriptor Sanitizer
-///
-/// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum FDSanErrorLevel {
-    /// No errors
-    Disabled = 0,
-    /// Warn once(ish) on error, and then downgrade to [`Disabled`]
-    WarnOnce,
-    /// Warn always on error
-    WarnAlways,
-    /// Abort on error
-    Fatal,
-}
-
-fn fdsan_error_level(level: c_uint) -> FDSanErrorLevel {
-    match level {
-        0 => FDSanErrorLevel::Disabled,
-        1 => FDSanErrorLevel::WarnOnce,
-        2 => FDSanErrorLevel::WarnAlways,
-        3 => FDSanErrorLevel::Fatal,
-        _ => panic!("Invalid result returned from libc"),
-    }
-}
-
-/// Operations supported by [`mallopt`]
-///
-/// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/platform/bionic/malloc.h;l=54
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum MalloptOpcode {
-    /// Marks the calling process as a profileable zygote child, possibly
-    /// initializing profiling infrastructure.
-    InitZygoteChildProfiling = 1,
-    /// Reset malloc hooks
-    ResetHooks = 2,
-    /// Set an upper bound on the total size in bytes of all allocations
-    /// made using the memory allocation APIs.
-    ///   arg = size_t*
-    ///   arg_size = sizeof(size_t)
-    SetAllocationLimitBytes = 3,
-    /// Called after the zygote forks to indicate this is a child.
-    SetZygoteChild = 4,
-    /// Options to dump backtraces of allocations. These options only
-    /// work when malloc debug has been enabled.
-    ///
-    /// Writes the backtrace information of all current allocations to a file.
-    /// NOTE: arg_size has to be sizeof(FILE*) because FILE is an opaque type.
-    ///   arg = FILE*
-    ///   arg_size = sizeof(FILE*)
-    WriteMallocLeekInfoToFile = 5,
-    /// Get information about the backtraces of all
-    ///   arg = android_mallopt_leak_info_t*
-    ///   arg_size = sizeof(android_mallopt_leak_info_t)
-    GetMallocLeakInfo = 6,
-    /// Free the memory allocated and returned by M_GET_MALLOC_LEAK_INFO.
-    ///   arg = android_mallopt_leak_info_t*
-    ///   arg_size = sizeof(android_mallopt_leak_info_t)
-    FreeMallocLeakInfo = 7,
-    /// Query whether the current process is considered to be profileable by
-    /// the Android platform. Result is assigned to the arg pointer's
-    /// destination.
-    ///   arg = bool*
-    ///   arg_size = sizeof(bool)
-    GetProcessProfileable = 9,
-    /// Maybe enable GWP-ASan. Set *arg to force GWP-ASan to be turned on,
-    /// otherwise this mallopt() will internally decide whether to sample
-    /// the process. The program must be single threaded at the point when
-    /// the android_mallopt function is called.
-    ///   arg = android_mallopt_gwp_asan_options_t*
-    ///   arg_size = sizeof(android_mallopt_gwp_asan_options_t)
-    InitializeGwpAsan = 10,
-    /// Query whether memtag stack is enabled for this process.
-    MemtagStackIsOn = 11,
-    /// Query whether the current process has the decay time enabled so
-    /// that the memory from allocations are not immediately released to the
-    /// OS. Result is assigned to the arg pointer's destination.
-    ///   arg = bool*
-    ///   arg_size = sizeof(bool)
-    GetDecayTimeEnabled = 12,
-}
-
-/// A wrapper around [`inner::android_fdsan_get_error_level`]
-///
-/// # Safety
-/// This function is not thread safe.
-///
-/// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-pub unsafe fn fdsan_get_error_level() -> FDSanErrorLevel {
-    // SAFETY: This function takes not arguments and always succeeds.
-    fdsan_error_level(unsafe { inner::android_fdsan_get_error_level() })
-}
-
-/// A wrapper around [`inner::android_fdsan_get_error_level`]
-///
-/// # Safety
-/// This function is not thread safe.
-///
-/// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-pub unsafe fn fdsan_set_error_level(level: FDSanErrorLevel) -> FDSanErrorLevel {
-    // SAFETY: This function takes an integer argument and always succeeds.
-    fdsan_error_level(unsafe { inner::android_fdsan_set_error_level(level as c_uint) })
-}
-
-/// A safe wrapper around [`libc_fill::android_mallopt`] and the
-/// M_SET_ZYGOTE_CHILD opcode
-pub fn set_zygote_child() -> Result<()> {
-    // SAFETY: This opcode takes no arguments so a nullptr is passed
-    //         instead.
-    unsafe {
-        inner::android_mallopt(
-            MalloptOpcode::SetZygoteChild as _,
-            std::ptr::null_mut(),
-            std::mem::size_of::<c_void>(),
-        )
-    }
-    .then_some(())
-    .ok_or_else(|| anyhow!("Call to android_mallopt failed: Opcode = M_SET_ZYGOTE_CHILD"))
-}
-
-/// Reset the thread local stack protection salt.
-///
-/// The caller should not return after calling this function.  If it does,
-/// and stack protection is enabled, the program will crash.
-///
-/// TODO: Make this function take a `noreturn` thunk.
-#[inline(always)]
-pub fn reset_stack_guards() {
-    inner::android_reset_stack_guards();
-}
-
-/// A wrapper around [`libc_fill::android_set_application_target_sdk_version`]
+/// A wrapper around [`inner::android_set_application_target_sdk_version`]
 pub fn set_application_target_sdk_version(target: i32) {
     inner::android_set_application_target_sdk_version(target);
 }
 
-/// A wrapper function for [`inner::set_cpuset_policy`] that wraps the returned
+/// A wrapper function for [`processgropu::set_cpuset_policy`] that wraps the returned
 /// value in a LibcResult.
 pub fn set_cpuset_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(inner::set_cpuset_policy(tid, policy))
+    libc_result_from_int_with_void(processgroup::set_cpuset_policy(tid, policy))
 }
 
-/// A wrapper function for [`inner::set_sched_policy`] that wraps the returned
+/// A wrapper function for [`processgropu::set_sched_policy`] that wraps the returned
 /// value in a LibcResult.
 pub fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(inner::set_sched_policy(tid, policy))
+    libc_result_from_int_with_void(processgroup::set_sched_policy(tid, policy))
+}
+
+/// An alias around [`inner::setprogname`]
+///
+/// # Safety
+/// The caller must ensure that `name` points to a valid C-style NULL
+/// terminated string.
+pub unsafe fn set_program_name(name: *const c_char) {
+    // SAFETY: The pointer argument is guaranteed valid by the caller.
+    unsafe { inner::setprogname(name) };
+}
+
+/// A wrapper around Android's SELinux context switching mechanism.
+pub fn set_selinux_context(
+    uid: libc::uid_t,
+    is_system_server: bool,
+    se_info: &CStr,
+    name: &CStr,
+) -> LibcResult<()> {
+    // SAFETY: Both `seinfo` and `name` are valid, null-terminated, C-strings
+    libc_result_from_int_with_void(unsafe {
+        selinux_bindgen::selinux_android_setcontext(
+            uid,
+            is_system_server,
+            se_info.as_ptr(),
+            name.as_ptr(),
+        )
+    })
 }
 
 mod inner {
-    use core::ffi::{c_int, c_uint, c_void};
-
-    use super::SchedPolicy;
+    use core::ffi::{c_char, c_int};
 
     unsafe extern "C" {
-        /// Return the current process's FDSan error level
-        ///
-        /// # Safety
-        /// This function is not thread safe.
-        ///
-        /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-        pub fn android_fdsan_get_error_level() -> c_uint;
-
-        /// Sets the process's FDSan error level and returns the previous value
-        ///
-        /// # Safety
-        /// This function is not thread safe.
-        ///
-        /// See: https://android.googlesource.com/platform/bionic/+/master/docs/fdsan.md
-        pub fn android_fdsan_set_error_level(level: c_uint) -> c_uint;
-
-        /// Set Android-specific allocation options.
-        ///
-        /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/android_mallopt.cpp
-        pub fn android_mallopt(opcode: c_int, arg: *mut c_void, arg_size: usize) -> bool;
-
-        /// Reset the thread's stack protection salt
-        ///
-        /// The caller should not return after calling this function.  If it does,
-        /// and stack protection is enabled, the program will crash.
-        ///
-        /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/bionic/__libc_init_main_thread.cpp;l=104
-        pub safe fn android_reset_stack_guards();
-
         /// Set the target SDK version for the app.
         ///
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
         pub safe fn android_set_application_target_sdk_version(target: c_int);
-    }
 
-    #[allow(dead_code)]
-    unsafe extern "system" {
-        /// Apply Android's application seccomp filters
-        #[link_name = "_Z22set_app_seccomp_filterv"]
-        pub safe fn set_app_seccomp_filter();
-
-        /// Apply Android's system seccomp filters
-        #[link_name = "_Z25set_system_seccomp_filterv"]
-        pub safe fn set_system_seccomp_filter();
-
-        /// Check to see if cpusets have been enabled on the system
-        pub safe fn cpusets_enabled() -> bool;
-
-        /// Set the cpuset policy for the specified process.  A TID of 0 means
-        /// that the policy will be applied to the calling thread.
+        /// Set the process name.
         ///
-        /// This function takes no pointer arguments and is thread-safe.
-        pub safe fn set_cpuset_policy(tid: libc::pid_t, policy: SchedPolicy) -> c_int;
-
-        /// Set the scheduling policy for the specified process.  A TID of 0
-        /// means that the policy will be applied to the calling thread.
+        /// # Safety
+        /// `progname` must be a pointer to a valid C string which lives while it's set as the process name.
         ///
-        /// This function takes no pointer arguments and is thread-safe.
-        pub safe fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> c_int;
+        /// See https://cs.android.com/android/platform/superproject/main/+/main:bionic/libc/upstream-openbsd/lib/libc/gen/setprogname.c;l=22
+        pub fn setprogname(progname: *const c_char);
     }
 }

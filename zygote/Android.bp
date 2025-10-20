@@ -13,59 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
-genrule {
-    name: "libzygote_schemas-rust",
-    tools: ["flatc"],
-    cmd: "$(location flatc) --rust --filename-suffix '' -o $$(dirname $(out)) $(in)",
-    srcs: [
-        "schemas/messages.fbs",
-    ],
-    out: [
-        "src/messages.rs",
-    ],
-}
-
-genrule {
-    name: "libzygote_schemas-cpp",
-    tools: ["flatc"],
-    cmd: "mkdir -p $(genDir)/libzygote_schemas && $(location flatc) --cpp --filename-suffix '' -o $(genDir)/libzygote_schemas $(in)",
-    srcs: [
-        "schemas/messages.fbs",
-    ],
-    out: [
-        "libzygote_schemas/messages.h",
-    ],
-    export_include_dirs: [
-        ".",
-    ],
-}
-
-cc_library_headers {
-    name: "libzygote_schema_headers",
-    host_supported: true,
-    generated_headers: ["libzygote_schemas-cpp"],
-    export_generated_headers: ["libzygote_schemas-cpp"],
-    header_libs: [
-        "flatbuffer_headers",
-    ],
-}
+//
+// libzygote
+//
 
 rust_defaults {
     name: "libzygote_defaults",
-    host_supported: true,
-    edition: "2021",
-    srcs: [
-        "src/lib.rs",
-        ":libzygote_schemas-rust",
-    ],
+    defaults: ["zygote_defaults"],
+    srcs: ["src/lib.rs"],
     rustlibs: [
         "libanyhow",
         "libarrayvec",
-        "libcapwrap",
+        "libcap_rust",
         "libclap",
         "libflatbuffers",
         "libitertools",
@@ -73,18 +32,30 @@ rust_defaults {
         "liblibloading",
         "liblogger",
         "liblog_rust",
+        "librustutils",
         "libstatic_assertions",
         "libzerocopy",
         "libzygote_sys",
     ],
     target: {
         android: {
+            features: [
+                "android-native",
+            ],
             shared_libs: [
+                "libprocessgroup",
                 "libseccomp_policy",
+                "libselinux",
             ],
             rustlibs: [
                 "libnative_activity_thread",
-            ]
+                "libprocessgroup_rust",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+            ],
         },
     },
 }
@@ -93,30 +64,47 @@ rust_library {
     name: "libzygote",
     crate_name: "zygote",
     defaults: ["libzygote_defaults"],
+    rustlibs: [
+        "libzygote_messages",
+    ],
 }
 
 rust_library {
     name: "libzygote_test",
     crate_name: "zygote",
     defaults: ["libzygote_defaults"],
+    rustlibs: [
+        "libzygote_messages_test",
+    ],
     features: [
+        "mock",
         "test",
     ],
 }
 
-rust_binary {
-    name: "zygote_next",
-    host_supported: true,
-    edition: "2021",
-    srcs: [
-        "src/bin/zygote.rs",
-    ],
+//
+// Executables
+//
+
+rust_defaults {
+    name: "zygote_executable_defaults",
+    defaults: ["zygote_defaults"],
     rustlibs: [
         "libanyhow",
         "libclap",
         "liblogger",
         "liblog_rust",
         "libzygote",
+    ],
+}
+
+rust_binary {
+    name: "zygote_next",
+    defaults: ["zygote_executable_defaults"],
+    srcs: [
+        "src/bin/zygote.rs",
+    ],
+    rustlibs: [
         "libzygote_sys",
     ],
     init_rc: [
@@ -126,55 +114,51 @@ rust_binary {
 
 rust_binary {
     name: "zygote_cli",
-    host_supported: true,
-    edition: "2021",
+    defaults: ["zygote_executable_defaults"],
     srcs: [
         "src/bin/zygote_cli.rs",
     ],
     rustlibs: [
-        "libanyhow",
-        "libclap",
         "libflatbuffers",
         "liblibc",
-        "liblibloading",
-        "liblogger",
-        "liblog_rust",
-        "libzygote",
+        "libzygote_messages",
         "libzygote_sys",
     ],
 }
 
 rust_binary {
     name: "zygote_launch",
-    host_supported: true,
-    edition: "2021",
+    defaults: ["zygote_executable_defaults"],
     srcs: [
         "src/bin/zygote_launch.rs",
     ],
     rustlibs: [
-        "libanyhow",
-        "libclap",
         "libflatbuffers",
         "liblibc",
         "liblibloading",
-        "liblogger",
-        "liblog_rust",
-        "libzygote",
-        "libzygote_sys",
+        "libzygote_messages",
     ],
 }
+
+//
+// Tests
+//
 
 rust_test_host {
     name: "zygote_next_unit_tests",
     defaults: ["libzygote_defaults"],
+    rustlibs: [
+        "libzygote_messages_test",
+    ],
     features: [
+        "mock",
         "test",
     ],
 }
 
 rust_test_host {
     name: "zygote_next_integration_test_fd_no_panic",
-    edition: "2021",
+    edition: "2024",
     test_harness: false,
     cfgs: [
         "test",
@@ -192,4 +176,20 @@ rust_test_host {
         "libzygote_sys",
         "libzygote_test",
     ],
+    target: {
+        android: {
+            features: [
+                "android-native",
+                "mock",
+                "test",
+            ],
+        },
+        host: {
+            features: [
+                "libapp",
+                "mock",
+                "test",
+            ],
+        },
+    },
 }

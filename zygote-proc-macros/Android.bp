@@ -17,20 +17,17 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-rust_library {
-    name: "libcapwrap",
-    crate_name: "capwrap",
-    host_supported: true,
-    edition: "2021",
-    srcs: [
-        "src/lib.rs",
-    ],
+rust_proc_macro {
+    name: "libzygote_proc_macros",
+    crate_name: "zygote_proc_macros",
+    cargo_env_compat: true,
+    edition: "2024",
+    crate_root: "src/lib.rs",
     rustlibs: [
         "libanyhow",
-        "libbitflags",
-        "libzygote_sys",
-    ],
-    shared_libs: [
-        "libcap",
+        "libheck",
+        "libproc_macro2",
+        "libquote",
+        "libsyn",
     ],
 }

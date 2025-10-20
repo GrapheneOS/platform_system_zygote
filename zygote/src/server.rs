@@ -18,28 +18,27 @@
 //! This executable can be used to preload and initialize resources before
 //! forking child processes.
 
-use std::ffi::OsStr;
-use std::{os::fd::RawFd, path::Path};
+use std::{convert::Infallible, ffi::OsStr, os::fd::RawFd, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
 
-use zygote_sys::{
-    self as sys, LibcResult,
-    LoopControl::{self, *},
-    LoopExit, PollFd,
-};
-
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry},
     introspection::{debug_assert_single_threaded, get_proc_fd_path, ProcStat},
-    messages::{
-        self, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel, MESSAGE_BUFFER_SIZE,
-    },
     species::SpeciesRef,
+};
+use zygote_messages::{
+    self as messages, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel,
+    MESSAGE_BUFFER_SIZE,
+};
+use zygote_sys::{
+    self as sys, LibcResult,
+    LoopControl::{self, *},
+    LoopExit, PollFd,
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
@@ -48,8 +47,8 @@ const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
 
 type PollBuffer = ArrayVec<PollFd, BUFFER_SIZE_POLL>;
 
-impl std::convert::From<&mut Server> for PollBuffer {
-    fn from(server: &mut Server) -> PollBuffer {
+impl std::convert::From<&Server> for PollBuffer {
+    fn from(server: &Server) -> PollBuffer {
         let mut poll_buffer = PollBuffer::new();
 
         poll_buffer.push(PollFd::new(server.signal_fd, libc::POLLIN));
@@ -204,8 +203,7 @@ impl Server {
     ///   * Opening a new socket and binding it to a default path
     fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
         let socket_path_or_fd = config
-            .species
-            .resolve_socket(config)
+            .resolve_socket()
             .ok_or_else(|| anyhow!("Could not determine a socket to listen to"))?;
         if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {
@@ -228,19 +226,26 @@ impl Server {
         } else {
             let arg_path = Path::new(&socket_path_or_fd);
 
-            if arg_path.exists() {
-                bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
-            }
-
-            std::fs::create_dir_all(
-                arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
-            )?;
-
-            let socket_fd = sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?;
+            let (socket_fd, server_socket_path) = if let Some(abs_socket_addr) =
+                socket_path_or_fd.strip_prefix("@")
+            {
+                (sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)?, None)
+            } else {
+                if arg_path.exists() {
+                    bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
+                }
+                std::fs::create_dir_all(
+                    arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
+                )?;
+                (
+                    sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?,
+                    Some(socket_path_or_fd.clone()),
+                )
+            };
             sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
             sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
 
-            Ok((socket_fd, Some(socket_path_or_fd.clone())))
+            Ok((socket_fd, server_socket_path))
         }
     }
 
@@ -252,7 +257,7 @@ impl Server {
     fn check_poll_events(
         &mut self,
         partition: PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() + use<>> {
+    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
         if self.check_signalfd_events(&partition).is_exit() {
             return ServerControl::Shutdown;
         }
@@ -264,7 +269,7 @@ impl Server {
     fn check_client_sockets_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() + use<>> {
+    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
         for client_pollfd in partition.clients {
             // POLLERR and POLLNVAL should never occur for a client socket.
             let checked_pollfd = client_pollfd.check().unwrap_or_else(|(fd, error_events)| {
@@ -372,7 +377,7 @@ impl Server {
     fn check_signalfd_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce()> {
+    ) -> ServerControl<impl FnOnce() -> Infallible> {
         // POLLERR and POLLNVAL should never occur for a signalfd.
         let checked_pollfd = partition.signal.check().unwrap_or_else(|(_, error_events)| {
             panic!("Received polling error for signalfd: {error_events:?}");
@@ -419,17 +424,20 @@ impl Server {
             })
             // The server should exit early iff the handler exited
             // early due to receiving a SIGINT or SIGTERM.
-            .map_or(ServerControl::<fn()>::Continue, |loop_control| match loop_control {
-                LoopExit::Early(_) => ServerControl::Shutdown,
-                LoopExit::WouldBlock => ServerControl::Continue,
-            })
+            .map_or(
+                ServerControl::<fn() -> Infallible>::Continue,
+                |loop_control| match loop_control {
+                    LoopExit::Early(_) => ServerControl::Shutdown,
+                    LoopExit::WouldBlock => ServerControl::Continue,
+                },
+            )
     }
 
     fn dispatch_message_handler(
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce()>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
         match Message::try_from_parcel(&message_buffer).unwrap() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
@@ -458,7 +466,7 @@ impl Server {
         }
     }
 
-    fn handle_message_exit<Thunk: FnOnce()>(
+    fn handle_message_exit<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -473,7 +481,7 @@ impl Server {
         Break(ClientLoopControl::Shutdown)
     }
 
-    fn handle_message_identity_query<Thunk: FnOnce()>(
+    fn handle_message_identity_query<Thunk: FnOnce() -> Infallible>(
         &self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -501,7 +509,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() + use<>>> {
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
         // The server does not spawn any threads.  Preloaded library
         // initializers should not start any threads.  Any threads created by
         // species-specific code during initialization must be terminated when
@@ -518,7 +526,7 @@ impl Server {
 
         let re_init_data = self.species.gather_reinitialization_data();
 
-        let clone_args = sys::clone_args::new();
+        // let clone_args = sys::clone_args::new();
 
         // SAFETY: This is called in a single-threaded context.
         //
@@ -530,16 +538,18 @@ impl Server {
         //         ERESTARTNOINTR will not trigger during normal operations as
         //         signals are handled via a signalfd and not asynchronous
         //         signal handlers.  Errors are logged below.
-        match unsafe { sys::clone3(&clone_args) } {
+        //
+        // TODO: Revert to using `clone3` after b/439747272 is resolved
+        match unsafe { sys::fork() } {
             Ok(0) => {
                 // Child process
 
-                if let Some(priority) = spawn_params.priority_initial {
-                    if sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err() {
-                        // EINVAL, EPERM, and ESRCH only apply when setting the
-                        // priority of other processes.
-                        warn!("Insufficient permissions to set priority: {priority}");
-                    }
+                if let Some(priority) = spawn_params.priority_initial
+                    && sys::setpriority(libc::PRIO_PROCESS, 0, priority).is_err()
+                {
+                    // EINVAL, EPERM, and ESRCH only apply when setting the
+                    // priority of other processes.
+                    warn!("Insufficient permissions to set priority: {priority}");
                 }
 
                 // SAFETY: The contents of this message were received from a bound
@@ -563,16 +573,20 @@ impl Server {
                     // process's stack, to avoid segfaults from changing the stack
                     // guard in a callee and then segfaulting when return to the
                     // caller's frame.
-                    #[cfg(target_os = "android")]
-                    sys::android::reset_stack_guards();
+                    child_process::maybe_reset_stack_guards(move || {
+                        // Unpack the message in the child process
+                        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+                        let spawn_payload = message.get_spawn_payload().unwrap();
 
-                    // Unpack the message in the child process
-                    let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
-                    let spawn_payload = message.get_spawn_payload().unwrap();
+                        child_process::re_initialize(
+                            species,
+                            re_init_data,
+                            &spawn_params,
+                            spawn_payload,
+                        );
 
-                    child_process::re_initialize(species, re_init_data, &spawn_params);
-
-                    species.gestate(&spawn_params, spawn_payload);
+                        species.gestate(&spawn_params, spawn_payload)
+                    })
                 }))
             }
             Ok(new_pid) => {
@@ -600,20 +614,20 @@ impl Server {
                     error!("Version 2 cgroup contains an enabled domain controller: <TODO>");
                 } else if errno.is(libc::EEXIST) {
                     error!("`set_tid` value already exists in the current namespace");
-                } else if errno.is(libc::EINVAL) {
-                    error!(
-                        "Invalid argument combination to `clone3()` (see man page for details): {clone_args:?}"
-                    );
+                // } else if errno.is(libc::EINVAL) {
+                //     error!(
+                //         "Invalid argument combination to `clone3()` (see man page for details): {clone_args:?}"
+                //     );
                 } else if errno.is(libc::ENOMEM) {
                     error!("Cannot allocate sufficient memory for a new process");
-                } else if errno.is(libc::ENOSPC) {
-                    error!(
-                        "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {clone_args:?}");
+                // } else if errno.is(libc::ENOSPC) {
+                //     error!(
+                //         "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {clone_args:?}");
                 } else if errno.is(libc::EOPNOTSUPP) {
                     // TODO: Print the actual cgroup path once it is present in the spawn params.
                     error!("Destination version 2 cgroup is currently in a domain invalid state: <TODO>");
-                } else if errno.is(libc::EPERM) {
-                    error!("Server lacks the correct permissions to clone with the provided arguments: {clone_args:?}");
+                // } else if errno.is(libc::EPERM) {
+                //     error!("Server lacks the correct permissions to clone with the provided arguments: {clone_args:?}");
                 } else {
                     error!("Unexpected error code returned by call to `clone3()`: {errno}");
                 }
@@ -623,7 +637,7 @@ impl Server {
         }
     }
 
-    fn handle_message_stat<Thunk: FnOnce()>(
+    fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
     ) -> LoopControl<ClientLoopControl<Thunk>> {
@@ -748,9 +762,9 @@ impl Server {
     /// server before control flow is transferred to the species-specific
     /// code.  This allows resources to be cleaned up and possibly sensitive
     /// data to be deallocated.
-    pub fn serve(&mut self) -> Option<impl FnOnce()> {
+    pub fn serve(&mut self) -> Option<impl FnOnce() -> Infallible + use<>> {
         loop {
-            let mut poll_array = PollBuffer::from(&mut *self);
+            let mut poll_array = PollBuffer::from(&*self);
 
             // Discard the number of ready file descriptors for now.
             sys::poll(&mut poll_array, -1).unwrap();

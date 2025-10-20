@@ -21,7 +21,7 @@ rust_library {
     name: "libmemmark",
     crate_name: "memmark",
     host_supported: true,
-    edition: "2021",
+    edition: "2024",
     srcs: [
         "src/lib.rs",
     ],
