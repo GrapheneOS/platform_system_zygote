@@ -116,6 +116,12 @@ pub trait Species {
     /// species implementation.
     fn tag(&self) -> SpeciesTag;
 
+    /// A callback called when the zygote server in the parent process is ready.
+    fn on_server_ready(&self) {}
+
+    /// A callback called when the zygote server in the parent process is being destroyed.
+    fn on_server_destroy(&self) {}
+
     // Helper functions
 
     /// A simple test to check of a provided path string is absolute or not.

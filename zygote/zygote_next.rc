@@ -1,5 +1,9 @@
 service zygote_next /system/bin/zygote_next --name zygote_next --species android-native-app --log-level 4
-    class main
     user root
     group root
     socket zygote_next seqpacket 660 root system
+    disabled
+    onrestart setprop zygote.zygote_next.server_ready false
+
+on boot && property:persist.zygote.zygote_next.start_on_boot=true
+    start zygote_next

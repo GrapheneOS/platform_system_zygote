@@ -195,4 +195,19 @@ impl Species for App {
     fn tag(&self) -> SpeciesTag {
         SpeciesTag::AndroidNative
     }
+
+    fn on_server_ready(&self) {
+        if let Err(e) = android::system_properties::write("zygote.zygote_next.server_ready", "true")
+        {
+            log::error!("Failed to set zygote.zygote_next.server_ready: {e}");
+        }
+    }
+
+    fn on_server_destroy(&self) {
+        if let Err(e) =
+            android::system_properties::write("zygote.zygote_next.server_ready", "false")
+        {
+            log::error!("Failed to set zygote.zygote_next.server_ready: {e}");
+        }
+    }
 }
