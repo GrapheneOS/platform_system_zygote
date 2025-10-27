@@ -89,6 +89,10 @@ pub struct Launch {
     #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
     pub priority_final: Option<i32>,
 
+    /// SELinux context to switch to
+    #[arg(long)]
+    pub se_info: Option<String>,
+
     /// Secondary group IDs for the new process
     #[arg(long)]
     secondary_groups: Vec<libc::gid_t>,
@@ -97,7 +101,7 @@ pub struct Launch {
 impl Launch {
     fn to_spawn_message(&self) -> Result<Message<'_, '_>> {
         Ok(Message::Spawn {
-            params: self.to_spawn_params(),
+            common: self.to_spawn_params(),
             payload: self.payload.to_spawn_payload()?,
         })
     }
@@ -113,6 +117,7 @@ impl Launch {
             cap_permitted: None,
             cap_inheritable: None,
             cap_bound: None,
+            se_info: self.se_info.clone(),
             secondary_groups: self.secondary_groups.iter().cloned().collect(),
             rlimits: ArrayVec::new(),
         }
@@ -224,6 +229,7 @@ impl Server {
             cap_permitted: None,
             cap_inheritable: None,
             cap_bound: None,
+            se_info: None,
             secondary_groups: self.secondary_groups.iter().cloned().collect(),
             rlimits: ArrayVec::new(),
         }

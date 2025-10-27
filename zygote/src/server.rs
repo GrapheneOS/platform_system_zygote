@@ -578,12 +578,7 @@ impl Server {
                         let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
                         let spawn_payload = message.get_spawn_payload().unwrap();
 
-                        child_process::re_initialize(
-                            species,
-                            re_init_data,
-                            &spawn_params,
-                            spawn_payload,
-                        );
+                        child_process::re_initialize(species, re_init_data, &spawn_params);
 
                         species.gestate(&spawn_params, spawn_payload)
                     })

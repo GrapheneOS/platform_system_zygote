@@ -113,7 +113,6 @@ impl Species for App {
     fn re_initialize_epilogue(
         &self,
         _spawn_params: &SpawnParamsCommon,
-        _spawn_payload: &SpawnPayload,
         _re_init_data: &super::ReInitWrapper,
     ) {
         // Nothing to do here
@@ -122,7 +121,6 @@ impl Species for App {
     fn re_initialize_prologue(
         &self,
         _spawn_params: &SpawnParamsCommon,
-        _spawn_payload: &SpawnPayload,
         _re_init_data: &super::ReInitWrapper,
     ) {
         // Nothing to do here

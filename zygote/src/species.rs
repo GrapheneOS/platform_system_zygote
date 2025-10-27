@@ -98,7 +98,6 @@ pub trait Species {
     fn re_initialize_epilogue(
         &self,
         spawn_params: &SpawnParamsCommon,
-        spawn_payload: &SpawnPayload,
         re_init_data: &ReInitWrapper,
     );
     /// Child-process re-initialization logic that runs before the rest of the
@@ -106,7 +105,6 @@ pub trait Species {
     fn re_initialize_prologue(
         &self,
         spawn_params: &SpawnParamsCommon,
-        spawn_payload: &SpawnPayload,
         re_init_data: &ReInitWrapper,
     );
     /// A callback for setting SecComp filters

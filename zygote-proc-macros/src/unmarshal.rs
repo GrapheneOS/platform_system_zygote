@@ -18,7 +18,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Data, DeriveInput, Expr, Field, Fields, GenericParam, Ident, Type, Variant};
 
-use crate::utils::{get_flatten_into_ident, get_inner_type_ident};
+use crate::utils::{
+    get_flatten_into_ident, get_inner_type_ident, get_inner_type_ident_from_variant,
+};
 
 // Generates the constructor method if #[unmarshal_from] is specified,
 // and FromParcel trait implementation otherwise.
@@ -26,7 +28,15 @@ use crate::utils::{get_flatten_into_ident, get_inner_type_ident};
 pub(crate) fn gen_unmarshal_parcel(ast: &DeriveInput) -> TokenStream {
     match get_unmarshal_from(ast) {
         Some((ty, field)) => gen_unmarshal_from(ast, &ty, &field),
-        None => gen_from_parcel(ast),
+        None => match &ast.data {
+            Data::Enum(_) => gen_from_parcel(ast),
+            Data::Struct(_) => gen_unmarshal_struct(ast),
+            _ => syn::Error::new(
+                ast.ident.span(),
+                "Parcelable can only be derived for enums or structs",
+            )
+            .to_compile_error(),
+        },
     }
 }
 
@@ -52,6 +62,40 @@ fn get_unmarshal_from(ast: &DeriveInput) -> Option<(Type, Ident)> {
         .ok()?;
         Some((source_type.expect("source_type not found"), field.expect("field not found")))
     })
+}
+
+fn gen_unmarshal_struct(ast: &DeriveInput) -> TokenStream {
+    let name = &ast.ident;
+    let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
+    let inner_name = get_inner_type_ident(&ast.attrs).unwrap_or_else(|| name.clone());
+
+    let fields_named = match &ast.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(f) => &f.named,
+            _ => {
+                return syn::Error::new(
+                    name.span(),
+                    "Unmarshalable can only be derived for structs with named fields.",
+                )
+                .to_compile_error()
+            }
+        },
+        _ => {
+            return syn::Error::new(name.span(), "Unmarshalable can only be derived for structs.")
+                .to_compile_error()
+        }
+    };
+    let field_values = fields_named.iter().map(|field| gen_field_value(field, &quote! { source }));
+
+    quote! {
+        impl #impl_generics #name #ty_generics #where_clause {
+            fn from_table(source: inner::#inner_name<'_>) -> Self {
+                Self {
+                    #(#field_values),*,
+                }
+            }
+        }
+    }
 }
 
 // Generates the FromParcel trait implementation.
@@ -93,7 +137,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
 // the generated code looks like the following:
 // ```
 // impl<'a> SpawnPayload<'a> {
-//   fn from(source: &inner::Spawn<'a>) -> Self {
+//   fn from_spawn(source: &inner::Spawn<'a>) -> Self {
 //     match source.payload_type() {
 //       inner::SpawnPayload::SpawnMock => {
 //         let payload: inner::SpawnMock<'a> = source.payload_as_spawn_mock().unwrap();
@@ -153,7 +197,7 @@ fn gen_unmarshal_arm(
     field_name: &Ident,
 ) -> TokenStream {
     let variant_id = &variant.ident;
-    let inner_type_id = get_inner_type_ident(variant);
+    let inner_type_id = get_inner_type_ident_from_variant(variant);
     match &variant.fields {
         Fields::Unit => {
             quote! { inner::#enum_name::#inner_type_id => Ok(#enum_name::#variant_id) }
@@ -246,6 +290,9 @@ fn gen_field_value(field: &Field, source: &TokenStream) -> TokenStream {
             }
         },
         Some(UnmarshalAttr::Map(map)) => quote! { #field_name: #map(&#source.#field_name()) },
+        Some(UnmarshalAttr::Table) => {
+            quote! { #field_name: <#ty>::from_table(#source.#field_name().unwrap()) }
+        }
         Some(UnmarshalAttr::Flatten) => quote! { #field_name: <#ty>::unflatten(#source) },
         Some(UnmarshalAttr::Union) => quote! { #field_name: <#ty>::from(#source)?  },
         None => quote! { #field_name: #source.#field_name() },
@@ -260,6 +307,10 @@ enum UnmarshalAttr {
     // #[unmarshal(map = <fn>)]
     // Maps a value when deserializing based on the given function.
     Map(Ident),
+    // #[table]
+    // Indicates that the field is an inner table, to be unmarshaled using the field's
+    // `UnmarshalParcel` implementation. This attribute is also used in MarshalParcel.
+    Table,
     // #[union]
     // Treat the flatbuffer's type as union, which has another field `<field_name>_type`, indicating the variant.
     // This attribute is also used in MarshalParcel.
@@ -278,6 +329,9 @@ impl UnmarshalAttr {
     fn from_attr(attr: &Attribute) -> Option<Self> {
         if attr.path().is_ident("flatten") {
             return Some(Self::Flatten);
+        }
+        if attr.path().is_ident("table") {
+            return Some(Self::Table);
         }
         if attr.path().is_ident("union") {
             return Some(Self::Union);

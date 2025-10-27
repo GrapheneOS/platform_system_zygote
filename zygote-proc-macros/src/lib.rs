@@ -26,7 +26,7 @@ use marshal::{gen_flatten_marshal_parcel, gen_marshal_parcel};
 use unmarshal::{gen_flatten_unmarshal_parcel, gen_unmarshal_parcel};
 
 /// A derive macro for implementing the Marshalable trait.
-#[proc_macro_derive(MarshalParcel, attributes(flatten, marshal, inner_type_name, union))]
+#[proc_macro_derive(MarshalParcel, attributes(flatten, marshal, inner_type_name, union, table))]
 pub fn marshal_parcel_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     gen_marshal_parcel(&ast).into()
@@ -48,7 +48,7 @@ pub fn flatten_marshal_parcel_derive(input: proc_macro::TokenStream) -> proc_mac
 /// A derive macro for implementing the UnmarshalParcel trait.
 #[proc_macro_derive(
     UnmarshalParcel,
-    attributes(flatten, unmarshal, unmarshal_from, inner_type_name, union)
+    attributes(flatten, unmarshal, unmarshal_from, inner_type_name, union, table)
 )]
 pub fn unmarshal_parcel_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);

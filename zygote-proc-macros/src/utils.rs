@@ -15,7 +15,11 @@
 
 use syn::{Attribute, Expr, Ident, Lit, Meta, Variant};
 
-pub(crate) fn get_inner_type_ident(variant: &Variant) -> Ident {
+pub(crate) fn get_inner_type_ident(attrs: &[Attribute]) -> Option<Ident> {
+    get_attribute_ident(attrs, "inner_type_name")
+}
+
+pub(crate) fn get_inner_type_ident_from_variant(variant: &Variant) -> Ident {
     get_attribute_ident(&variant.attrs, "inner_type_name").unwrap_or_else(|| variant.ident.clone())
 }
 

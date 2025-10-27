@@ -22,11 +22,11 @@ mod inner {
 
 use anyhow::Result;
 use arrayvec::ArrayVec;
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use itertools::Itertools;
 
 use cap::{CapabilityFlags, RawCap};
-use zygote_proc_macros::{FlattenParcel, MarshalParcel, UnmarshalParcel};
+use zygote_proc_macros::{MarshalParcel, UnmarshalParcel};
 use zygote_sys as sys;
 
 /// Default size for GID vectors
@@ -46,15 +46,20 @@ pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 const MESSAGE_ARG_BUFFER_MAX: usize = 32;
 
 /// A trait for helper structs that can be marshaled into a FlatBuffer
-trait MarshalParcel<InnerType> {
-    /// The `flatc` generated union this is a wrapper for
-    fn inner_type(&self) -> InnerType;
+trait MarshalParcel<'builder> {
+    /// The inner type for union variant (e.g. inner::Spawn)
+    type Inner;
+    /// The `flatc` generated type this is a wrapper for
+    type Output;
+
+    /// The `flatc` generated union type
+    fn inner_type(&self) -> Self::Inner;
 
     /// Marshal this structure into a FlatBuffer
     fn marshal(
         &self,
-        builder: &mut flatbuffers::FlatBufferBuilder<'_>,
-    ) -> flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>;
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> flatbuffers::WIPOffset<Self::Output>;
 }
 
 /// Traits for things that can be marshalled into a FlatBuffers Parcel as
@@ -149,8 +154,8 @@ fn unmarshal_string(s: &Option<&str>) -> Option<String> {
 }
 
 /// Parameters common to all spawn operations
-#[derive(Debug, Clone, FlattenParcel)]
-#[flatten_into_type = "Spawn"]
+#[derive(Debug, Clone, MarshalParcel, UnmarshalParcel)]
+#[inner_type_name = "SpawnCommon"]
 pub struct SpawnParamsCommon {
     /// UID for the new process
     #[marshal(default = -1)]
@@ -190,6 +195,10 @@ pub struct SpawnParamsCommon {
     #[marshal(map = marshal_capability_flags)]
     #[unmarshal(map = unmarshal_capability_flags)]
     pub cap_bound: Option<CapabilityFlags>,
+    /// SELinux labels for the new process
+    #[marshal(map = marshal_string)]
+    #[unmarshal(map = unmarshal_string)]
+    pub se_info: Option<String>,
     /// Secondary groups for the child process
     #[marshal(packed)]
     #[unmarshal(map = unmarshal_secondary_groups)]
@@ -213,6 +222,7 @@ impl SpawnParamsCommon {
             cap_permitted: self.cap_permitted.or(other.cap_permitted),
             cap_inheritable: self.cap_inheritable.or(other.cap_inheritable),
             cap_bound: self.cap_bound.or(other.cap_bound),
+            se_info: self.se_info.clone().or(other.se_info.clone()),
             secondary_groups: self
                 .secondary_groups
                 .iter()
@@ -251,8 +261,8 @@ pub enum Message<'a, 'b> {
     /// Request the server spawn a new process
     Spawn {
         /// Parameters common to all spawn operations
-        #[flatten]
-        params: SpawnParamsCommon,
+        #[table]
+        common: SpawnParamsCommon,
         /// Species-specific spawn data
         #[union]
         payload: SpawnPayload<'a>,
@@ -295,7 +305,7 @@ impl Message<'_, '_> {
     /// Return a [`Message::Spawn`] variant's parameters
     pub fn get_spawn_params(&self) -> Option<&SpawnParamsCommon> {
         match self {
-            Message::Spawn { params, .. } => Some(params),
+            Message::Spawn { common, .. } => Some(common),
             _ => None,
         }
     }
@@ -310,8 +320,9 @@ impl Message<'_, '_> {
 }
 
 impl ToParcel for Message<'_, '_> {
-    fn to_parcel<'a>(&self) -> flatbuffers::FlatBufferBuilder<'a> {
-        let mut builder = flatbuffers::FlatBufferBuilder::<'a>::with_capacity(MESSAGE_BUFFER_SIZE);
+    fn to_parcel<'builder>(&self) -> flatbuffers::FlatBufferBuilder<'builder> {
+        let mut builder =
+            flatbuffers::FlatBufferBuilder::<'builder>::with_capacity(MESSAGE_BUFFER_SIZE);
 
         let packed_message = self.marshal(&mut builder);
         let parcel = inner::Parcel::create(
@@ -335,25 +346,9 @@ pub enum MessageParser {
     IdentityQuery,
     /// Request the server spawn a new process
     Spawn {
-        /// UID for the new process
-        #[arg(long)]
-        uid: Option<i32>,
-        /// Primary GID for the new process
-        #[arg(long)]
-        gid: Option<i32>,
-        /// Name of the new process
-        process_name: Option<String>,
-        /// Initial scheduling priority for child processes immediately after
-        /// forking
-        #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-        priority_initial: Option<i32>,
-        /// Final scheduling priority for child processes immediately before
-        /// entering application code
-        #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-        priority_final: Option<i32>,
-        /// Secondary group IDs for the new process
-        #[arg(long)]
-        secondary_groups: Vec<libc::gid_t>,
+        /// Data common to all spawn commands
+        #[command(flatten)]
+        common: SpawnCommonParser,
         /// Species-specific spawn data
         #[command(subcommand)]
         payload: SpawnPayloadParser,
@@ -367,28 +362,8 @@ impl MessageParser {
         match self {
             MessageParser::Exit => Ok(Message::Exit),
             MessageParser::IdentityQuery => Ok(Message::IdentityQuery),
-            MessageParser::Spawn {
-                uid,
-                gid,
-                process_name,
-                priority_initial,
-                priority_final,
-                secondary_groups,
-                payload,
-            } => Ok(Message::Spawn {
-                params: SpawnParamsCommon {
-                    uid: *uid,
-                    gid: *gid,
-                    process_name: process_name.clone(),
-                    priority_initial: *priority_initial,
-                    priority_final: *priority_final,
-                    cap_effective: None,
-                    cap_permitted: None,
-                    cap_inheritable: None,
-                    cap_bound: None,
-                    secondary_groups: secondary_groups.iter().cloned().collect(),
-                    rlimits: ArrayVec::new(),
-                },
+            MessageParser::Spawn { common, payload } => Ok(Message::Spawn {
+                common: common.to_spawn_common(),
                 payload: payload.to_spawn_payload()?,
             }),
             MessageParser::Stat => Ok(Message::Stat),
@@ -413,9 +388,6 @@ pub enum SpawnPayload<'a> {
         /// Name of the package to start
         #[marshal(packed)]
         package: &'a str,
-        /// SELinux labels for the new process
-        #[marshal(packed)]
-        se_info: &'a str,
         /// Id of the spawn request
         start_seq: i64,
         /// The target SDK version for the app.
@@ -444,6 +416,53 @@ pub enum SpawnPayload<'a> {
     },
 }
 
+/// Command line parser for building SpawnCommon
+#[derive(Debug, Args)]
+#[command(rename_all = "verbatim")]
+pub struct SpawnCommonParser {
+    /// UID for the new process
+    #[arg(long)]
+    uid: Option<i32>,
+    /// Primary GID for the new process
+    #[arg(long)]
+    gid: Option<i32>,
+    /// Name of the new process
+    process_name: Option<String>,
+    /// Initial scheduling priority for child processes immediately after
+    /// forking
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    priority_initial: Option<i32>,
+    /// Final scheduling priority for child processes immediately before
+    /// entering application code
+    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
+    priority_final: Option<i32>,
+    /// Secondary group IDs for the new process
+    #[arg(long)]
+    secondary_groups: Vec<libc::gid_t>,
+    /// SELinux context to switch to
+    se_info: Option<String>,
+}
+
+impl SpawnCommonParser {
+    /// Construct a [`SpawnCommon`] from this enum
+    pub fn to_spawn_common(&self) -> SpawnParamsCommon {
+        SpawnParamsCommon {
+            uid: self.uid,
+            gid: self.gid,
+            process_name: self.process_name.clone(),
+            priority_initial: self.priority_initial,
+            priority_final: self.priority_final,
+            cap_effective: None,
+            cap_permitted: None,
+            cap_inheritable: None,
+            cap_bound: None,
+            se_info: self.se_info.clone(),
+            secondary_groups: self.secondary_groups.iter().cloned().collect(),
+            rlimits: ArrayVec::new(),
+        }
+    }
+}
+
 /// Command line parser for building Spawn [`Message`]es
 #[derive(Debug, Subcommand)]
 #[command(rename_all = "verbatim")]
@@ -454,9 +473,6 @@ pub enum SpawnPayloadParser {
         /// The package to execute
         #[arg(required(true))]
         package: String,
-        /// SELinux labels for the new process
-        #[arg(required(true))]
-        se_info: String,
         /// Id of the spawn request
         #[arg(required(true))]
         start_seq: i64,
@@ -493,13 +509,11 @@ impl SpawnPayloadParser {
             #[cfg(all(target_os = "android", feature = "android-native"))]
             SpawnPayloadParser::AndroidNative {
                 package,
-                se_info,
                 start_seq,
                 target_sdk_version,
                 runtime_flags,
             } => Ok(SpawnPayload::AndroidNative {
                 package: package.as_str(),
-                se_info: se_info.as_str(),
                 start_seq: *start_seq,
                 target_sdk_version: *target_sdk_version,
                 runtime_flags: *runtime_flags,

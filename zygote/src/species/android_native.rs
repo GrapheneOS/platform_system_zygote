@@ -72,7 +72,6 @@ impl Species for App {
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::AndroidNative {
             package,
-            se_info: _,
             start_seq,
             target_sdk_version,
             runtime_flags,
@@ -93,15 +92,10 @@ impl Species for App {
     fn re_initialize_epilogue(
         &self,
         spawn_params: &SpawnParamsCommon,
-        spawn_payload: &SpawnPayload,
         _re_init_data: &super::ReInitWrapper,
     ) {
         let uid = spawn_params.uid.expect("No UID specified");
-        let se_info = if let SpawnPayload::AndroidNative { se_info, .. } = spawn_payload {
-            se_info
-        } else {
-            panic!("No SE Linux info specified");
-        };
+        let se_info = spawn_params.se_info.as_ref().expect("No SE Linux info specified");
 
         let mut se_info_buffer = sys::BUFFER_INIT_CSTRING;
         se_info_buffer[0..se_info.len()].copy_from_slice(se_info.as_bytes());
@@ -122,7 +116,6 @@ impl Species for App {
     fn re_initialize_prologue(
         &self,
         _spawn_params: &SpawnParamsCommon,
-        _spawn_payload: &SpawnPayload,
         re_init_data: &super::ReInitWrapper,
     ) {
         debug_assert_single_threaded();

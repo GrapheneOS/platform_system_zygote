@@ -28,7 +28,7 @@ use crate::{
     arguments::ARG,
     species::{ReInitWrapper, SpeciesRef},
 };
-use zygote_messages::{SpawnParamsCommon, SpawnPayload};
+use zygote_messages::SpawnParamsCommon;
 use zygote_sys as sys;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
@@ -48,11 +48,10 @@ pub(crate) fn re_initialize(
     species: SpeciesRef,
     re_init_data: ReInitWrapper,
     spawn_params: &SpawnParamsCommon,
-    spawn_payload: &SpawnPayload,
 ) {
     // Perform any species-specific re-initialization before we adjust
     // capabilities and user/group IDs.
-    species.re_initialize_prologue(spawn_params, spawn_payload, &re_init_data);
+    species.re_initialize_prologue(spawn_params, &re_init_data);
 
     // Set the process name
     set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
@@ -139,7 +138,7 @@ pub(crate) fn re_initialize(
         set_new_process_name(&name_cstr);
     }
 
-    species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
+    species.re_initialize_epilogue(spawn_params, &re_init_data);
 }
 
 /// Rename the process.
