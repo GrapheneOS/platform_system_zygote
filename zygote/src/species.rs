@@ -176,7 +176,8 @@ impl From<&SpawnPayloadParser> for SpeciesRef {
     fn from(value: &SpawnPayloadParser) -> Self {
         match value {
             #[cfg(all(target_os = "android", feature = "android-native"))]
-            SpawnPayloadParser::AndroidNative { .. } => &android_native::App,
+            SpawnPayloadParser::AndroidNative { .. }
+            | SpawnPayloadParser::AndroidNativeSubspecies { .. } => &android_native::App,
             #[cfg(feature = "libapp")]
             SpawnPayloadParser::LibApp { .. } => &lib_app::App,
             #[cfg(any(test, feature = "mock"))]
