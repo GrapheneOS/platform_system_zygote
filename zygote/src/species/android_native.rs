@@ -16,7 +16,7 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use core::ffi::CStr;
-use native_activity_thread::{app_process_init, run_native_activity_thread};
+use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use rustutils::android;
 
 use processgroup::{
@@ -62,7 +62,10 @@ impl Species for App {
     }
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
-        matches!(message, SpawnPayload::AndroidNative { .. })
+        matches!(
+            message,
+            SpawnPayload::AndroidNative { .. } | SpawnPayload::AndroidNativeSubspecies { .. }
+        )
     }
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
@@ -83,6 +86,33 @@ impl Species for App {
         } else {
             panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
+    }
+
+    fn speciate(&self, payload: &SpawnPayload) {
+        let SpawnPayload::AndroidNativeSubspecies {
+            target_sdk_version,
+            runtime_flags,
+            library_path,
+            library_dirs,
+            permitted_library_paths,
+            preload_func,
+            uid_gid_min,
+            uid_gid_max,
+        } = payload
+        else {
+            panic!("Invalid spawn payload for species {}: {:?}", self.name(), payload);
+        };
+        // We install this seccomp filter here and not in `set_seccomp_filters()` since a
+        // `setresuid(2)` call follows the `set_seccomp_filters()` call, and the specified UID is
+        // not in [uid_gid_min, uid_gid_max].
+        android::process::install_setuidgid_seccomp_filter(*uid_gid_min, *uid_gid_max);
+        app_process_init(*target_sdk_version, *runtime_flags);
+        // SAFETY: We trust that library name and the namespace parameters are valid, and
+        //         the `preload_func` has the correct signature (takes no arguments, returns
+        //         nothing).
+        unsafe {
+            preload_lib(library_path, library_dirs, permitted_library_paths, *preload_func);
+        };
     }
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
@@ -151,8 +181,11 @@ impl Species for App {
         drop_task_profiles_resource_caching();
     }
 
-    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {
-        if spawn_params.uid.expect("No UID specified") >= AID_APP_START {
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) {
+        if matches!(spawn_payload, SpawnPayload::AndroidNativeSubspecies { .. }) {
+            android::process::set_app_zygote_seccomp_filter();
+            sys::prctl_set_no_new_privs().expect("Failed to set NO_NEW_PRIVS");
+        } else if spawn_params.uid.expect("No UID specified") >= AID_APP_START {
             android::process::set_app_seccomp_filter();
         } else {
             android::process::set_system_seccomp_filter();

@@ -91,6 +91,8 @@ pub trait Species {
     fn file_is_allowed(&self, path: &CStr) -> bool;
     /// Take over control flow for the new process
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
+    /// Perform post-fork work in the new child zygote process
+    fn speciate(&self, payload: &SpawnPayload);
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
     /// Child-process re-initialization logic that runs before the rest of the
@@ -108,7 +110,7 @@ pub trait Species {
         re_init_data: &ReInitWrapper,
     );
     /// A callback for setting SecComp filters
-    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon);
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload);
     /// Get the associated [`SpeciesTag`].  Dyn trait references are not
     /// guaranteed to be equal, so this allows for dynamic testing of the
     /// species implementation.

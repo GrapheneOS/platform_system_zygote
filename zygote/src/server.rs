@@ -27,7 +27,7 @@ use log::{error, info, warn};
 
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
-    file_descriptors::{self, FileDescriptorRegistry},
+    file_descriptors::{self, FileDescriptorRegistry, ForkType},
     introspection::{debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     species::SpeciesRef,
 };
@@ -107,6 +107,7 @@ impl<T> ServerControl<T> {
 
 enum ClientLoopControl<T> {
     Child(T),
+    Break,
     NextSocket,
     Error(RawFd, anyhow::Error),
     Shutdown,
@@ -140,14 +141,21 @@ impl Server {
     pub fn new(config: &config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let (server_socket, server_socket_path) = Self::get_server_socket(config).unwrap();
+        let socket_path_or_fd = config.resolve_socket().unwrap();
+        let (server_socket, server_socket_path) =
+            Self::get_server_socket(socket_path_or_fd).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
 
         let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
         // These masks are unblocked in Server::drop.
         sys::sigprocmask(libc::SIG_BLOCK, &sigset).unwrap();
         let signal_fd = sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).unwrap();
-        registry.register(signal_fd, file_descriptors::Action::Close);
+        // The signal fd is reused after forking the subspecies process.
+        // Per `man signalfd`:
+        //     "After a fork(2), the child inherits a copy of the signalfd file
+        //     descriptor.  A read(2) from the file descriptor in the child will
+        //     return information about signals queued to the child."
+        registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies);
 
         let server = Self {
             name: config.name.clone(),
@@ -193,6 +201,31 @@ impl Server {
         server
     }
 
+    /// Tailor the Server instance for the subspecies.
+    fn re_initialize_as_subspecies(&mut self, child_socket_path: String) {
+        let (child_socket_fd, child_socket_path) =
+            Self::get_server_socket(child_socket_path).unwrap();
+
+        if let Some(path) = &self.server_socket_path {
+            std::fs::remove_file(path).unwrap();
+        }
+
+        // TODO: We should call `self.registry.register_new()` to reflect FDs
+        // opened by app's preload routine. Handle this after the bug
+        // in `FileDescriptorRegister::audit()` (b/457960847) is fixed.
+        self.registry.execute_actions(ForkType::Subspecies);
+        // All the RawFds of client sockets are closed in the
+        // `execute_actions()` call above and they are stateless, thus clear the
+        // client_sockets.
+        self.client_sockets.clear();
+        // The server RawFd is also already closed in
+        // `execute_actions()`, so replace with a new one.
+        self.server_socket = child_socket_fd;
+        self.server_socket_path = child_socket_path;
+
+        self.pid = sys::getpid();
+    }
+
     const fn blocked_signals() -> &'static [libc::c_int] {
         &[libc::SIGCHLD, libc::SIGINT, libc::SIGTERM]
     }
@@ -201,10 +234,7 @@ impl Server {
     ///   * Using the provided integer as a file descriptor
     ///   * Opening a new socket and binding it to the provided path
     ///   * Opening a new socket and binding it to a default path
-    fn get_server_socket(config: &config::Server) -> Result<(RawFd, Option<String>)> {
-        let socket_path_or_fd = config
-            .resolve_socket()
-            .ok_or_else(|| anyhow!("Could not determine a socket to listen to"))?;
+    fn get_server_socket(socket_path_or_fd: String) -> Result<(RawFd, Option<String>)> {
         if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {
                 bail!("Provided integer argument does not refer to an open file: {}", fd);
@@ -315,6 +345,12 @@ impl Server {
                             // We are in the child process and should exit the
                             // server with the thunk.
                             return ServerControl::Trampoline(thunk);
+                        }
+                        ClientLoopControl::Break => {
+                            // We have just reset the server instance for App
+                            // Zygote thus the pollfds are invalidated. Move
+                            // back to the top of the server loop.
+                            return ServerControl::Continue;
                         }
                         ClientLoopControl::NextSocket => {
                             // Zero-length read from socket, continue and wait for SIGHUP
@@ -441,20 +477,22 @@ impl Server {
         match Message::try_from_parcel(&message_buffer).unwrap() {
             Message::Exit => self.handle_message_exit(fd),
             Message::IdentityQuery => self.handle_message_identity_query(fd),
-            Message::Spawn { payload, .. } => {
-                if self.species.is_spawn_payload_type(&payload) {
-                    self.handle_message_spawn(fd, message_buffer)
-                } else {
-                    // TODO: Respond with an error
-                    error!(
-                        "Incorrect spawn payload for this species {}: {:?}",
-                        self.species.name(),
-                        payload
-                    );
+            Message::Spawn { payload, .. } | Message::SpawnSubspecies { payload, .. }
+                if !self.species.is_spawn_payload_type(&payload) =>
+            {
+                // TODO: Respond with an error
+                error!(
+                    "Incorrect spawn payload for this species {}: {:?}",
+                    self.species.name(),
+                    payload
+                );
 
-                    // Continue the `recvmsg` loop
-                    Continue
-                }
+                // Continue the `recvmsg` loop
+                Continue
+            }
+            Message::Spawn { .. } => self.handle_message_spawn(fd, message_buffer),
+            Message::SpawnSubspecies { socket_path, .. } => {
+                self.handle_message_spawn_subspecies(fd, socket_path.to_string(), message_buffer)
             }
             Message::Stat => self.handle_message_stat(fd),
             msg => {
@@ -505,11 +543,12 @@ impl Server {
         }
     }
 
-    fn handle_message_spawn(
+    fn handle_spawn<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
+        child_continuation: impl FnOnce(&mut Self, SpawnParamsCommon) -> ClientLoopControl<Thunk>,
+    ) -> LoopControl<ClientLoopControl<Thunk>> {
         // The server does not spawn any threads.  Preloaded library
         // initializers should not start any threads.  Any threads created by
         // species-specific code during initialization must be terminated when
@@ -523,8 +562,6 @@ impl Server {
         // TODO: Implement logic to lock some or all of the common spawn
         //       parameters, preventing them from being set by a spawn message.
         let spawn_params = message.get_spawn_params().unwrap().or(&self.spawn_params);
-
-        let re_init_data = self.species.gather_reinitialization_data();
 
         // let clone_args = sys::clone_args::new();
 
@@ -551,38 +588,7 @@ impl Server {
                     // priority of other processes.
                     warn!("Insufficient permissions to set priority: {priority}");
                 }
-
-                // SAFETY: The contents of this message were received from a bound
-                //         UNIX Domain socket.  Processes with permission to read
-                //         and write to this socket are considered authorized to
-                //         spawn processes from this server.
-                //
-                //         The message data will only be read in the child process
-                //         once the server and configuration structs are dropped.
-                //         This ensures that all file descriptor registry actions
-                //         are taken before control is passed to the species code.
-                let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
-
-                // Creating local copies avoids capturing additional references.
-                let species: SpeciesRef = self.species;
-
-                Break(ClientLoopControl::Child(move || {
-                    debug_assert_single_threaded();
-
-                    // This function call must occur here, at the top of the child
-                    // process's stack, to avoid segfaults from changing the stack
-                    // guard in a callee and then segfaulting when return to the
-                    // caller's frame.
-                    child_process::maybe_reset_stack_guards(move || {
-                        // Unpack the message in the child process
-                        let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
-                        let spawn_payload = message.get_spawn_payload().unwrap();
-
-                        child_process::re_initialize(species, re_init_data, &spawn_params);
-
-                        species.gestate(&spawn_params, spawn_payload)
-                    })
-                }))
+                Break(child_continuation(self, spawn_params))
             }
             Ok(new_pid) => {
                 // Server process
@@ -630,6 +636,73 @@ impl Server {
                 Break(ClientLoopControl::Error(fd, errno.into()))
             }
         }
+    }
+
+    fn handle_message_spawn(
+        &mut self,
+        fd: RawFd,
+        message_buffer: MessageBuffer,
+    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
+        // Creating local copies avoids capturing additional references.
+        let species: SpeciesRef = self.species;
+        let re_init_data = species.gather_reinitialization_data();
+
+        self.handle_spawn(fd, message_buffer, move |_, spawn_params| {
+            // SAFETY: The contents of this message were received from a bound
+            //         UNIX Domain socket.  Processes with permission to read
+            //         and write to this socket are considered authorized to
+            //         spawn processes from this server.
+            //
+            //         The message data will only be read in the child process
+            //         once the server and configuration structs are dropped.
+            //         This ensures that all file descriptor registry actions
+            //         are taken before control is passed to the species code.
+            let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
+
+            ClientLoopControl::Child(move || {
+                debug_assert_single_threaded();
+
+                // This function call must occur here, at the top of the child
+                // process's stack, to avoid segfaults from changing the stack
+                // guard in a callee and then segfaulting when return to the
+                // caller's frame.
+                child_process::maybe_reset_stack_guards(move || {
+                    // Unpack the message in the child process
+                    let message = Message::try_from_parcel(spawn_message.as_ref()).unwrap();
+                    let spawn_payload = message.get_spawn_payload().unwrap();
+
+                    child_process::re_initialize(
+                        species,
+                        re_init_data,
+                        &spawn_params,
+                        spawn_payload,
+                    );
+
+                    species.gestate(&spawn_params, spawn_payload)
+                })
+            })
+        })
+    }
+
+    fn handle_message_spawn_subspecies<Thunk: FnOnce() -> Infallible>(
+        &mut self,
+        fd: RawFd,
+        socket_path: String,
+        message_buffer: MessageBuffer,
+    ) -> LoopControl<ClientLoopControl<Thunk>> {
+        let re_init_data = self.species.gather_reinitialization_data();
+        // Creating local copies avoids capturing additional references.
+        let species: SpeciesRef = self.species;
+
+        self.handle_spawn(fd, message_buffer, move |server, spawn_params| {
+            let message = Message::try_from_parcel(&message_buffer).unwrap();
+            let spawn_payload = message.get_spawn_payload().unwrap();
+            child_process::re_initialize(species, re_init_data, &spawn_params, spawn_payload);
+            server.re_initialize_as_subspecies(socket_path);
+
+            species.speciate(spawn_payload);
+            ClientLoopControl::Break
+        })
     }
 
     fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
@@ -788,7 +861,7 @@ impl Drop for Server {
             }
         } else {
             // Clean up the server code in the child process
-            self.registry.execute_actions();
+            self.registry.execute_actions(ForkType::Application);
         }
 
         let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();

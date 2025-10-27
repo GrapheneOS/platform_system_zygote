@@ -26,7 +26,7 @@ use zygote_sys as sys;
 
 use zygote::{
     assert_ok,
-    file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry},
+    file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry, ForkType},
     introspection::{assert_fd_closed, assert_single_threaded},
     test,
 };
@@ -95,7 +95,7 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
          * Test action handling
          */
 
-        registry.execute_actions();
+        registry.execute_actions(ForkType::Application);
 
         // Test that the FIFO descriptors have been closed
         assert_fd_closed(pipe0);

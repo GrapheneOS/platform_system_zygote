@@ -1071,6 +1071,16 @@ pub fn prctl_set_securebits(securebits: c_int) -> LibcResult<()> {
     libc_result_from_int_with_void(unsafe { libc::prctl(libc::PR_SET_SECUREBITS, securebits) })
 }
 
+/// A safe wrapper around the [`libc::prctl`] `PR_SET_NO_NEW_PRIVS` operation.
+///
+/// See: `man prctl`
+pub fn prctl_set_no_new_privs() -> LibcResult<()> {
+    // SAFETY: The `libc::prctl` `PR_SET_NO_NEW_PRIVS` operation takes an integer
+    //         argument and can only return `EINVAL` if the argument is
+    //         invalid.  The argument is guaranteed to be valid in this case.
+    libc_result_from_int_with_void(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })
+}
+
 /// A safe wrapper around [`libc::read`].
 ///
 /// See: `man read`

@@ -28,7 +28,7 @@ use crate::{
     arguments::ARG,
     species::{ReInitWrapper, SpeciesRef},
 };
-use zygote_messages::SpawnParamsCommon;
+use zygote_messages::{SpawnParamsCommon, SpawnPayload};
 use zygote_sys as sys;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
@@ -48,6 +48,7 @@ pub(crate) fn re_initialize(
     species: SpeciesRef,
     re_init_data: ReInitWrapper,
     spawn_params: &SpawnParamsCommon,
+    spawn_payload: &SpawnPayload,
 ) {
     // Perform any species-specific re-initialization before we adjust
     // capabilities and user/group IDs.
@@ -113,7 +114,7 @@ pub(crate) fn re_initialize(
     // alternative is to call prctl(PR_SET_NO_NEW_PRIVS, 1) afterward, but that
     // breaks SELinux domain transition (see b/71859146).  As the result,
     // privileged syscalls used below still need to be accessible in app process.
-    species.set_seccomp_filters(spawn_params);
+    species.set_seccomp_filters(spawn_params, spawn_payload);
 
     if let Some(uid) = spawn_params.uid {
         let uid = uid as libc::uid_t;

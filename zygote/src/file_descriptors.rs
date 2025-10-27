@@ -240,6 +240,9 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
 pub enum Action {
     /// Close the file when `execute_action` is called
     Close,
+    /// Close the file when `execute_action` is called unless the child process
+    /// is a subspecies process.
+    CloseUnlessSpawnSubspecies,
     /// Use the `dup3` call to make the file descriptor point to /dev/null
     DupeNull,
     /// Do nothing with the file descriptor
@@ -247,6 +250,15 @@ pub enum Action {
     /// Re-open the file when `execute_action` is called, thus ensuring that
     /// child processes point to a unique kernel file structure
     Reopen,
+}
+
+#[derive(Clone, Copy)]
+/// The type of the spawned child process.
+pub enum ForkType {
+    /// The process is for regular applications
+    Application,
+    /// The process is a subspecies Zygote tailored for a specific application
+    Subspecies,
 }
 
 struct FileDescriptorEntry {
@@ -258,18 +270,29 @@ struct FileDescriptorEntry {
 impl FileDescriptorEntry {
     /// Handle Close, DupeNull, and Reopen actions for the associated file
     /// descriptor.  This function shall only be called after a fork even in
-    /// the context of the child process.
-    fn execute(&self, dev_null_fd: RawFd) {
+    /// the context of the child process.  Returns if the file descriptor is
+    /// closed.
+    fn execute(&self, dev_null_fd: RawFd, fork_type: ForkType) -> bool {
         match self.action {
             Action::Close => {
                 sys::close(self.fd).unwrap();
+                true
             }
+            Action::CloseUnlessSpawnSubspecies => match fork_type {
+                ForkType::Application => {
+                    sys::close(self.fd).unwrap();
+                    true
+                }
+                ForkType::Subspecies => false,
+            },
             Action::DupeNull => {
                 sys::dup3(dev_null_fd, self.fd, libc::O_CLOEXEC)
                     .unwrap_or_else(|_| panic!("Failed to dup3 fd {} to /dev/null", self.fd));
+                false
             }
             Action::Ignore => {
                 // Nothing to see here
+                false
             }
             Action::Reopen => match &self.info {
                 FileDescriptorInfo::File {
@@ -312,6 +335,7 @@ impl FileDescriptorEntry {
                     });
 
                     sys::close(new_fd).unwrap();
+                    true
                 }
                 _ => {
                     panic!("Invalid file type ({}) registered with `Reopen` action", &self.info);
@@ -321,10 +345,13 @@ impl FileDescriptorEntry {
     }
 
     /// Close the file descriptor if it is registered with `DupeNull`, `Close`,
-    /// or `Reopen` actions.
+    /// `CloseUnlessSpawnSubspecies`, or `Reopen` actions.
     fn override_and_close(&mut self) {
         match self.action {
-            Action::Close | Action::DupeNull | Action::Reopen => {
+            Action::Close
+            | Action::CloseUnlessSpawnSubspecies
+            | Action::DupeNull
+            | Action::Reopen => {
                 sys::close(self.fd).unwrap();
             }
             Action::Ignore => {
@@ -437,17 +464,18 @@ impl FileDescriptorRegistry {
             || self.species.bound_socket_is_allowed(path)
     }
 
-    /// Iterate through the registry and perform all Close, DupeNull, and
-    /// Reopen actions.  This should be performed immediately after a fork
-    /// event.
-    pub fn execute_actions(&self) {
+    /// Iterate through the registry and perform all Close,
+    /// CloseUnlessSpawnSubspecies, DupeNull, and Reopen actions. This should be
+    /// performed immediately after a fork event.
+    pub fn execute_actions(&mut self, fork_type: ForkType) {
         debug_assert_single_threaded();
 
         let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC).unwrap();
 
-        for entry in &self.data {
-            entry.execute(dev_null_fd);
-        }
+        self.data.retain(|entry| {
+            let closed = entry.execute(dev_null_fd, fork_type);
+            !closed
+        });
     }
 
     /// Queries the Zygote and species allowed files lists.
