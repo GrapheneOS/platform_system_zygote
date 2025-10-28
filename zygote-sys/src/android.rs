@@ -17,7 +17,7 @@
 
 use core::ffi::{c_char, CStr};
 
-use processgroup::{self, SchedPolicy};
+use processgroup::sched;
 
 use crate::{libc_result_from_int_with_void, LibcResult};
 
@@ -26,16 +26,16 @@ pub fn set_application_target_sdk_version(target: i32) {
     inner::android_set_application_target_sdk_version(target);
 }
 
-/// A wrapper function for [`processgropu::set_cpuset_policy`] that wraps the returned
-/// value in a LibcResult.
-pub fn set_cpuset_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(processgroup::set_cpuset_policy(tid, policy))
+/// A wrapper function for [`processgroup::sched::set_cpuset_policy`] that
+/// wraps the returned value in a LibcResult.
+pub fn set_cpuset_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> LibcResult<()> {
+    libc_result_from_int_with_void(sched::set_cpuset_policy(tid, policy))
 }
 
-/// A wrapper function for [`processgropu::set_sched_policy`] that wraps the returned
-/// value in a LibcResult.
-pub fn set_sched_policy(tid: libc::pid_t, policy: SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(processgroup::set_sched_policy(tid, policy))
+/// A wrapper function for [`processgroup::sched::set_sched_policy`] that wraps
+/// the returned value in a LibcResult.
+pub fn set_sched_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> LibcResult<()> {
+    libc_result_from_int_with_void(sched::set_sched_policy(tid, policy))
 }
 
 /// An alias around [`inner::setprogname`]

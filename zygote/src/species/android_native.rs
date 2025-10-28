@@ -19,6 +19,11 @@ use core::ffi::CStr;
 use native_activity_thread::{app_process_init, run_native_activity_thread};
 use rustutils::android;
 
+use processgroup::{
+    processgroup::drop_task_profiles_resource_caching,
+    sched::{cpusets_enabled, SchedPolicy},
+};
+
 use crate::{
     file_descriptors::Action,
     introspection::debug_assert_single_threaded,
@@ -138,19 +143,19 @@ impl Species for App {
         }
 
         // Set the cpuset policy and panic on failure
-        if processgroup::cpusets_enabled() {
-            sys::android::set_cpuset_policy(0, processgroup::SchedPolicy::Default).unwrap();
+        if cpusets_enabled() {
+            sys::android::set_cpuset_policy(0, SchedPolicy::Default).unwrap();
         }
 
         // Set the scheduling policy and panic on failure.  Must be called
         // before losing the permission to set scheduler policy.
-        sys::android::set_sched_policy(0, processgroup::SchedPolicy::Default).unwrap();
+        sys::android::set_sched_policy(0, SchedPolicy::Default).unwrap();
 
         // We are going to lose the permission to set scheduler policy during
         // the specialization, so make sure that we don't cache the fd of
         // cgroup path that may cause sepolicy violation by writing value to
         // the cached fd directly when creating new thread.
-        processgroup::drop_task_profiles_resource_caching();
+        drop_task_profiles_resource_caching();
     }
 
     fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon) {
