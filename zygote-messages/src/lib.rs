@@ -35,7 +35,7 @@ pub const GID_VECTOR_SIZE: usize = 32;
 pub const RLIMIT_VECTOR_SIZE: usize = 16;
 
 /// Default size for all message parsing and passing.
-pub const MESSAGE_BUFFER_SIZE: usize = 512;
+pub const MESSAGE_BUFFER_SIZE: usize = 2048;
 /// Zero-initialized message buffer
 pub const MESSAGE_BUFFER_INIT: [u8; MESSAGE_BUFFER_SIZE] = [0; MESSAGE_BUFFER_SIZE];
 /// Statically allocated arrays used for receiving messages.
