@@ -92,6 +92,7 @@ impl AsRef<str> for SocketAddress {
 #[derive(Eq, PartialEq)]
 enum FileDescriptorInfo {
     BoundSocket(SocketAddress),
+    ConnectedSocket(SocketAddress),
     Fifo,
     File {
         dev: u64,
@@ -111,6 +112,7 @@ impl fmt::Display for FileDescriptorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BoundSocket(address) => write!(f, "Bound Socket ({address})"),
+            Self::ConnectedSocket(address) => write!(f, "Connected Socket ({address})"),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
             Self::SignalFd => write!(f, "SignalFD"),
@@ -210,24 +212,35 @@ impl FileDescriptorInfo {
     /// Get the socket name and parse it into either a Abstract or Bound
     /// SocketInfo struct.
     fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
-        let Some((addr, path_len)) = sys::getsockname(fd)? else {
-            bail!("The socket family is not AF_UNIX or the socket is unbound");
-        };
-        let sun_bytes: &[u8] = &addr.sun_path.as_bytes()[..path_len];
-        let address = match sun_bytes {
-            [0, text @ ..] => SocketAddress::Abstract(
+        match sys::getsockname(fd)? {
+            Some((addr, path_len)) => {
+                let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
+                let socket_address = Self::get_socket_address(sun_bytes)?;
+                Ok(FileDescriptorInfo::BoundSocket(socket_address))
+            }
+            None => {
+                let (addr, path_len) = sys::getpeername(fd)?.unwrap();
+                let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
+                let socket_address = Self::get_socket_address(sun_bytes)?;
+                Ok(FileDescriptorInfo::ConnectedSocket(socket_address))
+            }
+        }
+    }
+
+    fn get_socket_address(sun_bytes: &[u8]) -> Result<SocketAddress> {
+        match sun_bytes {
+            [0, text @ ..] => Ok(SocketAddress::Abstract(
                 // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
                 // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
                 // paths.
                 ArrayString::from(std::str::from_utf8(text)?).unwrap(),
-            ),
-            text => SocketAddress::Path(
+            )),
+            text => Ok(SocketAddress::Path(
                 // getsockname() on bound sockets always return NUL-terminated names, so use
                 // from_bytes_with_nul() to truncated that here.
                 ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
-            ),
-        };
-        Ok(FileDescriptorInfo::BoundSocket(address))
+            )),
+        }
     }
 }
 
@@ -241,6 +254,9 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
 
     match FileDescriptorInfo::try_from(fd).unwrap() {
         FileDescriptorInfo::BoundSocket(address) => {
+            assert_eq!(address.as_ref(), target)
+        }
+        FileDescriptorInfo::ConnectedSocket(address) => {
             assert_eq!(address.as_ref(), target)
         }
         FileDescriptorInfo::File { path, .. } => {
@@ -597,6 +613,9 @@ impl FileDescriptorRegistry {
                 }
                 FileDescriptorInfo::BoundSocket(address) => {
                     panic!("Bound socket not found in allow list ({fd}): {address}");
+                }
+                FileDescriptorInfo::ConnectedSocket(address) => {
+                    panic!("Unregistered connected socket found ({fd}): {address}");
                 }
                 FileDescriptorInfo::Fifo => {
                     panic!("Unregistered FIFO fd found: {fd}");
