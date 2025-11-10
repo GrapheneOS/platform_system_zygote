@@ -106,6 +106,10 @@ impl Species for App {
         }
     }
 
+    fn speciate(&self, _payload: &SpawnPayload) {
+        // Nothing to do here
+    }
+
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
         None
     }
@@ -113,7 +117,6 @@ impl Species for App {
     fn re_initialize_epilogue(
         &self,
         _spawn_params: &SpawnParamsCommon,
-        _spawn_payload: &SpawnPayload,
         _re_init_data: &super::ReInitWrapper,
     ) {
         // Nothing to do here
@@ -122,13 +125,12 @@ impl Species for App {
     fn re_initialize_prologue(
         &self,
         _spawn_params: &SpawnParamsCommon,
-        _spawn_payload: &SpawnPayload,
         _re_init_data: &super::ReInitWrapper,
     ) {
         // Nothing to do here
     }
 
-    fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon) {
+    fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon, _payload: &SpawnPayload) {
         // Nothing to do here
     }
 

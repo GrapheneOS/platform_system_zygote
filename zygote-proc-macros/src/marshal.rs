@@ -15,26 +15,60 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Error, Expr, Field, Fields, Ident, Variant};
+use syn::{Attribute, Data, DataEnum, DeriveInput, Error, Expr, Field, Fields, Ident, Variant};
 
-use crate::utils::{get_flatten_into_ident, get_inner_type_ident};
+use crate::utils::{
+    get_flatten_into_ident, get_inner_type_ident, get_inner_type_ident_from_variant,
+};
 
-// Generates the MarshalParcel trait implementation for the enum.
 pub(crate) fn gen_marshal_parcel(ast: &DeriveInput) -> TokenStream {
     let name = &ast.ident;
-    let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
-    let variants = match &ast.data {
-        Data::Enum(data) => &data.variants,
-        _ => {
-            return Error::new(name.span(), "Parcelable can only be derived for enums")
-                .to_compile_error()
+    let mut generics_for_impl = ast.generics.clone();
+    generics_for_impl.params.insert(0, syn::parse_quote!('builder));
+    let (impl_generics, _, _) = generics_for_impl.split_for_impl();
+
+    let (_, ty_generics, where_clause) = ast.generics.split_for_impl();
+
+    match &ast.data {
+        Data::Enum(data) => {
+            gen_marshal_enum(name, data, &impl_generics, &ty_generics, where_clause)
         }
-    };
+        Data::Struct(data) => {
+            if let Fields::Named(fields) = &data.fields {
+                let inner_type_name =
+                    get_inner_type_ident(&ast.attrs).unwrap_or_else(|| name.clone());
+                gen_marshal_struct(
+                    name,
+                    &inner_type_name,
+                    fields,
+                    &impl_generics,
+                    &ty_generics,
+                    where_clause,
+                )
+            } else {
+                Error::new(
+                    name.span(),
+                    "Parcelable can only be derived for structs with named fields",
+                )
+                .to_compile_error()
+            }
+        }
+        _ => Error::new(name.span(), "Parcelable can only be derived for enums or structs")
+            .to_compile_error(),
+    }
+}
 
-    let inner_type_arms = variants.iter().map(|v| {
+fn gen_marshal_enum(
+    name: &Ident,
+    data: &DataEnum,
+    impl_generics: &syn::ImplGenerics,
+    ty_generics: &syn::TypeGenerics,
+    where_clause: Option<&syn::WhereClause>,
+) -> TokenStream {
+    let inner_type_arms = data.variants.iter().map(|v| {
         let variant_id = &v.ident;
-        let inner_type_id = get_inner_type_ident(v);
+        let inner_type_id = get_inner_type_ident_from_variant(v);
 
         let pattern = match &v.fields {
             Fields::Unit => quote! {},
@@ -45,11 +79,14 @@ pub(crate) fn gen_marshal_parcel(ast: &DeriveInput) -> TokenStream {
         quote! { #name::#variant_id #pattern => inner::#name::#inner_type_id }
     });
 
-    let marshal_arms = variants.iter().map(|v| gen_marshal_arm(v, name));
+    let marshal_arms = data.variants.iter().map(|v| gen_marshal_arm(v, name));
 
     quote! {
-        impl #impl_generics MarshalParcel<inner::#name> for #name #ty_generics #where_clause {
-            fn inner_type(&self) -> inner::#name {
+        impl #impl_generics MarshalParcel<'builder> for #name #ty_generics #where_clause {
+            type Inner = inner::#name;
+            type Output = flatbuffers::UnionWIPOffset;
+
+            fn inner_type(&self) -> Self::Inner {
                 match self {
                     #(#inner_type_arms),*
                 }
@@ -57,8 +94,8 @@ pub(crate) fn gen_marshal_parcel(ast: &DeriveInput) -> TokenStream {
 
             fn marshal(
                 &self,
-                builder: &mut flatbuffers::FlatBufferBuilder<'_>,
-            ) -> flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset> {
+                builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+            ) -> flatbuffers::WIPOffset<Self::Output> {
                 match self {
                     #(#marshal_arms),*
                 }
@@ -67,17 +104,57 @@ pub(crate) fn gen_marshal_parcel(ast: &DeriveInput) -> TokenStream {
     }
 }
 
+fn gen_marshal_struct(
+    name: &Ident,
+    inner_type_name: &Ident,
+    fields: &syn::FieldsNamed,
+    impl_generics: &syn::ImplGenerics,
+    ty_generics: &syn::TypeGenerics,
+    where_clause: Option<&syn::WhereClause>,
+) -> TokenStream {
+    let inner_type_args_name = quote::format_ident!("{}Args", inner_type_name);
+
+    let assignments = fields.named.iter().map(|field| {
+        let field_name = field.ident.as_ref().unwrap();
+        gen_field_assignment(
+            &quote! { args },
+            field,
+            &quote! { self.#field_name },
+            &quote! { builder },
+        )
+    });
+
+    quote! {
+        impl #impl_generics MarshalParcel<'builder> for #name #ty_generics #where_clause {
+            type Inner = ();
+            type Output = inner::#inner_type_name<'builder>;
+
+            fn inner_type(&self) -> Self::Inner {
+                // This is a struct, so it doesn't have a union type.
+            }
+
+            fn marshal(
+                &self,
+                builder: &mut flatbuffers::FlatBufferBuilder<'builder>
+            ) -> flatbuffers::WIPOffset<Self::Output> {
+                let mut args = inner::#inner_type_args_name::default();
+                #(#assignments);*;
+                inner::#inner_type_name::create(builder, &args)
+            }
+        }
+    }
+}
+
 // Generates the match arms for the marshel() implementation
 fn gen_marshal_arm(variant: &Variant, enum_name: &Ident) -> TokenStream {
     let variant_id = &variant.ident;
-    let inner_type_id = get_inner_type_ident(variant);
+    let inner_type_id = get_inner_type_ident_from_variant(variant);
     let inner_type_arg_id = Ident::new(&format!("{}Args", inner_type_id), inner_type_id.span());
 
     match &variant.fields {
         Fields::Unit => quote! {
             #enum_name::#variant_id => {
-                inner::#inner_type_id::create(
-                    builder, &inner::#inner_type_arg_id {}).as_union_value()
+                inner::#inner_type_id::create(builder, &inner::#inner_type_arg_id {}).as_union_value()
             }
         },
         Fields::Named(fields) => {
@@ -190,6 +267,9 @@ fn gen_field_assignment(
         Some(MarshalAttr::Packed) => {
             quote! { #args.#field_name = Some(#field_access.to_packed(#builder)) }
         }
+        Some(MarshalAttr::Table) => {
+            quote! { #args.#field_name = Some(#field_access.marshal(#builder)) }
+        }
         Some(MarshalAttr::Union) => {
             let type_field_name = quote::format_ident!("{}_type", field_name);
             quote! {
@@ -220,6 +300,10 @@ enum MarshalAttr {
     // Expects a value with a type that implements ToPacked trait, and calls to_packed() when
     // serializing.
     Packed,
+    // #[table]
+    // Indicates that the field is an inner table, to be marshaled using the field's `MarshalParcel`
+    // implementation. This attribute is also used in UnmarshalParcel.
+    Table,
     // #[union]
     // Treat the flatbuffer's type as union, which requires another field `<field_name>_type`,
     // indicating the variant. This attribute is also used in UnmarshalParcel.
@@ -240,6 +324,9 @@ impl MarshalAttr {
         }
         if attr.path().is_ident("union") {
             return Some(Self::Union);
+        }
+        if attr.path().is_ident("table") {
+            return Some(Self::Table);
         }
 
         if !attr.path().is_ident("marshal") {

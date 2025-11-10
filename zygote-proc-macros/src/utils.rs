@@ -13,14 +13,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use syn::{Attribute, Expr, Ident, Lit, Meta, Variant};
+use syn::{Attribute, Expr, Ident, Lit, Meta, Type, Variant};
 
-pub(crate) fn get_inner_type_ident(variant: &Variant) -> Ident {
-    get_attribute_ident(&variant.attrs, "inner_type_name").unwrap_or_else(|| variant.ident.clone())
+pub(crate) fn get_inner_type_ident(attrs: &[Attribute]) -> Option<Ident> {
+    get_attribute_ident(attrs, "inner_type_name")
+}
+
+pub(crate) fn get_inner_type_ident_from_variant(variant: &Variant) -> Ident {
+    get_inner_type_ident(&variant.attrs).unwrap_or_else(|| variant.ident.clone())
 }
 
 pub(crate) fn get_flatten_into_ident(attrs: &[Attribute]) -> Ident {
     get_attribute_ident(attrs, "flatten_into_type").expect("should have a flatten_into attribute")
+}
+
+pub(crate) fn extract_inner_type_name(ty: &Type) -> Option<&Ident> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    let segments = &path.path.segments;
+    match segments.first() {
+        Some(seg) if seg.ident == "inner" && segments.len() == 2 => {
+            Some(&segments.get(1).unwrap().ident)
+        }
+        _ => None,
+    }
 }
 
 fn get_attribute_ident(attrs: &[Attribute], attr_name: &str) -> Option<Ident> {

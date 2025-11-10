@@ -52,7 +52,7 @@ pub(crate) fn re_initialize(
 ) {
     // Perform any species-specific re-initialization before we adjust
     // capabilities and user/group IDs.
-    species.re_initialize_prologue(spawn_params, spawn_payload, &re_init_data);
+    species.re_initialize_prologue(spawn_params, &re_init_data);
 
     // Set the process name
     set_new_process_name(ZYGOTE_CHILD_PROCESS_INITIAL_NAME);
@@ -114,7 +114,7 @@ pub(crate) fn re_initialize(
     // alternative is to call prctl(PR_SET_NO_NEW_PRIVS, 1) afterward, but that
     // breaks SELinux domain transition (see b/71859146).  As the result,
     // privileged syscalls used below still need to be accessible in app process.
-    species.set_seccomp_filters(spawn_params);
+    species.set_seccomp_filters(spawn_params, spawn_payload);
 
     if let Some(uid) = spawn_params.uid {
         let uid = uid as libc::uid_t;
@@ -139,7 +139,7 @@ pub(crate) fn re_initialize(
         set_new_process_name(&name_cstr);
     }
 
-    species.re_initialize_epilogue(spawn_params, spawn_payload, &re_init_data);
+    species.re_initialize_epilogue(spawn_params, &re_init_data);
 }
 
 /// Rename the process.

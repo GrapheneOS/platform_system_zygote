@@ -22,10 +22,20 @@ table IdentityQueryResponse {
 
 table SpawnAndroidNative {
     package: string (required);
-    se_info: string (required);
     start_seq: int64;
     target_sdk_version: int32;
     runtime_flags: uint32;
+}
+
+table SpawnSubspeciesAndroidNative {
+    target_sdk_version: int32;
+    runtime_flags: uint32;
+    library_path: string (required);
+    library_dirs: string (required);
+    permitted_library_paths: string (required);
+    preload_func: string;
+    uid_gid_min: uint32;
+    uid_gid_max: uint32;
 }
 
 table SpawnMock {
@@ -39,11 +49,12 @@ table SpawnLibApp {
 
 union SpawnPayload {
     SpawnAndroidNative,
+    SpawnSubspeciesAndroidNative,
     SpawnLibApp,
     SpawnMock,
 }
 
-table Spawn {
+table SpawnCommon {
     uid: int32;
     gid: int32;
 
@@ -57,8 +68,22 @@ table Spawn {
     cap_inheritable: uint64;
     cap_bound: uint64;
 
+    se_info: string;
+
     secondary_groups: [uint32];
     rlimits: [RLimitData] (required);
+}
+
+table Spawn {
+    common: SpawnCommon;
+
+    payload: SpawnPayload (required);
+}
+
+table SpawnSubspecies {
+    common: SpawnCommon;
+
+    socket_path: string (required);
 
     payload: SpawnPayload (required);
 }
@@ -89,6 +114,7 @@ union Message {
     IdentityQuery,
     IdentityQueryResponse,
     Spawn,
+    SpawnSubspecies,
     SpawnResponse,
     Stat,
     StatResponse,

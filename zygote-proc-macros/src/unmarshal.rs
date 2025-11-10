@@ -18,40 +18,90 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Data, DeriveInput, Expr, Field, Fields, GenericParam, Ident, Type, Variant};
 
-use crate::utils::{get_flatten_into_ident, get_inner_type_ident};
+use crate::utils::{
+    extract_inner_type_name, get_flatten_into_ident, get_inner_type_ident,
+    get_inner_type_ident_from_variant,
+};
 
 // Generates the constructor method if #[unmarshal_from] is specified,
 // and FromParcel trait implementation otherwise.
 // #[unmarshal_from] expects two named values, `source_type` and `field`.
 pub(crate) fn gen_unmarshal_parcel(ast: &DeriveInput) -> TokenStream {
-    match get_unmarshal_from(ast) {
-        Some((ty, field)) => gen_unmarshal_from(ast, &ty, &field),
-        None => gen_from_parcel(ast),
+    let attrs = get_unmarshal_from(ast);
+    if attrs.is_empty() {
+        match &ast.data {
+            Data::Enum(_) => gen_from_parcel(ast),
+            Data::Struct(_) => gen_unmarshal_struct(ast),
+            _ => syn::Error::new(
+                ast.ident.span(),
+                "Parcelable can only be derived for enums or structs",
+            )
+            .to_compile_error(),
+        }
+    } else {
+        attrs.iter().map(|(ty, field)| gen_unmarshal_from(ast, ty, field)).collect()
     }
 }
 
 // Parses the #[unmarshal_from] attribute. The fields `source_type` and `field` are required.
-fn get_unmarshal_from(ast: &DeriveInput) -> Option<(Type, Ident)> {
-    ast.attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("unmarshal_from") {
-            return None;
-        }
-        let mut source_type = None::<Type>;
-        let mut field = None::<Ident>;
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("source_type") {
-                source_type = Some(meta.value()?.parse::<Type>()?);
-                Ok(())
-            } else if meta.path.is_ident("field") {
-                field = Some(meta.value()?.parse::<Ident>()?);
-                Ok(())
-            } else {
-                Err(meta.error("unrecognized unmarshal_from attribute"))
+fn get_unmarshal_from(ast: &DeriveInput) -> Vec<(Type, Ident)> {
+    ast.attrs
+        .iter()
+        .filter_map(|attr| {
+            if !attr.path().is_ident("unmarshal_from") {
+                return None;
             }
+            let mut source_type = None::<Type>;
+            let mut field = None::<Ident>;
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("source_type") {
+                    source_type = Some(meta.value()?.parse::<Type>()?);
+                    Ok(())
+                } else if meta.path.is_ident("field") {
+                    field = Some(meta.value()?.parse::<Ident>()?);
+                    Ok(())
+                } else {
+                    Err(meta.error("unrecognized unmarshal_from attribute"))
+                }
+            })
+            .ok()?;
+            Some((source_type.expect("source_type not found"), field.expect("field not found")))
         })
-        .ok()?;
-        Some((source_type.expect("source_type not found"), field.expect("field not found")))
-    })
+        .collect()
+}
+
+fn gen_unmarshal_struct(ast: &DeriveInput) -> TokenStream {
+    let name = &ast.ident;
+    let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
+    let inner_name = get_inner_type_ident(&ast.attrs).unwrap_or_else(|| name.clone());
+
+    let fields_named = match &ast.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(f) => &f.named,
+            _ => {
+                return syn::Error::new(
+                    name.span(),
+                    "Unmarshalable can only be derived for structs with named fields.",
+                )
+                .to_compile_error()
+            }
+        },
+        _ => {
+            return syn::Error::new(name.span(), "Unmarshalable can only be derived for structs.")
+                .to_compile_error()
+        }
+    };
+    let field_values = fields_named.iter().map(|field| gen_field_value(field, &quote! { source }));
+
+    quote! {
+        impl #impl_generics #name #ty_generics #where_clause {
+            fn from_table(source: inner::#inner_name<'_>) -> Self {
+                Self {
+                    #(#field_values),*,
+                }
+            }
+        }
+    }
 }
 
 // Generates the FromParcel trait implementation.
@@ -93,7 +143,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
 // the generated code looks like the following:
 // ```
 // impl<'a> SpawnPayload<'a> {
-//   fn from(source: &inner::Spawn<'a>) -> Self {
+//   fn from_spawn(source: &inner::Spawn<'a>) -> Result<Self> {
 //     match source.payload_type() {
 //       inner::SpawnPayload::SpawnMock => {
 //         let payload: inner::SpawnMock<'a> = source.payload_as_spawn_mock().unwrap();
@@ -121,10 +171,14 @@ fn gen_unmarshal_from(ast: &DeriveInput, source_type: &Type, field_name: &Ident)
     let unmarshal_arms =
         variants.iter().map(|v| gen_unmarshal_arm(v, name, &quote! { source }, field_name));
     let type_method = quote::format_ident!("{}_type", field_name);
+    let type_name = extract_inner_type_name(source_type)
+        .unwrap_or_else(|| panic!("should be inner::<Type> but got {:?}", source_type));
+    let from_method =
+        Ident::new(&format!("from_{}", type_name).to_snake_case(), type_method.span());
 
     quote! {
         impl #impl_generics #name #ty_generics #where_clause {
-            fn from(source: #source_type) -> Result<Self> {
+            fn #from_method(source: #source_type) -> Result<Self> {
                 match source.#type_method() {
                     #(#unmarshal_arms),*
                     inner::#name(tag) => anyhow::bail!("Unknown #name type: {tag}"),
@@ -153,7 +207,7 @@ fn gen_unmarshal_arm(
     field_name: &Ident,
 ) -> TokenStream {
     let variant_id = &variant.ident;
-    let inner_type_id = get_inner_type_ident(variant);
+    let inner_type_id = get_inner_type_ident_from_variant(variant);
     match &variant.fields {
         Fields::Unit => {
             quote! { inner::#enum_name::#inner_type_id => Ok(#enum_name::#variant_id) }
@@ -246,8 +300,17 @@ fn gen_field_value(field: &Field, source: &TokenStream) -> TokenStream {
             }
         },
         Some(UnmarshalAttr::Map(map)) => quote! { #field_name: #map(&#source.#field_name()) },
+        Some(UnmarshalAttr::Table) => {
+            quote! { #field_name: <#ty>::from_table(#source.#field_name().unwrap()) }
+        }
         Some(UnmarshalAttr::Flatten) => quote! { #field_name: <#ty>::unflatten(#source) },
-        Some(UnmarshalAttr::Union) => quote! { #field_name: <#ty>::from(#source)?  },
+        Some(UnmarshalAttr::Union(source_type)) => {
+            let inner_name = extract_inner_type_name(&source_type)
+                .unwrap_or_else(|| panic!("should be inner::<Type> but got {:?}", ty));
+            let from_method =
+                Ident::new(&format!("from_{}", inner_name).to_snake_case(), field_name.span());
+            quote! { #field_name: <#ty>::#from_method(#source)? }
+        }
         None => quote! { #field_name: #source.#field_name() },
     }
 }
@@ -260,10 +323,14 @@ enum UnmarshalAttr {
     // #[unmarshal(map = <fn>)]
     // Maps a value when deserializing based on the given function.
     Map(Ident),
-    // #[union]
+    // #[table]
+    // Indicates that the field is an inner table, to be unmarshaled using the field's
+    // `UnmarshalParcel` implementation. This attribute is also used in MarshalParcel.
+    Table,
+    // #[union(<Type>)]
     // Treat the flatbuffer's type as union, which has another field `<field_name>_type`, indicating the variant.
     // This attribute is also used in MarshalParcel.
-    Union,
+    Union(Box<Type>),
     // #[flatten]
     // Calls the unflatten() defined in gen_flatten_unmarshal_parcel() when deserializing.
     // This attribute is also used in MarshalParcel.
@@ -279,8 +346,14 @@ impl UnmarshalAttr {
         if attr.path().is_ident("flatten") {
             return Some(Self::Flatten);
         }
+        if attr.path().is_ident("table") {
+            return Some(Self::Table);
+        }
         if attr.path().is_ident("union") {
-            return Some(Self::Union);
+            let inner_type = attr
+                .parse_args::<Type>()
+                .expect("The union attribute should be in the form of #[union(<Type>)]");
+            return Some(Self::Union(Box::new(inner_type)));
         }
 
         if !attr.path().is_ident("unmarshal") {

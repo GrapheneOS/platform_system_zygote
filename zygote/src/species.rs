@@ -91,6 +91,8 @@ pub trait Species {
     fn file_is_allowed(&self, path: &CStr) -> bool;
     /// Take over control flow for the new process
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
+    /// Perform post-fork work in the new child zygote process
+    fn speciate(&self, payload: &SpawnPayload);
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
     /// Child-process re-initialization logic that runs before the rest of the
@@ -98,7 +100,6 @@ pub trait Species {
     fn re_initialize_epilogue(
         &self,
         spawn_params: &SpawnParamsCommon,
-        spawn_payload: &SpawnPayload,
         re_init_data: &ReInitWrapper,
     );
     /// Child-process re-initialization logic that runs before the rest of the
@@ -106,11 +107,10 @@ pub trait Species {
     fn re_initialize_prologue(
         &self,
         spawn_params: &SpawnParamsCommon,
-        spawn_payload: &SpawnPayload,
         re_init_data: &ReInitWrapper,
     );
     /// A callback for setting SecComp filters
-    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon);
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload);
     /// Get the associated [`SpeciesTag`].  Dyn trait references are not
     /// guaranteed to be equal, so this allows for dynamic testing of the
     /// species implementation.
@@ -178,7 +178,8 @@ impl From<&SpawnPayloadParser> for SpeciesRef {
     fn from(value: &SpawnPayloadParser) -> Self {
         match value {
             #[cfg(all(target_os = "android", feature = "android-native"))]
-            SpawnPayloadParser::AndroidNative { .. } => &android_native::App,
+            SpawnPayloadParser::AndroidNative { .. }
+            | SpawnPayloadParser::AndroidNativeSubspecies { .. } => &android_native::App,
             #[cfg(feature = "libapp")]
             SpawnPayloadParser::LibApp { .. } => &lib_app::App,
             #[cfg(any(test, feature = "mock"))]
