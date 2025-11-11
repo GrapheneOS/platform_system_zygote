@@ -21,6 +21,11 @@ use processgroup::sched;
 
 use crate::{libc_result_from_int_with_void, LibcResult};
 
+/// A wrapper around [`inner::__android_log_close`]
+pub fn log_close() {
+    inner::__android_log_close();
+}
+
 /// A wrapper around [`inner::android_set_application_target_sdk_version`]
 pub fn set_application_target_sdk_version(target: i32) {
     inner::android_set_application_target_sdk_version(target);
@@ -70,6 +75,11 @@ mod inner {
     use core::ffi::{c_char, c_int};
 
     unsafe extern "C" {
+        /// Close the file descriptors used for logging, i.e. the /dev/pmsg0 file and the socket connected to logd
+        ///
+        /// See: https://cs.android.com/android/platform/superproject/main/+/main:system/logging/liblog/include/log/log.h;l=147
+        pub safe fn __android_log_close();
+
         /// Set the target SDK version for the app.
         ///
         /// See: https://cs.android.com/android/platform/superproject/main/+/main:bionic/libdl/libdl_android.cpp;l=77
