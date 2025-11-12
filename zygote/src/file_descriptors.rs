@@ -63,16 +63,35 @@ static ALLOWED_FILE_PATHS: &[&str] = &[DEV_NULL_PATH, DEV_URANDOM_PATH];
 /// Socket paths used by the Zygote that are allowed to be registered
 static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 
+#[derive(Eq, PartialEq)]
+enum SocketAddress {
+    Path(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
+    Abstract(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
+}
+
+impl fmt::Display for SocketAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(path) => write!(f, "{path}"),
+            Self::Abstract(path) => write!(f, "@{path}"),
+        }
+    }
+}
+
+impl AsRef<str> for SocketAddress {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Path(path) => path,
+            Self::Abstract(name) => name,
+        }
+    }
+}
+
 /// Information necessary to identify and perform actions for supported file
 /// types.
 #[derive(Eq, PartialEq)]
 enum FileDescriptorInfo {
-    AbstractSocket {
-        name: ArrayString<{ sys::BUFFER_SIZE_STRINGS }>,
-    },
-    BoundSocket {
-        path: ArrayString<{ sys::BUFFER_SIZE_STRINGS }>,
-    },
+    BoundSocket(SocketAddress),
     Fifo,
     File {
         dev: u64,
@@ -91,8 +110,7 @@ enum FileDescriptorInfo {
 impl fmt::Display for FileDescriptorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AbstractSocket { name } => write!(f, "Abstract Socket ({name})"),
-            Self::BoundSocket { path } => write!(f, "Bound Socket ({path})"),
+            Self::BoundSocket(address) => write!(f, "Bound Socket ({address})"),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
             Self::SignalFd => write!(f, "SignalFD"),
@@ -194,20 +212,20 @@ impl FileDescriptorInfo {
     fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
         let (addr, path_len) = sys::getsockname(fd)?;
         let sun_bytes: &[u8] = &addr.sun_path.as_bytes()[..path_len];
-
-        match sun_bytes {
-            [0, text @ ..] => Ok(FileDescriptorInfo::AbstractSocket {
+        let address = match sun_bytes {
+            [0, text @ ..] => SocketAddress::Abstract(
                 // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
                 // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
                 // paths.
-                name: ArrayString::from(std::str::from_utf8(text)?).unwrap(),
-            }),
-            text => Ok(FileDescriptorInfo::BoundSocket {
+                ArrayString::from(std::str::from_utf8(text)?).unwrap(),
+            ),
+            text => SocketAddress::Path(
                 // getsockname() on bound sockets always return NUL-terminated names, so use
                 // from_bytes_with_nul() to truncated that here.
-                path: ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
-            }),
-        }
+                ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
+            ),
+        };
+        Ok(FileDescriptorInfo::BoundSocket(address))
     }
 }
 
@@ -220,9 +238,8 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
     assert!(crate::introspection::get_proc_fd_path(fd).exists());
 
     match FileDescriptorInfo::try_from(fd).unwrap() {
-        FileDescriptorInfo::AbstractSocket { name } => assert_eq!(name.as_str(), target),
-        FileDescriptorInfo::BoundSocket { path, .. } => {
-            assert_eq!(path.as_str(), target)
+        FileDescriptorInfo::BoundSocket(address) => {
+            assert_eq!(address.as_ref(), target)
         }
         FileDescriptorInfo::File { path, .. } => {
             assert_eq!(path.as_cstr().unwrap().to_str().unwrap(), target)
@@ -395,9 +412,9 @@ impl FileDescriptorRegistry {
     }
 
     /// Queries the Zygote and species abstract socket allow lists
-    fn abstract_socket_is_allowed(&self, name: &str) -> bool {
+    fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool {
         self.allowed_socket_names.contains(&name.to_owned())
-            || self.species.abstract_socket_is_allowed(name)
+            || self.species.bound_abstract_socket_is_allowed(name)
     }
 
     /// Adds a file path to the allow list
@@ -458,10 +475,10 @@ impl FileDescriptorRegistry {
     }
 
     /// Queries the Zygote and species bound socket allow lists
-    fn bound_socket_is_allowed(&self, path: &str) -> bool {
+    fn bound_socket_path_is_allowed(&self, path: &str) -> bool {
         ALLOWED_SOCKET_PATHS.contains(&path)
             || self.allowed_socket_paths.contains(&path.to_owned())
-            || self.species.bound_socket_is_allowed(path)
+            || self.species.bound_socket_path_is_allowed(path)
     }
 
     /// Iterate through the registry and perform all Close,
@@ -566,19 +583,18 @@ impl FileDescriptorRegistry {
 
             let info = FileDescriptorInfo::try_from(fd).unwrap();
             let action = match info {
-                FileDescriptorInfo::AbstractSocket { ref name } => {
-                    if self.abstract_socket_is_allowed(name) {
-                        Action::DupeNull
-                    } else {
-                        panic!("Abstract socket name not found in allow list ({fd}): {name}");
-                    }
+                FileDescriptorInfo::BoundSocket(SocketAddress::Abstract(ref name))
+                    if self.bound_abstract_socket_is_allowed(name) =>
+                {
+                    Action::DupeNull
                 }
-                FileDescriptorInfo::BoundSocket { ref path, .. } => {
-                    if self.bound_socket_is_allowed(path) {
-                        Action::DupeNull
-                    } else {
-                        panic!("Bound socket name not found in allow list ({fd}): {path}");
-                    }
+                FileDescriptorInfo::BoundSocket(SocketAddress::Path(ref path))
+                    if self.bound_socket_path_is_allowed(path) =>
+                {
+                    Action::DupeNull
+                }
+                FileDescriptorInfo::BoundSocket(address) => {
+                    panic!("Bound socket not found in allow list ({fd}): {address}");
                 }
                 FileDescriptorInfo::Fifo => {
                     panic!("Unregistered FIFO fd found: {fd}");
@@ -632,7 +648,7 @@ mod test {
 
     use zygote_sys::{self as sys, create_abstract_socket, create_bound_socket, AsCStr};
 
-    use super::FileDescriptorInfo;
+    use super::{FileDescriptorInfo, SocketAddress};
     use crate::{introspection::get_executable_path, test::manage_test};
 
     #[test]
@@ -670,14 +686,14 @@ mod test {
             assert!(
                 matches!(
                     info,
-                    FileDescriptorInfo::AbstractSocket { name } if name.to_string() == crate::test::SOCKET_NAME_1));
+                    FileDescriptorInfo::BoundSocket(SocketAddress::Abstract(name)) if name.to_string() == crate::test::SOCKET_NAME_1));
 
             // Test BoundSocket
             let bound_socket_fd = create_bound_socket(crate::test::SOCKET_PATH_1, libc::SOCK_DGRAM).unwrap();
             assert!(
                 matches!(
                     FileDescriptorInfo::try_from(bound_socket_fd).unwrap(),
-                    FileDescriptorInfo::BoundSocket { path, .. } if path.to_string() == crate::test::SOCKET_PATH_1));
+                    FileDescriptorInfo::BoundSocket(SocketAddress::Path(path)) if path.to_string() == crate::test::SOCKET_PATH_1));
 
             sys::close(pipe0).unwrap();
             sys::close(pipe1).unwrap();

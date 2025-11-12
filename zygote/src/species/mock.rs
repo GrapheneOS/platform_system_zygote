@@ -46,11 +46,11 @@ static ALLOWED_SOCKET_PATHS: [SocketAllowListEntry; 1] = [
 pub struct Turtle;
 
 impl Species for Turtle {
-    fn abstract_socket_is_allowed(&self, name: &str) -> bool {
+    fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool {
         ALLOWED_SOCKET_NAMES.iter().any(|entry| entry.data == name)
     }
 
-    fn bound_socket_is_allowed(&self, path: &str) -> bool {
+    fn bound_socket_path_is_allowed(&self, path: &str) -> bool {
         ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
