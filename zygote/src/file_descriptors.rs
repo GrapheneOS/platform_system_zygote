@@ -35,6 +35,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
 use itertools::{EitherOrBoth, Itertools};
+use log::info;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -431,6 +432,20 @@ impl FileDescriptorRegistry {
         registry.register(2, Action::Ignore);
 
         registry
+    }
+
+    /// Reset the registry after spawning a subspecies process.
+    pub fn reset_for_subspecies(&mut self) {
+        self.execute_actions(ForkType::Subspecies);
+
+        self.species.sync_fd_state();
+        // This line needs to come after calling [`sys::android::log_close`],
+        // which is done in [`sync_fd_state`], so that it will open new file
+        // descriptors for logging.
+        info!("Resetting FileDescriptorRegistry for subspecies");
+        // Register FDs opened by the app's preload rountine.
+        self.register_new();
+        self.audit().unwrap();
     }
 
     /// Queries the Zygote and species abstract socket allow lists
