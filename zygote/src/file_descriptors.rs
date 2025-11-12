@@ -210,7 +210,9 @@ impl FileDescriptorInfo {
     /// Get the socket name and parse it into either a Abstract or Bound
     /// SocketInfo struct.
     fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
-        let (addr, path_len) = sys::getsockname(fd)?;
+        let Some((addr, path_len)) = sys::getsockname(fd)? else {
+            bail!("The socket family is not AF_UNIX or the socket is unbound");
+        };
         let sun_bytes: &[u8] = &addr.sun_path.as_bytes()[..path_len];
         let address = match sun_bytes {
             [0, text @ ..] => SocketAddress::Abstract(

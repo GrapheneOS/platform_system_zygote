@@ -900,11 +900,10 @@ pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> 
 
 /// A safe wrapper around [`libc::getsockname`].
 ///
-/// An Errno error with code `0` will be returned if the socket family is not
-/// `AF_UNIX`.
+/// None will be returned if the socket family is not `AF_UNIX` or the socket is unbound.
 ///
 /// See: `man getsockname`
-pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
+pub fn getsockname(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> {
     let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
     let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
@@ -920,7 +919,7 @@ pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
     debug_assert!(addr_len <= std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
 
     if addr_len as usize == std::mem::size_of::<libc::sa_family_t>() {
-        return Err(Errno { code: 0 });
+        return Ok(None);
     }
 
     // SAFETY: The memory had been zero initialized before `libc::getsockname`
@@ -929,12 +928,12 @@ pub fn getsockname(fd: RawFd) -> LibcResult<(libc::sockaddr_un, usize)> {
     let addr = unsafe { addr.assume_init() };
 
     if addr.sun_family != libc::AF_UNIX as u16 {
-        return Err(Errno { code: 0 });
+        return Ok(None);
     }
 
     let path_len = addr_len as usize - offset_of!(libc::sockaddr_un, sun_path);
 
-    Ok((addr, path_len))
+    Ok(Some((addr, path_len)))
 }
 
 /// A safe wrapper around [`libc::getuid`].
