@@ -157,6 +157,10 @@ impl Server {
         //     return information about signals queued to the child."
         registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies);
 
+        // Register any unregistered file descriptors such as those used for logging.
+        registry.register_new();
+        registry.audit().unwrap();
+
         let server = Self {
             name: config.name.clone(),
             species: config.species,

@@ -62,6 +62,8 @@ static ALLOWED_FILE_PATHS: &[&str] = &[DEV_NULL_PATH, DEV_URANDOM_PATH];
 
 /// Socket paths used by the Zygote that are allowed to be registered
 static ALLOWED_SOCKET_PATHS: &[&str] = &[];
+/// Peer socket paths that the Zygote is allowed to connect to
+static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[];
 
 #[derive(Eq, PartialEq)]
 enum SocketAddress {
@@ -407,6 +409,7 @@ pub struct FileDescriptorRegistry {
     allowed_file_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
     allowed_socket_names: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
     allowed_socket_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
+    allowed_peer_socket_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
 }
 
 impl FileDescriptorRegistry {
@@ -419,6 +422,7 @@ impl FileDescriptorRegistry {
             allowed_file_paths: ArrayVec::new(),
             allowed_socket_names: ArrayVec::new(),
             allowed_socket_paths: ArrayVec::new(),
+            allowed_peer_socket_paths: ArrayVec::new(),
         };
 
         // Register the stdio file descriptors
@@ -499,6 +503,13 @@ impl FileDescriptorRegistry {
             || self.species.bound_socket_path_is_allowed(path)
     }
 
+    /// Queries the Zygote and species peer socket path allow lists
+    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
+        ALLOWED_PEER_SOCKET_PATHS.contains(&path)
+            || self.allowed_peer_socket_paths.contains(&path.to_owned())
+            || self.species.peer_socket_path_is_allowed(path)
+    }
+
     /// Iterate through the registry and perform all Close,
     /// CloseUnlessSpawnSubspecies, DupeNull, and Reopen actions. This should be
     /// performed immediately after a fork event.
@@ -545,6 +556,8 @@ impl FileDescriptorRegistry {
         for entry in &mut self.data {
             entry.override_and_close();
         }
+
+        self.species.sync_fd_state();
     }
 
     /// Adds a file descriptor to the registry and associates it with the
@@ -613,6 +626,11 @@ impl FileDescriptorRegistry {
                 }
                 FileDescriptorInfo::BoundSocket(address) => {
                     panic!("Bound socket not found in allow list ({fd}): {address}");
+                }
+                FileDescriptorInfo::ConnectedSocket(SocketAddress::Path(ref path))
+                    if self.peer_socket_path_is_allowed(path) =>
+                {
+                    Action::DupeNull
                 }
                 FileDescriptorInfo::ConnectedSocket(address) => {
                     panic!("Unregistered connected socket found ({fd}): {address}");

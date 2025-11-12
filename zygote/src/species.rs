@@ -79,6 +79,8 @@ pub trait Species {
     fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_path_is_allowed(&self, name: &str) -> bool;
+    /// Returns true if a peer socket path is allowed to be registered
+    fn peer_socket_path_is_allowed(&self, name: &str) -> bool;
     /// Gather data that will later be used to re-initialize the child process
     fn gather_reinitialization_data(&self) -> ReInitWrapper;
     /// Return true if the provided payload is associated with this species
@@ -89,6 +91,8 @@ pub trait Species {
     }
     /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
+    /// Syncs the internal state of file descriptors in libraries like liblog.
+    fn sync_fd_state(&self);
     /// Take over control flow for the new process
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
     /// Perform post-fork work in the new child zygote process
