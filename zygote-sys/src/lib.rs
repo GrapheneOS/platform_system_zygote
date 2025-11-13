@@ -26,7 +26,7 @@ use std::{
     ptr::NonNull,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
@@ -1335,4 +1335,94 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
     //         by `libc::socket`.  The return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
+}
+
+/// The status of a waited-for child process.
+#[derive(Debug, Eq, PartialEq)]
+pub enum WaitStatus {
+    /// The child exited normally with the given exit code.
+    Exited(c_int),
+    /// The child was terminated by the given signal.
+    Signaled(c_int),
+    /// The child was stopped by the given signal.
+    Stopped(c_int),
+    /// The child was continued.
+    Continued,
+    /// The child is a job control stop and has been traced.
+    #[cfg(target_os = "android")]
+    PtraceEvent(c_int),
+    /// The child is a job control stop and has been traced.
+    #[cfg(target_os = "android")]
+    PtraceSyscall,
+}
+
+impl WaitStatus {
+    fn from_status(status: c_int) -> Result<Self> {
+        if libc::WIFEXITED(status) {
+            Ok(WaitStatus::Exited(libc::WEXITSTATUS(status)))
+        } else if libc::WIFSIGNALED(status) {
+            Ok(WaitStatus::Signaled(libc::WTERMSIG(status)))
+        } else if libc::WIFSTOPPED(status) {
+            Ok(Self::from_stop_signal(status))
+        } else if libc::WIFCONTINUED(status) {
+            Ok(WaitStatus::Continued)
+        } else {
+            bail!("Unexpected integer for wait status: {status}");
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn from_stop_signal(status: c_int) -> Self {
+        let stop_signal = libc::WSTOPSIG(status);
+        if stop_signal == libc::SIGTRAP | 0x80 {
+            // According to `man 2 ptrace`, setting PTRACE_O_TRACESYSGOOD
+            // deliveres SIGTRAP | 0x80 as the signal number for syscall stop,
+            // making it easy for the tracer to distinguish normal SIGTRAPs from
+            // those caused by a system call.
+            WaitStatus::PtraceSyscall
+        } else if stop_signal == libc::SIGTRAP && status >> 16 != 0 {
+            // As per `man 2 ptrace`:
+            //   PTRACE_EVENT stops are observed by the tracer as waitpid(2)
+            //   returning with WIFSTOPPED(status), and WSTOPSIG(status) returns
+            //   SIGTRAP (or for PTRACE_EVENT_STOP, returns the stopping signal
+            //   if tracee is in a group-stop).  An additional bit is set in the
+            //   higher byte of the status word: the value status>>8 will be
+            //   ((PTRACE_EVENT_foo<<8) | SIGTRAP).
+            WaitStatus::PtraceEvent(status >> 16)
+        } else {
+            WaitStatus::Stopped(stop_signal)
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn from_stop_signal(status: c_int) -> Self {
+        let stop_signal = libc::WSTOPSIG(status);
+        WaitStatus::Stopped(stop_signal)
+    }
+}
+
+/// A safe wrapper around [`libc::waitpid`].
+///
+/// The [`libc::EINTR`] signal is handled internally using the [`retry_eintr!`]
+/// macro.
+///
+/// See: `man waitpid`
+pub fn waitpid(
+    pid: Option<libc::pid_t>,
+    options: c_int,
+) -> LibcResult<Option<(libc::pid_t, WaitStatus)>> {
+    let mut status = 0;
+    let pid_arg = pid.unwrap_or(-1);
+    let result = retry_eintr!(libc_result_from_int(
+        // SAFETY: `&mut status` is a valid mutable pointer to a stack-allocated `c_int`.
+        //         The return value is immediately checked for errors.
+        unsafe { libc::waitpid(pid_arg, &mut status, options) }
+    ))?;
+
+    if result == 0 {
+        // This occurs when WNOHANG is specified and no child has changed state.
+        return Ok(None);
+    }
+
+    Ok(Some((result, WaitStatus::from_status(status).unwrap())))
 }

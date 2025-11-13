@@ -426,10 +426,20 @@ impl Server {
                     &mut |siginfo: libc::signalfd_siginfo| {
                         match siginfo.ssi_signo as i32 {
                             libc::SIGCHLD => {
+                                let pid = siginfo.ssi_pid as libc::pid_t;
                                 info!(
                                     "Received SIGCHLD from PID {} with status {}",
-                                    siginfo.ssi_pid, siginfo.ssi_status
+                                    pid, siginfo.ssi_status
                                 );
+                                match sys::waitpid(Some(pid), libc::WNOHANG) {
+                                    Ok(Some((ret_pid, status))) if ret_pid == pid => {
+                                        info!(
+                                            "Reaped child process {} terminated with {:?}",
+                                            pid, status
+                                        );
+                                    }
+                                    _ => error!("Failed to reap child process {}", pid),
+                                };
 
                                 // Continue reading
                                 Continue
