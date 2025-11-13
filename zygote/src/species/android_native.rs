@@ -21,7 +21,7 @@ use rustutils::android;
 
 use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use processgroup::{
-    processgroup::drop_task_profiles_resource_caching,
+    processgroup::{cgroup, drop_task_profiles_resource_caching},
     sched::{cpusets_enabled, SchedPolicy},
 };
 
@@ -180,7 +180,7 @@ impl Species for App {
 
     fn re_initialize_prologue(
         &self,
-        _spawn_params: &SpawnParamsCommon,
+        spawn_params: &SpawnParamsCommon,
         re_init_data: &super::ReInitWrapper,
     ) {
         debug_assert_single_threaded();
@@ -198,6 +198,15 @@ impl Species for App {
 
         if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
             log::error!("Failed to mallopt(M_DECAY_TIME): {errno}");
+        }
+
+        // Create a cgroup for the process
+        if sys::getuid() == 0 {
+            cgroup::create(
+                spawn_params.uid.expect("No UID specified").try_into().unwrap(),
+                sys::getpid(),
+            )
+            .expect("Unable to create cgroup for process");
         }
 
         // Set the cpuset policy and panic on failure
