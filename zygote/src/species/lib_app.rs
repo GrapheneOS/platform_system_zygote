@@ -36,11 +36,11 @@ const ENTRY_SYMBOL_NAME: &CStr = c"zygote_entry";
 pub struct App;
 
 impl Species for App {
-    fn abstract_socket_is_allowed(&self, _name: &str) -> bool {
+    fn bound_abstract_socket_is_allowed(&self, _name: &str) -> bool {
         false
     }
 
-    fn bound_socket_is_allowed(&self, _path: &str) -> bool {
+    fn bound_socket_path_is_allowed(&self, _path: &str) -> bool {
         false
     }
 

@@ -75,10 +75,10 @@ pub(crate) const fn socket_entry(
 /// runtime behaviors such as preloading, process creation, and transfer
 /// of control flow.
 pub trait Species {
-    /// Returns true if an abstract socket name is allowed to be registered
-    fn abstract_socket_is_allowed(&self, name: &str) -> bool;
+    /// Returns true if a bound abstract socket name is allowed to be registered
+    fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool;
     /// Returns true if a bound socket path is allowed to be registered
-    fn bound_socket_is_allowed(&self, name: &str) -> bool;
+    fn bound_socket_path_is_allowed(&self, name: &str) -> bool;
     /// Gather data that will later be used to re-initialize the child process
     fn gather_reinitialization_data(&self) -> ReInitWrapper;
     /// Return true if the provided payload is associated with this species
