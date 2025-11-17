@@ -831,6 +831,8 @@ impl Server {
     /// code.  This allows resources to be cleaned up and possibly sensitive
     /// data to be deallocated.
     pub fn serve(&mut self) -> Option<impl FnOnce() -> Infallible + use<>> {
+        self.species.on_server_ready();
+
         loop {
             let mut poll_array = PollBuffer::from(&*self);
 
@@ -853,6 +855,8 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if self.pid == sys::getpid() {
+            self.species.on_server_destroy();
+
             // Clean up the server code in the server process
             self.registry.override_and_close();
 
