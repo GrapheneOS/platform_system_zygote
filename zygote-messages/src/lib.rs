@@ -447,6 +447,14 @@ pub enum SpawnPayload<'a> {
         /// Permitted library paths
         #[marshal(packed)]
         permitted_library_paths: &'a str,
+        /// Whether or not the created linker namespace is shared
+        shared: bool,
+        /// APK paths
+        #[marshal(packed)]
+        zip_path: &'a str,
+        /// libraries specified in app's <uses-library>
+        #[marshal(packed)]
+        native_shared_lib_path: &'a str,
         /// Preload function
         #[marshal(packed)]
         preload_func: Option<&'a str>,
@@ -561,6 +569,15 @@ pub enum SpawnPayloadParser {
         /// Permitted library paths
         #[arg(long, required(true))]
         permitted_library_paths: String,
+        /// Whether or not the created linker namespace is shared
+        #[arg(long)]
+        shared: bool,
+        /// APK paths
+        #[arg(long, required(true))]
+        zip_path: String,
+        /// libraries specified in app's <uses-library>
+        #[arg(long, required(true))]
+        native_shared_lib_path: String,
         /// Preload function
         #[arg(long)]
         preload_func: Option<String>,
@@ -613,6 +630,9 @@ impl SpawnPayloadParser {
                 library_path,
                 library_dirs,
                 permitted_library_paths,
+                shared,
+                zip_path,
+                native_shared_lib_path,
                 preload_func,
                 uid_gid_min,
                 uid_gid_max,
@@ -622,6 +642,9 @@ impl SpawnPayloadParser {
                 library_path: library_path.as_str(),
                 library_dirs: library_dirs.as_str(),
                 permitted_library_paths: permitted_library_paths.as_str(),
+                shared: *shared,
+                zip_path: zip_path.as_str(),
+                native_shared_lib_path: native_shared_lib_path.as_str(),
                 preload_func: preload_func.as_deref(),
                 uid_gid_min: *uid_gid_min,
                 uid_gid_max: *uid_gid_max,

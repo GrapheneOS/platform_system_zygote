@@ -95,6 +95,9 @@ impl Species for App {
             library_path,
             library_dirs,
             permitted_library_paths,
+            shared,
+            zip_path,
+            native_shared_lib_path,
             preload_func,
             uid_gid_min,
             uid_gid_max,
@@ -111,7 +114,16 @@ impl Species for App {
         //         the `preload_func` has the correct signature (takes no arguments, returns
         //         nothing).
         unsafe {
-            preload_lib(library_path, library_dirs, permitted_library_paths, *preload_func);
+            preload_lib(
+                library_path,
+                library_dirs,
+                permitted_library_paths,
+                *target_sdk_version,
+                *shared,
+                zip_path,
+                native_shared_lib_path,
+                *preload_func,
+            );
         };
     }
 
