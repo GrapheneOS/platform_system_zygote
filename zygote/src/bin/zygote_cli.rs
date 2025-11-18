@@ -28,10 +28,7 @@ use zygote_sys as sys;
 
 fn main() -> Result<()> {
     let config = config::Cli::parse();
-
-    logger::init(
-        logger::Config::default().with_tag_on_device("zygote_cli").with_max_level(config.log_level),
-    );
+    let _trace_guard = config::init_reporting("zygote_cli", config.log_level, config.trace_level);
 
     let builder = config.command.try_to_parcel()?;
 

@@ -189,6 +189,7 @@ impl ProcStat {
 
     /// Query procfs for statistics on the current process.
     #[rustfmt::skip]
+    #[tracing::instrument(level = "trace")]
     pub fn get() -> Result<Self> {
         let mut proc_file = File::open(Self::PROC_STAT_PATH_STR)?;
         let mut proc_buf: [u8; Self::PROC_STAT_BUFFER_SIZE] = [0; Self::PROC_STAT_BUFFER_SIZE];

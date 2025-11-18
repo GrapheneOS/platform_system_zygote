@@ -335,6 +335,7 @@ impl Message<'_, '_> {
 }
 
 impl ToParcel for Message<'_, '_> {
+    #[tracing::instrument(skip(self))]
     fn to_parcel<'builder>(&self) -> flatbuffers::FlatBufferBuilder<'builder> {
         let mut builder =
             flatbuffers::FlatBufferBuilder::<'builder>::with_capacity(MESSAGE_BUFFER_SIZE);

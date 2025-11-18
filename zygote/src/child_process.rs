@@ -45,6 +45,7 @@ pub(crate) fn maybe_reset_stack_guards(continuation: impl FnOnce() -> Infallible
 /// Perform child-process initialization tasks that are available on all
 /// supported platforms. All species-specific re-initialization code must
 /// be called before calling [`re_init_common`].
+#[tracing::instrument(skip_all)]
 pub(crate) fn re_initialize(
     species: SpeciesRef,
     re_init_data: ReInitWrapper,

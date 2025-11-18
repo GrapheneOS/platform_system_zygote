@@ -188,6 +188,7 @@ pub type LibcResult<T> = std::result::Result<T, Errno>;
 
 /// A wrapper struct for [`libc::pollfd`] that ensures error codes are checked
 /// before events are handled.
+#[derive(Debug)]
 #[repr(transparent)]
 pub struct PollFd(libc::pollfd);
 

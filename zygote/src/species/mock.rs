@@ -43,6 +43,7 @@ static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
 /// Behaviors for testing the Zygote process server.
 ///
 /// See: https://en.wikipedia.org/wiki/Mock_Turtle
+#[derive(Debug)]
 pub struct Turtle;
 
 impl Species for Turtle {

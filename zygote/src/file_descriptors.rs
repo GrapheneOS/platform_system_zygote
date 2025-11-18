@@ -66,7 +66,7 @@ static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 /// Peer socket paths that the Zygote is allowed to connect to
 static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[];
 
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 enum SocketAddress {
     Path(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
     Abstract(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
@@ -92,7 +92,7 @@ impl AsRef<str> for SocketAddress {
 
 /// Information necessary to identify and perform actions for supported file
 /// types.
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 enum FileDescriptorInfo {
     BoundSocket(SocketAddress),
     ConnectedSocket(SocketAddress),
@@ -147,8 +147,10 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
             libc::S_IFCHR | libc::S_IFREG => Self::get_file_info(fd, &stat),
             libc::S_IFSOCK => Self::get_socket_info(fd),
             file_type => {
-                let proc_metadata_buffer = get_proc_fd_link_info(fd).unwrap();
-                let proc_metadata_cstr = proc_metadata_buffer.as_cstr().unwrap();
+                let proc_metadata_buffer =
+                    get_proc_fd_link_info(fd).expect("Failed to read link info");
+                let proc_metadata_cstr =
+                    proc_metadata_buffer.as_cstr().expect("Failed to view string buffer as a CStr");
 
                 if proc_metadata_cstr == PROC_METADATA_SIGNALFD {
                     Ok(FileDescriptorInfo::SignalFd)
@@ -222,7 +224,7 @@ impl FileDescriptorInfo {
                 Ok(FileDescriptorInfo::BoundSocket(socket_address))
             }
             None => {
-                let (addr, path_len) = sys::getpeername(fd)?.unwrap();
+                let (addr, path_len) = sys::getpeername(fd)?.expect("Unable to get peer name");
                 let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
                 let socket_address = Self::get_socket_address(sun_bytes)?;
                 Ok(FileDescriptorInfo::ConnectedSocket(socket_address))
@@ -236,12 +238,14 @@ impl FileDescriptorInfo {
                 // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
                 // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
                 // paths.
-                ArrayString::from(std::str::from_utf8(text)?).unwrap(),
+                ArrayString::from(std::str::from_utf8(text)?)
+                    .expect("Failed to build abstract socket name from byte buffer"),
             )),
             text => Ok(SocketAddress::Path(
                 // getsockname() on bound sockets always return NUL-terminated names, so use
                 // from_bytes_with_nul() to truncated that here.
-                ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
+                ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?)
+                    .expect("Failed to build bound socket name from byte buffer"),
             )),
         }
     }
@@ -290,7 +294,7 @@ pub enum Action {
     Reopen,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 /// The type of the spawned child process.
 pub enum ForkType {
     /// The process is for regular applications
@@ -299,6 +303,7 @@ pub enum ForkType {
     Subspecies,
 }
 
+#[derive(Debug)]
 struct FileDescriptorEntry {
     fd: RawFd,
     info: FileDescriptorInfo,
@@ -313,12 +318,12 @@ impl FileDescriptorEntry {
     fn execute(&self, dev_null_fd: RawFd, fork_type: ForkType) -> bool {
         match self.action {
             Action::Close => {
-                sys::close(self.fd).unwrap();
+                sys::close(self.fd).expect("Failed to close file descriptor");
                 true
             }
             Action::CloseUnlessSpawnSubspecies => match fork_type {
                 ForkType::Application => {
-                    sys::close(self.fd).unwrap();
+                    sys::close(self.fd).expect("Failed to close file descriptor");
                     true
                 }
                 ForkType::Subspecies => false,
@@ -341,13 +346,17 @@ impl FileDescriptorEntry {
                     offset,
                     ..
                 } => {
-                    let new_fd = sys::open(path.as_cstr().unwrap(), *fs_flags_open, None)
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "Failed to open new file descriptor to existing path: {:?}",
-                                path.as_cstr()
-                            )
-                        });
+                    let new_fd = sys::open(
+                        path.as_cstr().expect("Failed to view as CStr"),
+                        *fs_flags_open,
+                        None,
+                    )
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Failed to open new file descriptor to existing path: {:?}",
+                            path.as_cstr()
+                        )
+                    });
 
                     sys::fcntl_setfd(new_fd, *fd_flags).unwrap_or_else(|errno| {
                         panic!("Failed to set descriptor flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fd_flags, errno);
@@ -372,7 +381,7 @@ impl FileDescriptorEntry {
                         panic!("Failed to dup3 a new file descriptor to existing descriptor (path: {:?}, existing: {}, new: {:?}): {}", path.as_cstr(), self.fd, new_fd, errno);
                     });
 
-                    sys::close(new_fd).unwrap();
+                    sys::close(new_fd).expect("Failed to close new file descriptor");
                     true
                 }
                 _ => {
@@ -390,7 +399,7 @@ impl FileDescriptorEntry {
             | Action::CloseUnlessSpawnSubspecies
             | Action::DupeNull
             | Action::Reopen => {
-                sys::close(self.fd).unwrap();
+                sys::close(self.fd).expect("Failed to close file descriptor");
             }
             Action::Ignore => {
                 // Nothing to do here
@@ -404,6 +413,7 @@ impl FileDescriptorEntry {
 /// A struct for associating file descriptor information with [`Action`]s.
 /// This can be used to ensure file descriptors are accounted for and handled
 /// appropriately when the Zygote forks a new process.
+#[derive(Debug)]
 pub struct FileDescriptorRegistry {
     species: SpeciesRef,
     data: ArrayVec<FileDescriptorEntry, REGISTRY_SIZE>,
@@ -477,6 +487,7 @@ impl FileDescriptorRegistry {
     ///
     /// If the audit is successful the function returns the number of open
     /// file descriptors.
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn audit(&self) -> Result<usize> {
         debug_assert_single_threaded();
 
@@ -528,10 +539,12 @@ impl FileDescriptorRegistry {
     /// Iterate through the registry and perform all Close,
     /// CloseUnlessSpawnSubspecies, DupeNull, and Reopen actions. This should be
     /// performed immediately after a fork event.
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn execute_actions(&mut self, fork_type: ForkType) {
         debug_assert_single_threaded();
 
-        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None).unwrap();
+        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None)
+            .expect("Failed to open /dev/null");
 
         self.data.retain(|entry| {
             let closed = entry.execute(dev_null_fd, fork_type);
@@ -543,8 +556,10 @@ impl FileDescriptorRegistry {
 
     /// Queries the Zygote and species allowed files lists.
     fn file_is_allowed(&self, path: &CStr) -> bool {
-        ALLOWED_FILE_PATHS.contains(&path.to_str().unwrap())
-            || self.allowed_file_paths.contains(&path.to_str().unwrap().to_owned())
+        ALLOWED_FILE_PATHS.contains(&path.to_str().expect("Failed to view path as a string"))
+            || self
+                .allowed_file_paths
+                .contains(&path.to_str().expect("Failed to view path as a string").to_owned())
             || self.species.file_is_allowed(path)
     }
 
@@ -567,6 +582,7 @@ impl FileDescriptorRegistry {
 
     /// Close all file descriptors registered with `DupeNull`, `Close`, and
     /// `Reopen` actions.
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn override_and_close(&mut self) {
         debug_assert_single_threaded();
 
@@ -594,7 +610,8 @@ impl FileDescriptorRegistry {
                     insert_index,
                     FileDescriptorEntry {
                         fd: fd.as_raw_fd(),
-                        info: FileDescriptorInfo::try_from(fd.as_raw_fd()).unwrap(),
+                        info: FileDescriptorInfo::try_from(fd.as_raw_fd())
+                            .expect("Unable to get file descriptor info"),
                         action,
                     },
                 );
@@ -616,6 +633,7 @@ impl FileDescriptorRegistry {
 
     /// Iterate through all open file descriptors and register any unregistered
     /// descriptors using a default action.
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn register_new(&mut self) {
         debug_assert_single_threaded();
         assert!(self.data.is_sorted_by_key(|entry| entry.fd));
@@ -623,13 +641,16 @@ impl FileDescriptorRegistry {
         let mut registry_index: usize = 0;
         let num_preexisting_entries = self.data.len();
 
-        for fd in ProcFdIterator::new().unwrap() {
-            let fd = fd.unwrap();
+        for fd in
+            ProcFdIterator::new().expect("Unable to iterate over /proc/self file descriptor info")
+        {
+            let fd = fd.expect("Unable to read entry from /proc/self");
             if self.is_registered(fd, &mut registry_index, num_preexisting_entries) {
                 continue;
             }
 
-            let info = FileDescriptorInfo::try_from(fd).unwrap();
+            let info =
+                FileDescriptorInfo::try_from(fd).expect("Unable to get file descriptor info");
             let action = match info {
                 FileDescriptorInfo::BoundSocket(SocketAddress::Abstract(ref name))
                     if self.bound_abstract_socket_is_allowed(name) =>
@@ -656,12 +677,15 @@ impl FileDescriptorRegistry {
                     panic!("Unregistered FIFO fd found: {fd}");
                 }
                 FileDescriptorInfo::File { ref path, .. } => {
-                    if self.file_is_allowed(path.as_cstr().unwrap()) {
+                    if self.file_is_allowed(path.as_cstr().expect("Failed to view path as CStr")) {
                         self.species
-                            .get_file_action(path.as_cstr().unwrap())
+                            .get_file_action(path.as_cstr().expect("Failed ot view path as CStr"))
                             .unwrap_or(Action::Reopen)
                     } else {
-                        panic!("File path not found on allow list ({fd}): {path:?}");
+                        panic!(
+                            "File path not found on allow list ({fd}): {:?}",
+                            path.as_cstr().unwrap()
+                        );
                     }
                 }
                 FileDescriptorInfo::SignalFd => {
@@ -674,21 +698,6 @@ impl FileDescriptorRegistry {
 
         if self.data.len() != num_preexisting_entries {
             self.data.sort_by_key(|entry| entry.fd);
-        }
-    }
-
-    // TODO: This is a debugging/development function and should be deleted
-    //       before shipping the native Zygote.
-
-    /// Debugging function
-    pub fn scan() {
-        debug_assert_single_threaded();
-
-        println!("Scanning open file descriptors:");
-
-        for fd in ProcFdIterator::new().unwrap() {
-            let fd = fd.unwrap();
-            println!("\t{} -> {}", fd, FileDescriptorInfo::try_from(fd).unwrap());
         }
     }
 
