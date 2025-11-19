@@ -54,6 +54,10 @@ impl Species for Turtle {
         ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
+    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
+        ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
+    }
+
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
         super::ReInitWrapper::Mock
     }
@@ -64,6 +68,10 @@ impl Species for Turtle {
 
     fn file_is_allowed(&self, path_str: &CStr) -> bool {
         ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
+    }
+
+    fn sync_fd_state(&self) {
+        // Nothing to do here
     }
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {

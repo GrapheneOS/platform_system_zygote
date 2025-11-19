@@ -936,6 +936,44 @@ pub fn getsockname(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> 
     Ok(Some((addr, path_len)))
 }
 
+/// A safe wrapper around [`libc::getpeername`].
+///
+/// None will be returned if the socket family is not `AF_UNIX` or the socket is not connected.
+///
+/// See: `man getpeername`
+pub fn getpeername(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> {
+    let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
+    let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+
+    // SAFETY: The address buffer pointer is guaranteed to reference valid
+    //         memory that has been zeroed out.  This ensures that the any
+    //         strings contained in the buffer will be valid null-terminated
+    //         C strings.  The return value is checked and wrapped in a
+    //         LibcResult.
+    libc_result_from_int(unsafe {
+        libc::getpeername(fd, addr.as_mut_ptr().cast(), &mut addr_len)
+    })?;
+
+    // SAFETY: The memory had been zero initialized before `libc::getpeername`
+    //         filled in any relevant data.  All strings should be valid C
+    //         strings.
+    let addr = unsafe { addr.assume_init() };
+
+    debug_assert!(addr_len <= std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
+
+    if addr_len as usize == std::mem::size_of::<libc::sa_family_t>() {
+        return Ok(None);
+    }
+
+    if addr.sun_family != libc::AF_UNIX as u16 {
+        return Ok(None);
+    }
+
+    let path_len = addr_len as usize - offset_of!(libc::sockaddr_un, sun_path);
+
+    Ok(Some((addr, path_len)))
+}
+
 /// A safe wrapper around [`libc::getuid`].
 ///
 /// See: `man getuid`

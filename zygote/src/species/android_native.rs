@@ -34,6 +34,12 @@ use zygote_sys::{self as sys, AsCStr};
 
 const AID_APP_START: i32 = 10000;
 
+const LOGD_SOCKET_PATH: &str = "/dev/socket/logdw";
+const PMSG_FILE_PATH: &str = "/dev/pmsg0";
+
+static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[LOGD_SOCKET_PATH];
+static ALLOWED_FILE_PATHS: &[&str] = &[PMSG_FILE_PATH];
+
 /// Re-initialization data for AndroidNative applications
 pub struct ReInitData {
     fds_error_level: android::process::FDSanErrorLevel,
@@ -49,6 +55,10 @@ impl Species for App {
 
     fn bound_socket_path_is_allowed(&self, _path: &str) -> bool {
         false
+    }
+
+    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
+        ALLOWED_PEER_SOCKET_PATHS.contains(&path)
     }
 
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
@@ -68,8 +78,16 @@ impl Species for App {
         )
     }
 
-    fn file_is_allowed(&self, _path: &CStr) -> bool {
-        false
+    fn file_is_allowed(&self, path: &CStr) -> bool {
+        ALLOWED_FILE_PATHS.contains(&path.to_str().unwrap())
+    }
+
+    fn sync_fd_state(&self) {
+        // We need to call `__android_log_close` to sync the internal state of LogdSocket even if
+        // close(2) is already called on the file descriptor.
+        // c.f. https://cs.android.com/android/platform/superproject/main/+/main:system/logging/liblog/logd_writer.cpp;l=57
+        #[cfg(target_os = "android")]
+        sys::android::log_close();
     }
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
@@ -115,8 +133,11 @@ impl Species for App {
         };
     }
 
-    fn get_file_action(&self, _path: &CStr) -> Option<Action> {
-        None
+    fn get_file_action(&self, path: &CStr) -> Option<Action> {
+        match path.to_str().unwrap() {
+            PMSG_FILE_PATH => Some(Action::DupeNull),
+            _ => None,
+        }
     }
 
     fn re_initialize_epilogue(

@@ -157,6 +157,10 @@ impl Server {
         //     return information about signals queued to the child."
         registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies);
 
+        // Register any unregistered file descriptors such as those used for logging.
+        registry.register_new();
+        registry.audit().unwrap();
+
         let server = Self {
             name: config.name.clone(),
             species: config.species,
@@ -203,23 +207,18 @@ impl Server {
 
     /// Tailor the Server instance for the subspecies.
     fn re_initialize_as_subspecies(&mut self, child_socket_path: String) {
+        self.registry.reset_for_subspecies();
+
         let (child_socket_fd, child_socket_path) =
             Self::get_server_socket(child_socket_path).unwrap();
+        self.registry.register(child_socket_fd, file_descriptors::Action::Close);
 
-        if let Some(path) = &self.server_socket_path {
-            std::fs::remove_file(path).unwrap();
-        }
-
-        // TODO: We should call `self.registry.register_new()` to reflect FDs
-        // opened by app's preload routine. Handle this after the bug
-        // in `FileDescriptorRegister::audit()` (b/457960847) is fixed.
-        self.registry.execute_actions(ForkType::Subspecies);
         // All the RawFds of client sockets are closed in the
-        // `execute_actions()` call above and they are stateless, thus clear the
-        // client_sockets.
+        // `reset_for_subspecies()` call above and they are stateless, thus
+        // clear the client_sockets.
         self.client_sockets.clear();
         // The server RawFd is also already closed in
-        // `execute_actions()`, so replace with a new one.
+        // `reset_for_subspecies()`, so replace with a new one.
         self.server_socket = child_socket_fd;
         self.server_socket_path = child_socket_path;
 
