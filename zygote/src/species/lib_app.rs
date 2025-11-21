@@ -17,7 +17,8 @@
 //! load, and enter a shared library that correctly define the `zygote_entry`
 //! function.
 
-use core::ffi::CStr;
+use core::ffi::{c_char, c_int, CStr};
+use std::ffi::CString;
 
 use libloading::os::unix::{Library, Symbol, RTLD_GLOBAL, RTLD_NOW};
 use log::{error, info, warn};
@@ -48,27 +49,22 @@ impl Species for App {
         false
     }
 
-    fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
-        super::ReInitWrapper::LibApp
-    }
-
-    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
-        matches!(message, SpawnPayload::LibApp { .. })
-    }
-
     fn file_is_allowed(&self, _path: &CStr) -> bool {
         false
     }
 
-    fn sync_fd_state(&self) {
-        // Nothing to do here
+    fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
+        super::ReInitWrapper::LibApp
     }
 
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::LibApp { path, args } = spawn_payload {
             let library_path = std::path::Path::new(path);
 
-            let library_args = args.iter().map(|arg| (*arg).to_owned()).collect();
+            let cstring_args: Vec<CString> =
+                args.iter().map(|arg: &&str| CString::new(arg.as_bytes()).unwrap()).collect();
+            let library_args: Vec<*const c_char> =
+                cstring_args.iter().map(|arg: &CString| arg.as_ptr()).collect();
 
             if !library_path.exists() {
                 error!("No library found at the specified path: {}", library_path.display());
@@ -88,7 +84,7 @@ impl Species for App {
                 });
 
             info!("Successfully loaded shared library");
-            let entry_function: Symbol<unsafe fn(Vec<String>) -> i32> =
+            let entry_function: Symbol<unsafe extern "C" fn(c_int, *const *const c_char) -> c_int> =
                 // SAFETY: The symbol name is part of the API for LibApps.
                 unsafe { library.get(ENTRY_SYMBOL_NAME.to_bytes()) }.unwrap_or_else(|err| {
                     error!("Symbol `zygote_entry` not found in shared library: {err}");
@@ -107,15 +103,14 @@ impl Species for App {
             //         improper signature will result in undefined behavior.  From
             //         this point forward the library may execute arbitrary code.
             unsafe {
-                std::process::exit(entry_function(library_args));
+                std::process::exit(entry_function(
+                    library_args.len() as c_int,
+                    library_args.as_ptr(),
+                ));
             }
         } else {
             panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
-    }
-
-    fn speciate(&self, _payload: &SpawnPayload) {
-        // Nothing to do here
     }
 
     fn get_file_action(&self, _path: &CStr) -> Option<Action> {
@@ -124,6 +119,10 @@ impl Species for App {
 
     fn get_peer_socket_action(&self, _path: &str) -> Option<Action> {
         None
+    }
+
+    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
+        matches!(message, SpawnPayload::LibApp { .. })
     }
 
     fn re_initialize_epilogue(
@@ -143,6 +142,14 @@ impl Species for App {
     }
 
     fn set_seccomp_filters(&self, _spawn_params: &SpawnParamsCommon, _payload: &SpawnPayload) {
+        // Nothing to do here
+    }
+
+    fn speciate(&self, _payload: &SpawnPayload) {
+        // Nothing to do here
+    }
+
+    fn sync_fd_state(&self) {
         // Nothing to do here
     }
 
