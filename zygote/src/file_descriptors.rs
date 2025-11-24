@@ -341,8 +341,8 @@ impl FileDescriptorEntry {
                     offset,
                     ..
                 } => {
-                    let new_fd =
-                        sys::open(path.as_cstr().unwrap(), *fs_flags_open).unwrap_or_else(|_| {
+                    let new_fd = sys::open(path.as_cstr().unwrap(), *fs_flags_open, None)
+                        .unwrap_or_else(|_| {
                             panic!(
                                 "Failed to open new file descriptor to existing path: {:?}",
                                 path.as_cstr()
@@ -531,7 +531,7 @@ impl FileDescriptorRegistry {
     pub fn execute_actions(&mut self, fork_type: ForkType) {
         debug_assert_single_threaded();
 
-        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC).unwrap();
+        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None).unwrap();
 
         self.data.retain(|entry| {
             let closed = entry.execute(dev_null_fd, fork_type);
