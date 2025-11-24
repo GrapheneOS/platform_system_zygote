@@ -35,6 +35,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
 use itertools::{EitherOrBoth, Itertools};
+use log::info;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -62,6 +63,8 @@ static ALLOWED_FILE_PATHS: &[&str] = &[DEV_NULL_PATH, DEV_URANDOM_PATH];
 
 /// Socket paths used by the Zygote that are allowed to be registered
 static ALLOWED_SOCKET_PATHS: &[&str] = &[];
+/// Peer socket paths that the Zygote is allowed to connect to
+static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[];
 
 #[derive(Eq, PartialEq)]
 enum SocketAddress {
@@ -92,6 +95,7 @@ impl AsRef<str> for SocketAddress {
 #[derive(Eq, PartialEq)]
 enum FileDescriptorInfo {
     BoundSocket(SocketAddress),
+    ConnectedSocket(SocketAddress),
     Fifo,
     File {
         dev: u64,
@@ -111,6 +115,7 @@ impl fmt::Display for FileDescriptorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BoundSocket(address) => write!(f, "Bound Socket ({address})"),
+            Self::ConnectedSocket(address) => write!(f, "Connected Socket ({address})"),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
             Self::SignalFd => write!(f, "SignalFD"),
@@ -210,24 +215,35 @@ impl FileDescriptorInfo {
     /// Get the socket name and parse it into either a Abstract or Bound
     /// SocketInfo struct.
     fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
-        let Some((addr, path_len)) = sys::getsockname(fd)? else {
-            bail!("The socket family is not AF_UNIX or the socket is unbound");
-        };
-        let sun_bytes: &[u8] = &addr.sun_path.as_bytes()[..path_len];
-        let address = match sun_bytes {
-            [0, text @ ..] => SocketAddress::Abstract(
+        match sys::getsockname(fd)? {
+            Some((addr, path_len)) => {
+                let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
+                let socket_address = Self::get_socket_address(sun_bytes)?;
+                Ok(FileDescriptorInfo::BoundSocket(socket_address))
+            }
+            None => {
+                let (addr, path_len) = sys::getpeername(fd)?.unwrap();
+                let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
+                let socket_address = Self::get_socket_address(sun_bytes)?;
+                Ok(FileDescriptorInfo::ConnectedSocket(socket_address))
+            }
+        }
+    }
+
+    fn get_socket_address(sun_bytes: &[u8]) -> Result<SocketAddress> {
+        match sun_bytes {
+            [0, text @ ..] => Ok(SocketAddress::Abstract(
                 // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
                 // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
                 // paths.
                 ArrayString::from(std::str::from_utf8(text)?).unwrap(),
-            ),
-            text => SocketAddress::Path(
+            )),
+            text => Ok(SocketAddress::Path(
                 // getsockname() on bound sockets always return NUL-terminated names, so use
                 // from_bytes_with_nul() to truncated that here.
                 ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).unwrap(),
-            ),
-        };
-        Ok(FileDescriptorInfo::BoundSocket(address))
+            )),
+        }
     }
 }
 
@@ -241,6 +257,9 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
 
     match FileDescriptorInfo::try_from(fd).unwrap() {
         FileDescriptorInfo::BoundSocket(address) => {
+            assert_eq!(address.as_ref(), target)
+        }
+        FileDescriptorInfo::ConnectedSocket(address) => {
             assert_eq!(address.as_ref(), target)
         }
         FileDescriptorInfo::File { path, .. } => {
@@ -391,6 +410,7 @@ pub struct FileDescriptorRegistry {
     allowed_file_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
     allowed_socket_names: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
     allowed_socket_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
+    allowed_peer_socket_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
 }
 
 impl FileDescriptorRegistry {
@@ -403,6 +423,7 @@ impl FileDescriptorRegistry {
             allowed_file_paths: ArrayVec::new(),
             allowed_socket_names: ArrayVec::new(),
             allowed_socket_paths: ArrayVec::new(),
+            allowed_peer_socket_paths: ArrayVec::new(),
         };
 
         // Register the stdio file descriptors
@@ -411,6 +432,20 @@ impl FileDescriptorRegistry {
         registry.register(2, Action::Ignore);
 
         registry
+    }
+
+    /// Reset the registry after spawning a subspecies process.
+    pub fn reset_for_subspecies(&mut self) {
+        self.execute_actions(ForkType::Subspecies);
+
+        self.species.sync_fd_state();
+        // This line needs to come after calling [`sys::android::log_close`],
+        // which is done in [`sync_fd_state`], so that it will open new file
+        // descriptors for logging.
+        info!("Resetting FileDescriptorRegistry for subspecies");
+        // Register FDs opened by the app's preload rountine.
+        self.register_new();
+        self.audit().unwrap();
     }
 
     /// Queries the Zygote and species abstract socket allow lists
@@ -483,6 +518,13 @@ impl FileDescriptorRegistry {
             || self.species.bound_socket_path_is_allowed(path)
     }
 
+    /// Queries the Zygote and species peer socket path allow lists
+    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
+        ALLOWED_PEER_SOCKET_PATHS.contains(&path)
+            || self.allowed_peer_socket_paths.contains(&path.to_owned())
+            || self.species.peer_socket_path_is_allowed(path)
+    }
+
     /// Iterate through the registry and perform all Close,
     /// CloseUnlessSpawnSubspecies, DupeNull, and Reopen actions. This should be
     /// performed immediately after a fork event.
@@ -529,6 +571,8 @@ impl FileDescriptorRegistry {
         for entry in &mut self.data {
             entry.override_and_close();
         }
+
+        self.species.sync_fd_state();
     }
 
     /// Adds a file descriptor to the registry and associates it with the
@@ -597,6 +641,14 @@ impl FileDescriptorRegistry {
                 }
                 FileDescriptorInfo::BoundSocket(address) => {
                     panic!("Bound socket not found in allow list ({fd}): {address}");
+                }
+                FileDescriptorInfo::ConnectedSocket(SocketAddress::Path(ref path))
+                    if self.peer_socket_path_is_allowed(path) =>
+                {
+                    Action::DupeNull
+                }
+                FileDescriptorInfo::ConnectedSocket(address) => {
+                    panic!("Unregistered connected socket found ({fd}): {address}");
                 }
                 FileDescriptorInfo::Fifo => {
                     panic!("Unregistered FIFO fd found: {fd}");

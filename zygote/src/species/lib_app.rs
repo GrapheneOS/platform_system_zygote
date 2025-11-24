@@ -44,6 +44,10 @@ impl Species for App {
         false
     }
 
+    fn peer_socket_path_is_allowed(&self, _path: &str) -> bool {
+        false
+    }
+
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
         super::ReInitWrapper::LibApp
     }
@@ -54,6 +58,10 @@ impl Species for App {
 
     fn file_is_allowed(&self, _path: &CStr) -> bool {
         false
+    }
+
+    fn sync_fd_state(&self) {
+        // Nothing to do here
     }
 
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
