@@ -537,6 +537,8 @@ impl FileDescriptorRegistry {
             let closed = entry.execute(dev_null_fd, fork_type);
             !closed
         });
+
+        self.species.sync_fd_state();
     }
 
     /// Queries the Zygote and species allowed files lists.
@@ -645,7 +647,7 @@ impl FileDescriptorRegistry {
                 FileDescriptorInfo::ConnectedSocket(SocketAddress::Path(ref path))
                     if self.peer_socket_path_is_allowed(path) =>
                 {
-                    Action::DupeNull
+                    self.species.get_peer_socket_action(path).unwrap_or(Action::DupeNull)
                 }
                 FileDescriptorInfo::ConnectedSocket(address) => {
                     panic!("Unregistered connected socket found ({fd}): {address}");

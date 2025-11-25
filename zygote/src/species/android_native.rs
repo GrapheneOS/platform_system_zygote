@@ -133,9 +133,16 @@ impl Species for App {
         };
     }
 
+    fn get_peer_socket_action(&self, path: &str) -> Option<Action> {
+        match path {
+            LOGD_SOCKET_PATH => Some(Action::Close),
+            _ => None,
+        }
+    }
+
     fn get_file_action(&self, path: &CStr) -> Option<Action> {
         match path.to_str().unwrap() {
-            PMSG_FILE_PATH => Some(Action::DupeNull),
+            PMSG_FILE_PATH => Some(Action::Close),
             _ => None,
         }
     }

@@ -99,6 +99,8 @@ pub trait Species {
     fn speciate(&self, payload: &SpawnPayload);
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
+    /// Returns the default action for the given path to a connected socket
+    fn get_peer_socket_action(&self, path: &str) -> Option<crate::file_descriptors::Action>;
     /// Child-process re-initialization logic that runs before the rest of the
     /// code in [`child_process::re_initialize`]
     fn re_initialize_epilogue(
