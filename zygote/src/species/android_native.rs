@@ -83,8 +83,8 @@ impl Species for App {
     }
 
     fn sync_fd_state(&self) {
-        // We need to call `__android_log_close` to sync the internal state of LogdSocket even if
-        // close(2) is already called on the file descriptor.
+        // We need to call `__android_log_close` to close the logger FDs to sync the internal state
+        // of LogdSocket.
         // c.f. https://cs.android.com/android/platform/superproject/main/+/main:system/logging/liblog/logd_writer.cpp;l=57
         #[cfg(target_os = "android")]
         sys::android::log_close();
@@ -135,14 +135,16 @@ impl Species for App {
 
     fn get_peer_socket_action(&self, path: &str) -> Option<Action> {
         match path {
-            LOGD_SOCKET_PATH => Some(Action::Close),
+            // logger FDs will be closed in `sync_fd_state`
+            LOGD_SOCKET_PATH => Some(Action::Ignore),
             _ => None,
         }
     }
 
     fn get_file_action(&self, path: &CStr) -> Option<Action> {
         match path.to_str().unwrap() {
-            PMSG_FILE_PATH => Some(Action::Close),
+            // logger FDs will be closed in `sync_fd_state`
+            PMSG_FILE_PATH => Some(Action::Ignore),
             _ => None,
         }
     }
