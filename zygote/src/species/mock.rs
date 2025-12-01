@@ -91,6 +91,10 @@ impl Species for Turtle {
         None
     }
 
+    fn get_peer_socket_action(&self, _path: &str) -> Option<Action> {
+        None
+    }
+
     fn re_initialize_epilogue(
         &self,
         _spawn_params: &SpawnParamsCommon,
