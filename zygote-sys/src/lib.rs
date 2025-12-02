@@ -16,7 +16,7 @@
 //! This module provides safe wrappers around unsafe libc calls.
 
 use core::{
-    ffi::{c_char, c_int, c_short, c_void, CStr},
+    ffi::{c_char, c_int, c_short, c_uint, c_void, CStr},
     mem::{self, offset_of},
 };
 use std::{
@@ -572,6 +572,55 @@ impl Drop for EffectiveIdContext {
     }
 }
 
+/// Build a buffer-allocated NUL-terminated representation of a string
+pub fn build_nul_terminated_string(str_in: &str) -> Result<CStringBuffer> {
+    if str_in.len() >= BUFFER_SIZE_STRINGS {
+        bail!("String is too long");
+    }
+
+    let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
+    buffer[..str_in.len()].copy_from_slice(str_in.as_bytes());
+
+    Ok(buffer)
+}
+
+/// Generate a random fixed-length lowercase filename
+pub fn random_filename<const N: usize>() -> [u8; N] {
+    let mut buffer: [u8; N] = [0; N];
+    for byte in buffer.iter_mut() {
+        *byte = rand::random_range(97u8..=122u8);
+    }
+
+    buffer
+}
+
+/// Test to see if the current process can write to a path
+pub fn have_write_permissions(path: &std::path::Path) -> Result<bool> {
+    let test_path = if path.exists() && path.is_dir() {
+        path.join(str::from_utf8(&random_filename::<16>()).unwrap())
+    } else {
+        path.to_path_buf()
+    };
+
+    let preexisting_path = test_path.exists();
+    let path_buffer =
+        build_nul_terminated_string(test_path.to_str().unwrap()).map_err(|_| Errno { code: 0 })?;
+    let open_result =
+        open(path_buffer.as_cstr().unwrap(), libc::O_CREAT | libc::O_WRONLY, Some(0o600));
+
+    match open_result {
+        Ok(fd) => {
+            close(fd)?;
+            if !preexisting_path {
+                unlink(path_buffer.as_cstr().unwrap())?;
+            }
+            Ok(true)
+        }
+        Err(Errno { code: libc::EACCES }) => Ok(false),
+        Err(errno) => Err(errno.into()),
+    }
+}
+
 /*
  * Libc wrappers
  */
@@ -1020,10 +1069,12 @@ pub fn mallopt(cmd: c_int, arg: c_int) -> LibcResult<()> {
 /// A safe wrapper around [`libc::open`].
 ///
 /// See: `man open`
-pub fn open(path: &CStr, flags: c_int) -> LibcResult<RawFd> {
+pub fn open(path: &CStr, flags: c_int, mode: Option<libc::mode_t>) -> LibcResult<RawFd> {
     // SAFETY: Path points to a valid, null-terminated C string and the return
     //         value is checked and wrapped in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe { libc::open(path.as_ptr().cast(), flags) }))
+    retry_eintr!(libc_result_from_int(unsafe {
+        libc::open(path.as_ptr().cast(), flags, mode.unwrap_or(0) as c_uint)
+    }))
 }
 
 /// A safe wrapper around [`libc::opendir`].
@@ -1373,6 +1424,15 @@ pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
     //         by `libc::socket`.  The return value is checked and wrapped in
     //         a LibcResult.
     libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
+}
+
+/// A safe wrapper around [`libc::unlink`].
+///
+/// See: `man 2 unlink`
+pub fn unlink(path: &CStr) -> LibcResult<()> {
+    // SAFETY: Path points to a valid, null-terminated C string and the return
+    //         value is checked and wrapped in a LibcResult.
+    libc_result_from_int_with_void(unsafe { libc::unlink(path.as_ptr()) })
 }
 
 /// The status of a waited-for child process.

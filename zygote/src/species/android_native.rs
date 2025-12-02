@@ -16,9 +16,10 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use core::ffi::CStr;
-use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
+
 use rustutils::android;
 
+use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use processgroup::{
     processgroup::drop_task_profiles_resource_caching,
     sched::{cpusets_enabled, SchedPolicy},
@@ -69,6 +70,10 @@ impl Species for App {
             // SAFETY: This is called in a single-threaded context
             fds_error_level: unsafe { android::process::fdsan_get_error_level() },
         })
+    }
+
+    fn get_socket_env_var_prefix(&self) -> &'static str {
+        "ANDROID_SOCKET_"
     }
 
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {

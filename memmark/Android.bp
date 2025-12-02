@@ -17,7 +17,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-rust_library {
+rust_ffi_shared {
     name: "libmemmark",
     crate_name: "memmark",
     host_supported: true,
@@ -25,10 +25,4 @@ rust_library {
     srcs: [
         "src/lib.rs",
     ],
-    shared: {
-        enabled: true,
-        srcs: [
-            "src/lib.rs",
-        ],
-    },
 }

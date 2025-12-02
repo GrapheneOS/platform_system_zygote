@@ -16,23 +16,21 @@
 //! This module provides classes and functions for configuring a Zygote
 //! process.
 
-use std::env;
-use std::str::FromStr;
+use std::{path::Path, str::FromStr};
 
 use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use clap::Parser;
 use log::LevelFilter;
 
-use crate::species::{SpeciesRef, SpeciesTag};
+use crate::species::SpeciesRef;
 use zygote_messages::{
     Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
 };
+use zygote_sys::have_write_permissions;
 
-/// Prefix for the environment variable used by init to pass sockets in Android
-const ANDROID_SOCKET_ENV_PREFIX: &str = "ANDROID_SOCKET_";
-/// Path to location of system sockets on Android
-const ANDROID_SOCKET_DIR: &str = "/dev/socket";
+const SOCKET_DIR_DEV: &str = "/dev/socket";
+const SOCKET_DIR_TMP: &str = "/tmp/socket";
 
 /// Configuration values used by the Zygote command line interface.  This API
 /// is temporary as the message types evolve.
@@ -156,11 +154,11 @@ pub struct Server {
 
     /// A string representing a valid server socket FD or a location to bind a
     /// new socket.
-    ///
-    /// When --species=android-native-app is used and this is unspecified, the
-    /// value can be looked up using the following fallback values:
-    /// - environment variable named ANDROID_SOCKET_<name>
-    /// - the path /dev/socket/<name>
+    //
+    // When left unspecified, the name will be resolved as follows:
+    // - environment variable named `ANDROID_SOCKET_<name>` (for AndroidNative)
+    // - environment variable named `ZYGOTE_SOCKET_<name>` (for all other species)
+    // - the path `/dev/socket/<name>`
     #[arg(long)]
     pub socket: Option<String>,
 
@@ -200,21 +198,20 @@ pub struct Server {
 }
 
 impl Server {
+    fn get_socket_dir(&self) -> &'static str {
+        if have_write_permissions(Path::new(SOCKET_DIR_DEV)).unwrap() {
+            SOCKET_DIR_DEV
+        } else {
+            SOCKET_DIR_TMP
+        }
+    }
+
     /// Possibly use configuration and environment data to synthesize a socket path.
     pub fn resolve_socket(&self) -> Option<String> {
-        if self.species.tag() == SpeciesTag::AndroidNative {
-            if let Some(socket_from_config) = self.socket.as_ref() {
-                Some(socket_from_config.clone())
-            } else if let Ok(socket_from_env) =
-                env::var(format!("{}{}", ANDROID_SOCKET_ENV_PREFIX, self.name))
-            {
-                Some(socket_from_env)
-            } else {
-                Some(format!("{}/{}", ANDROID_SOCKET_DIR, self.name))
-            }
-        } else {
-            self.socket.to_owned()
-        }
+        self.socket
+            .clone()
+            .or_else(|| self.species.get_socket_env_var(&self.name))
+            .or_else(|| Some(format!("{}/{}", self.get_socket_dir(), self.name)))
     }
 
     /// Generate spawn parameters from a Server configuration

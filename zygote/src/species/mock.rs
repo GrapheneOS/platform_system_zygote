@@ -54,20 +54,16 @@ impl Species for Turtle {
         ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
-    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
-        ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
+    fn file_is_allowed(&self, path_str: &CStr) -> bool {
+        ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
     }
 
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
         super::ReInitWrapper::Mock
     }
 
-    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
-        matches!(message, SpawnPayload::Mock { .. })
-    }
-
-    fn file_is_allowed(&self, path_str: &CStr) -> bool {
-        ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
+    fn get_file_action(&self, _path: &CStr) -> Option<Action> {
+        None
     }
 
     fn sync_fd_state(&self) {
@@ -83,12 +79,12 @@ impl Species for Turtle {
         }
     }
 
-    fn speciate(&self, _payload: &SpawnPayload) {
-        // Nothing to do here
+    fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
+        matches!(message, SpawnPayload::Mock { .. })
     }
 
-    fn get_file_action(&self, _path: &CStr) -> Option<Action> {
-        None
+    fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
+        ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
     }
 
     fn get_peer_socket_action(&self, _path: &str) -> Option<Action> {
@@ -108,6 +104,10 @@ impl Species for Turtle {
         _spawn_params: &SpawnParamsCommon,
         _re_init_data: &super::ReInitWrapper,
     ) {
+        // Nothing to do here
+    }
+
+    fn speciate(&self, _payload: &SpawnPayload) {
         // Nothing to do here
     }
 
