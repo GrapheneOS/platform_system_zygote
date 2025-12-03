@@ -15,9 +15,9 @@
 
 //! Implementation of the Species trait for Android Native Applications.
 
-use core::ffi::CStr;
-
+use core::ffi::{c_int, CStr};
 use rustutils::android;
+use std::os::unix::net::UnixDatagram;
 
 use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use processgroup::{
@@ -38,8 +38,57 @@ const AID_APP_START: i32 = 10000;
 const LOGD_SOCKET_PATH: &str = "/dev/socket/logdw";
 const PMSG_FILE_PATH: &str = "/dev/pmsg0";
 
-static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[LOGD_SOCKET_PATH];
+/// Path to the socket listened by the AMS to receive the exit status of child processes.
+/// Must be the same path as that in `kSystemServerSockAddr` in core/jni/com_android_internal_os_Zygote.cpp.
+const UNSOLICITED_ZYGOTE_SOCKET_PATH: &str = "/data/system/unsolzygotesocket";
+
+static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[LOGD_SOCKET_PATH, UNSOLICITED_ZYGOTE_SOCKET_PATH];
 static ALLOWED_FILE_PATHS: &[&str] = &[PMSG_FILE_PATH];
+
+// Must be the same as `UnsolicitedZygoteMessageTypes` in core/jni/com_android_internal_os_Zygote.cpp
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum UnsolicitedZygoteMessageTypes {
+    #[allow(dead_code)]
+    Reserved = 0,
+    SigChld = 1,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct UnsolicitedZygoteMessageHeader {
+    pub typ: UnsolicitedZygoteMessageTypes,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct UnsolicitedZygoteMessagePayload {
+    pub pid: libc::pid_t,
+    pub uid: libc::uid_t,
+    pub status: c_int,
+}
+
+/// A struct defining the data format used to notify the exit status of a child process.
+/// Must be the same as `UnsolicitedZygoteMessageSigChld` in core/jni/com_android_internal_os_Zygote.cpp
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct UnsolicitedZygoteMessageSigChld {
+    header: UnsolicitedZygoteMessageHeader,
+    payload: UnsolicitedZygoteMessagePayload,
+}
+
+impl UnsolicitedZygoteMessageSigChld {
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: Passing a pointer to a non-null consective memory region of size
+        // `std::mem::size_of::<UnsolicitedZygoteMessageSigChld>()`.
+        unsafe {
+            std::slice::from_raw_parts(
+                (self as *const UnsolicitedZygoteMessageSigChld) as *const u8,
+                std::mem::size_of::<UnsolicitedZygoteMessageSigChld>(),
+            )
+        }
+    }
+}
 
 /// Re-initialization data for AndroidNative applications
 pub struct ReInitData {
@@ -142,6 +191,7 @@ impl Species for App {
         match path {
             // logger FDs will be closed in `sync_fd_state`
             LOGD_SOCKET_PATH => Some(Action::Ignore),
+            UNSOLICITED_ZYGOTE_SOCKET_PATH => Some(Action::Close),
             _ => None,
         }
     }
@@ -243,6 +293,23 @@ impl Species for App {
             android::system_properties::write("zygote.zygote_next.server_ready", "false")
         {
             log::error!("Failed to set zygote.zygote_next.server_ready: {e}");
+        }
+    }
+
+    fn handle_sigchld(&self, pid: libc::pid_t, uid: libc::uid_t, status: c_int) {
+        if let Ok(sock) = UnixDatagram::unbound()
+            .and_then(|sock| sock.connect(UNSOLICITED_ZYGOTE_SOCKET_PATH).map(|_| sock))
+        {
+            let data = UnsolicitedZygoteMessageSigChld {
+                header: UnsolicitedZygoteMessageHeader {
+                    typ: UnsolicitedZygoteMessageTypes::SigChld,
+                },
+                payload: UnsolicitedZygoteMessagePayload { pid, uid, status },
+            };
+            log::debug!("about to send sigchld status to the unsolicited socket {:?}", data);
+            if let Err(e) = sock.send(data.as_bytes()) {
+                log::error!("Failed to send sigchld status to the unsolicited socket: {e}");
+            }
         }
     }
 }

@@ -432,6 +432,11 @@ impl Server {
                                 );
                                 match sys::waitpid(Some(pid), libc::WNOHANG) {
                                     Ok(Some((ret_pid, status))) if ret_pid == pid => {
+                                        self.species.handle_sigchld(
+                                            pid,
+                                            siginfo.ssi_uid,
+                                            siginfo.ssi_status,
+                                        );
                                         info!(
                                             "Reaped child process {} terminated with {:?}",
                                             pid, status

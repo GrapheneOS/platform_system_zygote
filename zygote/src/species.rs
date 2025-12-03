@@ -17,7 +17,7 @@
 //! creation details, and control flow transfer mechanism utilized by different
 //! clients of the Zygote process server architecture.
 
-use core::ffi::CStr;
+use core::ffi::{c_int, CStr};
 use std::{env, str::FromStr};
 
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
@@ -142,6 +142,9 @@ pub trait Species {
     /// guaranteed to be equal, so this allows for dynamic testing of the
     /// species implementation.
     fn tag(&self) -> SpeciesTag;
+
+    /// Handle a SIGCHLD signal.
+    fn handle_sigchld(&self, _pid: libc::pid_t, _uid: libc::uid_t, _status: c_int) {}
 
     //
     // Helper functions
