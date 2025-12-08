@@ -16,10 +16,23 @@
 //! A library Zygote "application" used to test memory interactions between the
 //! Zygote and its child processes.
 
+use std::ffi::{c_char, c_int, CStr};
+
 /// Entry point for the MemMark Zygote LibApp.
+///
+/// # Safety
+/// The caller must ensure that `argc` and `argv` are valid and can be passed
+/// to `std::slice::from_raw_parts`.
 #[unsafe(no_mangle)]
-pub fn zygote_entry(args: Vec<String>) -> i32 {
+pub unsafe extern "C" fn zygote_entry(argc: c_int, argv: *const *const c_char) -> c_int {
     println!("Hello from MemMark!");
+
+    // SAFETY: The correctness of these arguments is the responsibility of the
+    //         LibApp Zygote species
+    let args: Vec<&CStr> = unsafe { std::slice::from_raw_parts(argv, argc as usize) }
+        .iter()
+        .map(|arg| unsafe { CStr::from_ptr(*arg) })
+        .collect();
 
     println!("Arguments: {args:?}");
 

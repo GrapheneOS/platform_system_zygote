@@ -16,11 +16,12 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use core::ffi::CStr;
-use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
+
 use rustutils::android;
 
+use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use processgroup::{
-    processgroup::drop_task_profiles_resource_caching,
+    processgroup::{cgroup, drop_task_profiles_resource_caching},
     sched::{cpusets_enabled, SchedPolicy},
 };
 
@@ -71,6 +72,10 @@ impl Species for App {
         })
     }
 
+    fn get_socket_env_var_prefix(&self) -> &'static str {
+        "ANDROID_SOCKET_"
+    }
+
     fn is_spawn_payload_type(&self, message: &messages::SpawnPayload) -> bool {
         matches!(
             message,
@@ -113,6 +118,9 @@ impl Species for App {
             library_path,
             library_dirs,
             permitted_library_paths,
+            shared,
+            zip_path,
+            native_shared_lib_path,
             preload_func,
             uid_gid_min,
             uid_gid_max,
@@ -129,7 +137,16 @@ impl Species for App {
         //         the `preload_func` has the correct signature (takes no arguments, returns
         //         nothing).
         unsafe {
-            preload_lib(library_path, library_dirs, permitted_library_paths, *preload_func);
+            preload_lib(
+                library_path,
+                library_dirs,
+                permitted_library_paths,
+                *target_sdk_version,
+                *shared,
+                zip_path,
+                native_shared_lib_path,
+                *preload_func,
+            );
         };
     }
 
@@ -175,7 +192,7 @@ impl Species for App {
 
     fn re_initialize_prologue(
         &self,
-        _spawn_params: &SpawnParamsCommon,
+        spawn_params: &SpawnParamsCommon,
         re_init_data: &super::ReInitWrapper,
     ) {
         debug_assert_single_threaded();
@@ -193,6 +210,15 @@ impl Species for App {
 
         if let Err(errno) = sys::mallopt(libc::M_DECAY_TIME, 1) {
             log::error!("Failed to mallopt(M_DECAY_TIME): {errno}");
+        }
+
+        // Create a cgroup for the process
+        if sys::getuid() == 0 {
+            cgroup::create(
+                spawn_params.uid.expect("No UID specified").try_into().unwrap(),
+                sys::getpid(),
+            )
+            .expect("Unable to create cgroup for process");
         }
 
         // Set the cpuset policy and panic on failure

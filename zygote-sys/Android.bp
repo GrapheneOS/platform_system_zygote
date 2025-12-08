@@ -24,6 +24,7 @@ rust_library {
         "libanyhow",
         "libarrayvec",
         "liblibc",
+        "librand",
         "libstatic_assertions",
         "libzerocopy",
     ],

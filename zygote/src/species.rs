@@ -18,7 +18,7 @@
 //! clients of the Zygote process server architecture.
 
 use core::ffi::CStr;
-use std::str::FromStr;
+use std::{env, str::FromStr};
 
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
 
@@ -77,50 +77,32 @@ pub(crate) const fn socket_entry(
 pub trait Species {
     /// Returns true if a bound abstract socket name is allowed to be registered
     fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool;
+
     /// Returns true if a bound socket path is allowed to be registered
     fn bound_socket_path_is_allowed(&self, name: &str) -> bool;
-    /// Returns true if a peer socket path is allowed to be registered
-    fn peer_socket_path_is_allowed(&self, name: &str) -> bool;
+
     /// Gather data that will later be used to re-initialize the child process
     fn gather_reinitialization_data(&self) -> ReInitWrapper;
+
+    /// Attempt to fetch the socket FD for the Zygote from the environment
+    fn get_socket_env_var_prefix(&self) -> &'static str {
+        "ZYGOTE_SOCKET_"
+    }
+
     /// Return true if the provided payload is associated with this species
     fn is_spawn_payload_type(&self, message: &SpawnPayload) -> bool;
-    /// Returns the name of the species
-    fn name(&self) -> &'static str {
-        self.tag().name()
-    }
+
     /// Returns true if the file is allowed to be registered
     fn file_is_allowed(&self, path: &CStr) -> bool;
-    /// Syncs the internal state of file descriptors in libraries like liblog.
-    fn sync_fd_state(&self);
+
     /// Take over control flow for the new process
     fn gestate(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> !;
-    /// Perform post-fork work in the new child zygote process
-    fn speciate(&self, payload: &SpawnPayload);
+
     /// Returns the default action for a given file path
     fn get_file_action(&self, path: &CStr) -> Option<crate::file_descriptors::Action>;
+
     /// Returns the default action for the given path to a connected socket
     fn get_peer_socket_action(&self, path: &str) -> Option<crate::file_descriptors::Action>;
-    /// Child-process re-initialization logic that runs before the rest of the
-    /// code in [`child_process::re_initialize`]
-    fn re_initialize_epilogue(
-        &self,
-        spawn_params: &SpawnParamsCommon,
-        re_init_data: &ReInitWrapper,
-    );
-    /// Child-process re-initialization logic that runs before the rest of the
-    /// code in [`child_process::re_initialize`]
-    fn re_initialize_prologue(
-        &self,
-        spawn_params: &SpawnParamsCommon,
-        re_init_data: &ReInitWrapper,
-    );
-    /// A callback for setting SecComp filters
-    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload);
-    /// Get the associated [`SpeciesTag`].  Dyn trait references are not
-    /// guaranteed to be equal, so this allows for dynamic testing of the
-    /// species implementation.
-    fn tag(&self) -> SpeciesTag;
 
     /// A callback called when the zygote server in the parent process is ready.
     fn on_server_ready(&self) {}
@@ -128,7 +110,52 @@ pub trait Species {
     /// A callback called when the zygote server in the parent process is being destroyed.
     fn on_server_destroy(&self) {}
 
+    /// Returns true if a peer socket path is allowed to be registered
+    fn peer_socket_path_is_allowed(&self, name: &str) -> bool;
+
+    /// Child-process re-initialization logic that runs before the rest of the
+    /// code in [`child_process::re_initialize`]
+    fn re_initialize_epilogue(
+        &self,
+        spawn_params: &SpawnParamsCommon,
+        re_init_data: &ReInitWrapper,
+    );
+
+    /// Child-process re-initialization logic that runs before the rest of the
+    /// code in [`child_process::re_initialize`]
+    fn re_initialize_prologue(
+        &self,
+        spawn_params: &SpawnParamsCommon,
+        re_init_data: &ReInitWrapper,
+    );
+
+    /// A callback for setting SecComp filters
+    fn set_seccomp_filters(&self, spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload);
+
+    /// Perform post-fork work in the new child zygote process
+    fn speciate(&self, payload: &SpawnPayload);
+
+    /// Syncs the internal state of file descriptors in libraries like liblog.
+    fn sync_fd_state(&self);
+
+    /// Get the associated [`SpeciesTag`].  Dyn trait references are not
+    /// guaranteed to be equal, so this allows for dynamic testing of the
+    /// species implementation.
+    fn tag(&self) -> SpeciesTag;
+
+    //
     // Helper functions
+    //
+
+    /// Attempt to fetch the socket FD for a given Zygote from the environment
+    fn get_socket_env_var(&self, name: &String) -> Option<String> {
+        env::var(format!("{}{}", self.get_socket_env_var_prefix(), name)).ok()
+    }
+
+    /// Returns the name of the species
+    fn name(&self) -> &'static str {
+        self.tag().name()
+    }
 
     /// A simple test to check of a provided path string is absolute or not.
     fn path_is_absolute(&self, path_str: &str) -> bool {

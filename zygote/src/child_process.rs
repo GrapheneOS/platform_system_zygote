@@ -81,7 +81,7 @@ pub(crate) fn re_initialize(
     if let Some(cap_bound) = spawn_params.cap_bound {
         for flag in cap_bound.complement().iter() {
             let cap = Capability::try_from(flag.bits().trailing_zeros()).unwrap();
-            if cap::cap_within_bound(cap) {
+            if cap::cap_within_bound(cap).unwrap() {
                 cap::cap_drop_bound(cap).unwrap();
             }
         }
