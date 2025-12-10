@@ -1447,10 +1447,10 @@ pub enum WaitStatus {
     /// The child was continued.
     Continued,
     /// The child is a job control stop and has been traced.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     PtraceEvent(c_int),
     /// The child is a job control stop and has been traced.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     PtraceSyscall,
 }
 
@@ -1469,7 +1469,7 @@ impl WaitStatus {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn from_stop_signal(status: c_int) -> Self {
         let stop_signal = libc::WSTOPSIG(status);
         if stop_signal == libc::SIGTRAP | 0x80 {
@@ -1492,7 +1492,7 @@ impl WaitStatus {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
     fn from_stop_signal(status: c_int) -> Self {
         let stop_signal = libc::WSTOPSIG(status);
         WaitStatus::Stopped(stop_signal)
