@@ -652,6 +652,7 @@ impl Server {
         }
     }
 
+    #[allow(unreachable_code)]
     fn handle_message_spawn(
         &mut self,
         fd: RawFd,
