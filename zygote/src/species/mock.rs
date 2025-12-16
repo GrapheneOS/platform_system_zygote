@@ -17,27 +17,27 @@
 
 use core::ffi::CStr;
 
+use itertools::Itertools;
+
 use crate::{
     file_descriptors::Action,
-    species::{
-        file_entry, socket_entry, FileAllowListEntry, SocketAllowListEntry, {Species, SpeciesTag},
-    },
+    species::{AllowListEntry, Species, SpeciesTag},
 };
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 
 #[rustfmt::skip]
-static ALLOWED_FILE_PATHS: [FileAllowListEntry; 1] = [
-    file_entry(crate::test::MOCK_FILE_PATH_1, "testname", "2025-02-19"),
+static ALLOWED_FILE_PATHS: &[AllowListEntry<CStr>] = &[
+    AllowListEntry::new(crate::test::MOCK_FILE_PATH_1, "Test the allowed-paths functionality", "testname", "2025-02-19"),
 ];
 
 #[rustfmt::skip]
-static ALLOWED_SOCKET_NAMES: [SocketAllowListEntry; 1] = [
-    socket_entry(crate::test::SOCKET_NAME_1, "testname", "2025-02-19"),
+static ALLOWED_SOCKET_NAMES: &[AllowListEntry<str>] = &[
+    AllowListEntry::new(crate::test::SOCKET_NAME_1, "Test the allowed-socket-names functionality","testname", "2025-02-19"),
 ];
 
 #[rustfmt::skip]
-static ALLOWED_SOCKET_PATHS: [SocketAllowListEntry; 1] = [
-    socket_entry(crate::test::SOCKET_PATH_1, "testname", "2025-02-19"),
+static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
+    AllowListEntry::new(crate::test::SOCKET_PATH_1, "Test the allowed-socket-paths functionality","testname", "2025-02-19"),
 ];
 
 /// Behaviors for testing the Zygote process server.
@@ -47,15 +47,15 @@ pub struct Turtle;
 
 impl Species for Turtle {
     fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool {
-        ALLOWED_SOCKET_NAMES.iter().any(|entry| entry.data == name)
+        ALLOWED_SOCKET_NAMES.iter().contains(name)
     }
 
     fn bound_socket_path_is_allowed(&self, path: &str) -> bool {
-        ALLOWED_SOCKET_PATHS.iter().any(|entry| entry.data == path)
+        ALLOWED_SOCKET_PATHS.iter().contains(path)
     }
 
-    fn file_is_allowed(&self, path_str: &CStr) -> bool {
-        ALLOWED_FILE_PATHS.iter().any(|entry| entry.data == path_str)
+    fn file_is_allowed(&self, path: &CStr) -> bool {
+        ALLOWED_FILE_PATHS.iter().contains(path)
     }
 
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
@@ -117,5 +117,22 @@ impl Species for Turtle {
 
     fn tag(&self) -> SpeciesTag {
         SpeciesTag::Mock
+    }
+
+    //
+    // Helper functions
+    //
+
+    #[cfg(any(test, feature = "test"))]
+    fn allowlists_are_fresh(&self) -> bool {
+        use crate::species::test::allowlist_entries_are_fresh;
+
+        // Capture results separately to avoid short-circuiting.  We want to
+        // print out all expired entries.
+        let file_path_res = allowlist_entries_are_fresh(ALLOWED_FILE_PATHS.iter());
+        let socket_path_res = allowlist_entries_are_fresh(ALLOWED_SOCKET_PATHS.iter());
+        let socket_name_res = allowlist_entries_are_fresh(ALLOWED_SOCKET_NAMES.iter());
+
+        file_path_res && socket_name_res && socket_path_res
     }
 }
