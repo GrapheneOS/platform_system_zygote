@@ -63,7 +63,7 @@ impl Species for Turtle {
     }
 
     fn get_file_action(&self, path: &CStr) -> Option<FDAction> {
-        ALLOWED_FILE_PATHS.iter().find(|entry| entry.data == path).map(|entry| entry.action.clone())
+        ALLOWED_FILE_PATHS.iter().find(|entry| entry.data == path).map(|entry| entry.action)
     }
 
     fn sync_fd_state(&self) {
@@ -88,10 +88,7 @@ impl Species for Turtle {
     }
 
     fn get_peer_socket_action(&self, path: &str) -> Option<FDAction> {
-        ALLOWED_SOCKET_PATHS
-            .iter()
-            .find(|entry| entry.data == path)
-            .map(|entry| entry.action.clone())
+        ALLOWED_SOCKET_PATHS.iter().find(|entry| entry.data == path).map(|entry| entry.action)
     }
 
     fn re_initialize_epilogue(

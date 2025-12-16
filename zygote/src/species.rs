@@ -58,6 +58,8 @@ impl<T: Debug + ?Sized + 'static> std::borrow::Borrow<T> for &AllowListEntry<T> 
 
 impl<T: Debug + ?Sized + 'static> AllowListEntry<T> {
     /// A constructor for [`FileAllowListEntry`] structs
+    //
+    // Depending on feature selection this function may not be used.
     #[allow(dead_code, unused_variables)]
     pub(crate) const fn new(
         data: &'static T,
@@ -156,9 +158,7 @@ pub trait Species {
     /// Checks for stale entries, printing any that it finds.  Returns true if
     /// all of the entries are fresh.
     #[cfg(any(test, feature = "test"))]
-    fn allowlists_are_fresh(&self) -> bool {
-        true
-    }
+    fn allowlists_are_fresh(&self) -> bool;
 
     /// Attempt to fetch the socket FD for a given Zygote from the environment
     fn get_socket_env_var(&self, name: &String) -> Option<String> {

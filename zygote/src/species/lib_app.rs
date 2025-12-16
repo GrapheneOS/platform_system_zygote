@@ -156,4 +156,13 @@ impl Species for App {
     fn tag(&self) -> SpeciesTag {
         SpeciesTag::LibApp
     }
+
+    //
+    // Helper functions
+    //
+
+    #[cfg(any(test, feature = "test"))]
+    fn allowlists_are_fresh(&self) -> bool {
+        true
+    }
 }
