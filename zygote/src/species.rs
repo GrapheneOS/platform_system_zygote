@@ -22,6 +22,7 @@ use std::{env, fmt::Debug, str::FromStr};
 
 use anyhow::Result;
 
+use crate::file_descriptors;
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
 
 #[cfg(all(target_os = "android", feature = "android-native"))]
@@ -36,6 +37,7 @@ pub mod mock;
 pub(crate) struct AllowListEntry<T: Debug + ?Sized + 'static> {
     /// Path, name, or other data associated with the entry.
     data: &'static T,
+    action: file_descriptors::Action,
 
     /// A brief description of why the path/name is in the allow list.
     #[cfg(any(test, feature = "test"))]
@@ -59,15 +61,16 @@ impl<T: Debug + ?Sized + 'static> AllowListEntry<T> {
     #[allow(dead_code, unused_variables)]
     pub(crate) const fn new(
         data: &'static T,
+        action: file_descriptors::Action,
         reason: &'static str,
         reviewer: &'static str,
         reviewed: &'static str,
     ) -> Self {
         #[cfg(not(any(test, feature = "test")))]
-        return AllowListEntry { data };
+        return AllowListEntry { data, action };
 
         #[cfg(any(test, feature = "test"))]
-        return AllowListEntry { data, reason, reviewer, reviewed };
+        return AllowListEntry { data, action, reason, reviewer, reviewed };
     }
 }
 
