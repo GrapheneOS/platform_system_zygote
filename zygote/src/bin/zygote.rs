@@ -26,6 +26,7 @@ use clap::Parser;
 use zygote::{config, server};
 use zygote_sys as sys;
 
+#[allow(unreachable_code)]
 fn main() -> Result<()> {
     if let Some(thunk) = run_server() {
         thunk();
