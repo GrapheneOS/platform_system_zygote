@@ -33,6 +33,7 @@ use zygote_sys as sys;
 
 const ZYGOTE_CHILD_PROCESS_INITIAL_NAME: &CStr = c"zygote-child";
 
+#[allow(unreachable_code)]
 pub(crate) fn maybe_reset_stack_guards(continuation: impl FnOnce() -> Infallible) -> Infallible {
     #[cfg(target_os = "android")]
     return rustutils::android::process::reset_stack_guards(continuation);
