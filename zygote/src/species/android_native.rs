@@ -16,34 +16,50 @@
 //! Implementation of the Species trait for Android Native Applications.
 
 use core::ffi::{c_int, CStr};
-use rustutils::android;
 use std::os::unix::net::UnixDatagram;
+
+use itertools::Itertools;
 
 use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
 use processgroup::{
     processgroup::{cgroup, drop_task_profiles_resource_caching},
     sched::{cpusets_enabled, SchedPolicy},
 };
+use rustutils::android;
 
 use crate::{
-    file_descriptors::Action,
+    file_descriptors::Action as FDAction,
     introspection::debug_assert_single_threaded,
-    species::{Species, SpeciesTag},
+    species::{AllowListEntry, Species, SpeciesTag},
 };
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 use zygote_sys::{self as sys, AsCStr};
 
 const AID_APP_START: i32 = 10000;
 
-const LOGD_SOCKET_PATH: &str = "/dev/socket/logdw";
-const PMSG_FILE_PATH: &str = "/dev/pmsg0";
+static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
+    // logger FDs will be closed in `sync_fd_state`
+    AllowListEntry::new("/dev/socket/logdw", FDAction::Ignore, "Logging", "hattorij", "2025-11-12"),
+    AllowListEntry::new(
+        UNSOLICITED_ZYGOTE_SOCKET_PATH,
+        FDAction::Close,
+        "Report child process exit status to AMS",
+        "chibar",
+        "2025-12-03",
+    ),
+];
 
-/// Path to the socket listened by the AMS to receive the exit status of child processes.
-/// Must be the same path as that in `kSystemServerSockAddr` in core/jni/com_android_internal_os_Zygote.cpp.
+static ALLOWED_FILE_PATHS: &[AllowListEntry<CStr>] = &[
+    // logger FDs will be closed in `sync_fd_state`
+    AllowListEntry::new(c"/dev/pmsg0", FDAction::Ignore, "Logging", "hattorij", "2025-11-12"),
+];
+
+/// Path to the socket listened by the AMS to receive the exit status of child
+/// processes.
+///
+/// Must be the same path as that in `kSystemServerSockAddr` in
+/// core/jni/com_android_internal_os_Zygote.cpp.
 const UNSOLICITED_ZYGOTE_SOCKET_PATH: &str = "/data/system/unsolzygotesocket";
-
-static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[LOGD_SOCKET_PATH, UNSOLICITED_ZYGOTE_SOCKET_PATH];
-static ALLOWED_FILE_PATHS: &[&str] = &[PMSG_FILE_PATH];
 
 // Must be the same as `UnsolicitedZygoteMessageTypes` in core/jni/com_android_internal_os_Zygote.cpp
 #[repr(u32)]
@@ -108,7 +124,7 @@ impl Species for App {
     }
 
     fn peer_socket_path_is_allowed(&self, path: &str) -> bool {
-        ALLOWED_PEER_SOCKET_PATHS.contains(&path)
+        ALLOWED_SOCKET_PATHS.iter().contains(path)
     }
 
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
@@ -133,7 +149,7 @@ impl Species for App {
     }
 
     fn file_is_allowed(&self, path: &CStr) -> bool {
-        ALLOWED_FILE_PATHS.contains(&path.to_str().unwrap())
+        ALLOWED_FILE_PATHS.iter().contains(path)
     }
 
     fn sync_fd_state(&self) {
@@ -199,21 +215,12 @@ impl Species for App {
         };
     }
 
-    fn get_peer_socket_action(&self, path: &str) -> Option<Action> {
-        match path {
-            // logger FDs will be closed in `sync_fd_state`
-            LOGD_SOCKET_PATH => Some(Action::Ignore),
-            UNSOLICITED_ZYGOTE_SOCKET_PATH => Some(Action::Close),
-            _ => None,
-        }
+    fn get_peer_socket_action(&self, path: &str) -> Option<FDAction> {
+        ALLOWED_SOCKET_PATHS.iter().find(|entry| entry.data == path).map(|entry| entry.action)
     }
 
-    fn get_file_action(&self, path: &CStr) -> Option<Action> {
-        match path.to_str().unwrap() {
-            // logger FDs will be closed in `sync_fd_state`
-            PMSG_FILE_PATH => Some(Action::Ignore),
-            _ => None,
-        }
+    fn get_file_action(&self, path: &CStr) -> Option<FDAction> {
+        ALLOWED_FILE_PATHS.iter().find(|entry| entry.data == path).map(|entry| entry.action)
     }
 
     fn re_initialize_epilogue(
@@ -332,5 +339,21 @@ impl Species for App {
                 log::error!("Failed to send sigchld status to the unsolicited socket: {e}");
             }
         }
+    }
+
+    //
+    // Helper functions
+    //
+
+    #[cfg(any(test, feature = "test"))]
+    fn allowlists_are_fresh(&self) -> bool {
+        use crate::species::test::allowlist_entries_are_fresh;
+
+        // Capture results separately to avoid short-circuiting.  We want to
+        // print out all expired entries.
+        let file_path_res = allowlist_entries_are_fresh(ALLOWED_FILE_PATHS.iter());
+        let socket_path_res = allowlist_entries_are_fresh(ALLOWED_SOCKET_PATHS.iter());
+
+        file_path_res && socket_path_res
     }
 }

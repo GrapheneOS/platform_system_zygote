@@ -18,8 +18,11 @@
 //! clients of the Zygote process server architecture.
 
 use core::ffi::{c_int, CStr};
-use std::{env, str::FromStr};
+use std::{env, fmt::Debug, str::FromStr};
 
+use anyhow::Result;
+
+use crate::file_descriptors;
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
 
 #[cfg(all(target_os = "android", feature = "android-native"))]
@@ -29,46 +32,48 @@ pub mod lib_app;
 #[cfg(feature = "mock")]
 pub mod mock;
 
-/// An entry structure for file allow lists.  This is marked as test-only
-/// because the only current user is the mock testing class.
-#[cfg(any(test, feature = "test"))]
-pub(crate) struct FileAllowListEntry {
-    data: &'static CStr,
+/// An entry structure for allow lists.
+#[allow(dead_code)]
+pub(crate) struct AllowListEntry<T: Debug + ?Sized + 'static> {
+    /// Path, name, or other data associated with the entry.
+    data: &'static T,
+    action: file_descriptors::Action,
 
-    // TODO: Ensure that this data is erased from the final binary
-    _reviewer: &'static str,
-    _reviewed: &'static str,
+    /// A brief description of why the path/name is in the allow list.
+    #[cfg(any(test, feature = "test"))]
+    reason: &'static str,
+    /// The username of the person who last reviewed the entry.
+    #[cfg(any(test, feature = "test"))]
+    reviewer: &'static str,
+    /// The date the entry was last reviewed.  Expected format: "YYYY-MM-DD"
+    #[cfg(any(test, feature = "test"))]
+    reviewed: &'static str,
 }
 
-/// A constructor for [`FileAllowListEntry`] structs
-#[cfg(any(test, feature = "test"))]
-pub(crate) const fn file_entry(
-    data: &'static CStr,
-    _reviewer: &'static str,
-    _reviewed: &'static str,
-) -> FileAllowListEntry {
-    FileAllowListEntry { data, _reviewer, _reviewed }
+impl<T: Debug + ?Sized + 'static> std::borrow::Borrow<T> for &AllowListEntry<T> {
+    fn borrow(&self) -> &T {
+        self.data
+    }
 }
 
-/// An entry structure for socket allow lists.  This is marked as test-only
-/// because the only current user is the mock testing class.
-#[cfg(any(test, feature = "test"))]
-pub(crate) struct SocketAllowListEntry {
-    data: &'static str,
+impl<T: Debug + ?Sized + 'static> AllowListEntry<T> {
+    /// A constructor for [`FileAllowListEntry`] structs
+    //
+    // Depending on feature selection this function may not be used.
+    #[allow(dead_code, unused_variables)]
+    pub(crate) const fn new(
+        data: &'static T,
+        action: file_descriptors::Action,
+        reason: &'static str,
+        reviewer: &'static str,
+        reviewed: &'static str,
+    ) -> Self {
+        #[cfg(not(any(test, feature = "test")))]
+        return AllowListEntry { data, action };
 
-    // TODO: Ensure that this data is erased from the final binary
-    _reviewer: &'static str,
-    _reviewed: &'static str,
-}
-
-/// A constructor for [`SocketAllowListEntry`] structs.
-#[cfg(any(test, feature = "test"))]
-pub(crate) const fn socket_entry(
-    data: &'static str,
-    _reviewer: &'static str,
-    _reviewed: &'static str,
-) -> SocketAllowListEntry {
-    SocketAllowListEntry { data, _reviewer, _reviewed }
+        #[cfg(any(test, feature = "test"))]
+        return AllowListEntry { data, action, reason, reviewer, reviewed };
+    }
 }
 
 /// A collection of callbacks implemented by Zygote payloads that determine
@@ -149,6 +154,11 @@ pub trait Species {
     //
     // Helper functions
     //
+
+    /// Checks for stale entries, printing any that it finds.  Returns true if
+    /// all of the entries are fresh.
+    #[cfg(any(test, feature = "test"))]
+    fn allowlists_are_fresh(&self) -> bool;
 
     /// Attempt to fetch the socket FD for a given Zygote from the environment
     fn get_socket_env_var(&self, name: &String) -> Option<String> {
@@ -268,5 +278,123 @@ impl ReInitWrapper {
             ReInitWrapper::AndroidNative(data) => Ok(data),
             _ => Err(anyhow::anyhow!("Invalid re-initialization data type")),
         }
+    }
+}
+
+#[cfg(any(test, feature = "test"))]
+pub(crate) mod test {
+    use super::*;
+
+    /// Maximum length of time between allow-list entry audits
+    const ALLOWLIST_AUDIT_DAYS_STALE: i64 = 365;
+    const ALLOWLIST_AUDIT_DAYS_WARN: i64 = 335;
+
+    enum DateFreshness {
+        Fresh,
+        Warn,
+        Stale,
+    }
+
+    impl TryFrom<&str> for DateFreshness {
+        type Error = anyhow::Error;
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            let reviewed_date = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")?.into(),
+                chrono::Utc,
+            );
+
+            let review_delta = chrono::Utc::now() - reviewed_date;
+            if review_delta >= chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_STALE) {
+                Ok(DateFreshness::Stale)
+            } else if review_delta >= chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_WARN) {
+                Ok(DateFreshness::Warn)
+            } else {
+                Ok(DateFreshness::Fresh)
+            }
+        }
+    }
+
+    pub(crate) fn allowlist_entries_are_fresh<'a, T: Debug + ?Sized + 'static>(
+        list: impl Iterator<Item = &'a AllowListEntry<T>>,
+    ) -> bool {
+        list.fold(true, |acc, entry| match entry.reviewed.try_into() {
+            Ok(DateFreshness::Fresh) => acc,
+            Ok(DateFreshness::Warn) => {
+                log::warn!("Allow list entry is not fresh: {:?}", entry.data);
+                acc
+            }
+            Ok(DateFreshness::Stale) => {
+                log::error!("Allow list entry is stale: {:?}", entry.data);
+                false
+            }
+            Err(e) => {
+                log::error!("{e}");
+                false
+            }
+        })
+    }
+
+    #[test]
+    fn allow_list_audit() {
+        crate::test::init_logging();
+
+        assert!(SPECIES_LIST
+            .iter()
+            .fold(true, |acc, species| species.allowlists_are_fresh() && acc))
+    }
+
+    #[test]
+    fn test_date_is_fresh_today() {
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let freshness: Result<DateFreshness, _> = today.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Fresh)));
+    }
+
+    #[test]
+    fn test_date_is_fresh_recent() {
+        let recent_date =
+            (chrono::Utc::now() - chrono::TimeDelta::days(10)).format("%Y-%m-%d").to_string();
+        let freshness: Result<DateFreshness, _> = recent_date.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Fresh)));
+    }
+
+    #[test]
+    fn test_date_is_stale() {
+        let old_date = (chrono::Utc::now() - chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_STALE))
+            .format("%Y-%m-%d")
+            .to_string();
+        let freshness: Result<DateFreshness, _> = old_date.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Stale)));
+    }
+
+    #[test]
+    fn test_date_is_at_freshness_boundary() {
+        let just_fresh_date = (chrono::Utc::now()
+            - chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_WARN - 1))
+        .format("%Y-%m-%d")
+        .to_string();
+        let freshness: Result<DateFreshness, _> = just_fresh_date.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Fresh)));
+
+        let just_warn_date = (chrono::Utc::now()
+            - chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_WARN))
+        .format("%Y-%m-%d")
+        .to_string();
+        let freshness: Result<DateFreshness, _> = just_warn_date.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Warn)));
+
+        let just_stale_date = (chrono::Utc::now()
+            - chrono::TimeDelta::days(ALLOWLIST_AUDIT_DAYS_STALE))
+        .format("%Y-%m-%d")
+        .to_string();
+        let freshness: Result<DateFreshness, _> = just_stale_date.as_str().try_into();
+        assert!(matches!(freshness, Ok(DateFreshness::Stale)));
+    }
+
+    #[test]
+    fn test_date_is_fresh_panics_on_invalid_date() {
+        let freshness: Result<DateFreshness, _> = "invalid-date".try_into();
+        assert!(freshness.is_err());
     }
 }

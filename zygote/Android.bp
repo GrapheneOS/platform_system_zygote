@@ -74,6 +74,7 @@ rust_library {
     crate_name: "zygote",
     defaults: ["libzygote_defaults"],
     rustlibs: [
+        "libchrono",
         "libzygote_messages_test",
     ],
     features: [
@@ -148,6 +149,7 @@ rust_test_host {
     name: "zygote_next_unit_tests",
     defaults: ["libzygote_defaults"],
     rustlibs: [
+        "libchrono",
         "libzygote_messages_test",
     ],
     features: [
