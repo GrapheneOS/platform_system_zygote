@@ -16,8 +16,13 @@
 //! This module contains functions and data used by tests.
 
 use core::ffi::CStr;
-use std::{ffi::OsStr, panic, sync::Mutex};
+use std::{
+    ffi::OsStr,
+    panic,
+    sync::{Mutex, Once},
+};
 
+static INIT_LOGGING: Once = Once::new();
 pub(crate) static MUTEX: Mutex<()> = Mutex::new(());
 
 /// Path to a file in the system temp directory used for testing
@@ -66,6 +71,7 @@ fn close_all<T: AsRef<OsStr>>(paths: impl std::iter::Iterator<Item = T>) {
 /// environment don't interfere with each other.
 #[track_caller]
 pub fn manage_test<F: FnOnce() + panic::UnwindSafe>(test_body: F) {
+    init_logging();
     let _guard = serialize_test();
 
     let unwind_result = panic::catch_unwind(test_body);
@@ -81,4 +87,11 @@ pub(crate) fn serialize_test<'a>() -> std::sync::MutexGuard<'a, ()> {
             Err(..) => crate::test::MUTEX.clear_poison(),
         }
     }
+}
+
+// Initialize logging for tests.
+pub(crate) fn init_logging() {
+    INIT_LOGGING.call_once(|| {
+        logger::init(logger::Config::default().with_tag_on_device("zygote_unit_tests"));
+    });
 }

@@ -274,7 +274,7 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
 
 /// Tags used by the registry to specify what operations to perform when
 /// [`FileDescriptorRegistry::execute_actions`] is called.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     /// Close the file when `execute_action` is called
     Close,
