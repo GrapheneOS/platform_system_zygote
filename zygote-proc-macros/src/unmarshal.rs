@@ -126,6 +126,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
 
     quote! {
         impl<'a> FromParcel<'a> for #name <#(#ty_generics),*> #where_clause {
+            #[tracing::instrument(skip_all)]
             fn try_from_parcel(buffer: &'a [u8]) -> Result<Self> {
                 let parcel: inner::Parcel<'a> = flatbuffers::root::<inner::Parcel>(buffer)?;
                 match parcel.message_type() {

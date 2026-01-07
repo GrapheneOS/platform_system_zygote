@@ -79,7 +79,7 @@ impl<T: Debug + ?Sized + 'static> AllowListEntry<T> {
 /// A collection of callbacks implemented by Zygote payloads that determine
 /// runtime behaviors such as preloading, process creation, and transfer
 /// of control flow.
-pub trait Species {
+pub trait Species: std::fmt::Debug {
     /// Returns true if a bound abstract socket name is allowed to be registered
     fn bound_abstract_socket_is_allowed(&self, name: &str) -> bool;
 
@@ -256,6 +256,7 @@ where
 }
 
 /// Re-initialization data that is gathered and then consumed by species code
+#[derive(Debug)]
 pub enum ReInitWrapper {
     /// Android specific data
     #[cfg(all(target_os = "android", feature = "android-native"))]
@@ -337,7 +338,7 @@ pub(crate) mod test {
 
     #[test]
     fn allow_list_audit() {
-        crate::test::init_logging();
+        crate::config::init_reporting_for_testing();
 
         assert!(SPECIES_LIST
             .iter()

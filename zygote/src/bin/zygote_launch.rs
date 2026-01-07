@@ -18,17 +18,16 @@
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::{config::Launch, species::ToSpecies};
+use zygote::{
+    config::{self, Launch},
+    species::ToSpecies,
+};
 use zygote_messages::{FromParcel, Message, TryToParcel, MESSAGE_BUFFER_INIT};
 
 fn main() -> Result<()> {
     let config = Launch::parse();
-
-    logger::init(
-        logger::Config::default()
-            .with_tag_on_device("zygote_launch")
-            .with_max_level(config.log_level),
-    );
+    let _trace_guard =
+        config::init_reporting("zygote_launch", config.log_level, config.trace_level);
 
     let builder = config.try_to_parcel()?;
 

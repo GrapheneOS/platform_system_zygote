@@ -26,6 +26,15 @@ compile_error!("At least one species feature must be enabled");
 
 use core::ffi::{c_char, c_int};
 
+macro_rules! span_scope {
+    ($name:expr) => {
+        let _span_guard = tracing::span!(tracing::Level::TRACE, $name).entered();
+    };
+    ($name:expr, $($fields:tt)*) => {
+        let _span_guard = tracing::span!(tracing::Level::TRACE, $name, $($fields)*).entered();
+    };
+}
+
 pub(crate) mod arguments;
 pub mod child_process;
 pub mod config;
