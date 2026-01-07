@@ -189,15 +189,9 @@ pub struct Server {
     #[arg(long, value_parser(clap::value_parser!(libc::uid_t).range(0..)))]
     pub preload_uid: Option<libc::uid_t>,
 
-    /// A string representing a valid server socket FD or a location to bind a
-    /// new socket.
-    //
-    // When left unspecified, the name will be resolved as follows:
-    // - environment variable named `ANDROID_SOCKET_<name>` (for AndroidNative)
-    // - environment variable named `ZYGOTE_SOCKET_<name>` (for all other species)
-    // - the path `/dev/socket/<name>`
+    /// User-provided socket path for the Zygote server
     #[arg(long)]
-    pub socket: Option<String>,
+    socket: Option<String>,
 
     /// A runtime-defined reference to Species-specific behavior
     /// implementations.
@@ -243,16 +237,22 @@ impl Server {
         }
     }
 
-    /// Possibly use configuration and environment data to synthesize a socket path.
-    pub fn resolve_socket(&self) -> Option<String> {
+    /// A string representing a valid server socket FD or a location to bind a
+    /// new socket.
+    //
+    // When left unspecified, the name will be resolved as follows:
+    // - environment variable named `ANDROID_SOCKET_<name>` (for AndroidNative)
+    // - environment variable named `ZYGOTE_SOCKET_<name>` (for all other species)
+    // - the path `/dev/socket/<name>`
+    pub(crate) fn socket(&self) -> String {
         self.socket
             .clone()
             .or_else(|| self.species.get_socket_env_var(&self.name))
-            .or_else(|| Some(format!("{}/{}", self.get_socket_dir(), self.name)))
+            .unwrap_or_else(|| format!("{}/{}", self.get_socket_dir(), self.name))
     }
 
     /// Generate spawn parameters from a Server configuration
-    pub fn to_spawn_params(&self) -> SpawnParamsCommon {
+    pub(crate) fn to_spawn_params(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
             uid: self.uid,
             gid: self.gid,

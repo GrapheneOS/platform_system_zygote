@@ -144,7 +144,7 @@ impl Server {
     pub fn new(config: &config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let socket_path_or_fd = config.resolve_socket().unwrap();
+        let socket_path_or_fd = config.socket();
         let (server_socket, server_socket_path) =
             Self::get_server_socket(socket_path_or_fd).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
