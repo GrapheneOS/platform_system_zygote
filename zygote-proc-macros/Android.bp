@@ -21,7 +21,7 @@ rust_proc_macro {
     name: "libzygote_proc_macros",
     crate_name: "zygote_proc_macros",
     cargo_env_compat: true,
-    edition: "2024",
+    defaults: ["zygote_defaults"],
     crate_root: "src/lib.rs",
     rustlibs: [
         "libanyhow",

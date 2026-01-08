@@ -168,14 +168,8 @@ rust_test_host {
 
 rust_test_host {
     name: "zygote_next_integration_test_fd_no_panic",
-    edition: "2024",
+    defaults: ["zygote_defaults"],
     test_harness: false,
-    cfgs: [
-        "test",
-    ],
-    features: [
-        "test",
-    ],
     srcs: [
         "tests/file_descriptors/calm.rs",
     ],
@@ -186,20 +180,4 @@ rust_test_host {
         "libzygote_sys",
         "libzygote_test",
     ],
-    target: {
-        android: {
-            features: [
-                "android-native",
-                "mock",
-                "test",
-            ],
-        },
-        host: {
-            features: [
-                "libapp",
-                "mock",
-                "test",
-            ],
-        },
-    },
 }
