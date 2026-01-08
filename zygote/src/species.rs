@@ -338,7 +338,7 @@ pub(crate) mod test {
 
     #[test]
     fn allow_list_audit() {
-        crate::config::init_reporting_for_testing();
+        zygote_core::init_reporting_for_testing();
 
         assert!(SPECIES_LIST
             .iter()

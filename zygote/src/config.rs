@@ -16,144 +16,18 @@
 //! This module provides classes and functions for configuring a Zygote
 //! process.
 
-use std::{path::Path, str::FromStr, sync::atomic::AtomicBool};
+use std::path::Path;
 
-use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
-#[cfg(target_os = "android")]
-use atrace_tracing_subscriber::AtraceSubscriber;
 use clap::Parser;
-use tracing_subscriber::{
-    layer::{Layer, SubscriberExt},
-    util::SubscriberInitExt,
-};
 
 use crate::species::SpeciesRef;
-use zygote_messages::{
-    Message, MessageParser, SpawnParamsCommon, SpawnPayloadParser, ToParcel, TryToParcel,
-};
+use zygote_core::{log_level_parser, trace_level_parser};
+use zygote_messages::SpawnParamsCommon;
 use zygote_sys::have_write_permissions;
 
 const SOCKET_DIR_DEV: &str = "/dev/socket";
 const SOCKET_DIR_TMP: &str = "/tmp/socket";
-
-static REPORTING_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-// The documentation string for this struct appears as the help message on the
-// command line, so the programmer-facing documentation is left as a regular
-// comment:
-//
-// Configuration values used by the Zygote command line interface.  This API
-// is temporary as the message types evolve.
-//
-/// Send messages to a Zygote server
-#[derive(Debug, Parser)]
-pub struct Cli {
-    /// Controls verbosity of logging; defaults to Warn; flag with no argument sets Debug
-    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
-    pub log_level: log::LevelFilter,
-
-    /// Controls verbosity of tracing; defaults to Info; flag with no argument sets Trace
-    #[arg(long, num_args(0..=1), default_value("3"), default_missing_value("5"), value_parser(trace_level_parser))]
-    pub trace_level: tracing::level_filters::LevelFilter,
-
-    /// A path to the target Zygote's server socket; Abstract sockets are not
-    /// currently supported.
-    #[arg(required(true))]
-    pub socket: String,
-
-    /// Name of command and arguments to send
-    #[command(subcommand)]
-    pub command: MessageParser,
-}
-
-// The documentation string for this struct appears as the help message on the
-// command line, so the programmer-facing documentation is left as a regular
-// comment:
-//
-// Configuration values used by the Zygote launch utility.  This API is
-// temporary as the message types evolve.
-//
-/// Launch a new process using Zygote initialization logic
-#[derive(Debug, Parser)]
-pub struct Launch {
-    /// Controls verbosity of logging; defaults to Warn; flag with no argument sets Debug
-    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
-    pub log_level: log::LevelFilter,
-
-    /// Controls verbosity of tracing; defaults to Info; flag with no argument sets Trace
-    #[arg(long, num_args(0..=1), default_value("3"), default_missing_value("5"), value_parser(trace_level_parser))]
-    pub trace_level: tracing::level_filters::LevelFilter,
-
-    /// The species and species specific arguments
-    #[command(subcommand)]
-    pub payload: SpawnPayloadParser,
-
-    /*
-     * Common Spawn Parameters
-     */
-    /// UID to switch to
-    #[arg(long)]
-    pub uid: Option<i32>,
-
-    /// Main GID to switch to
-    #[arg(long)]
-    pub gid: Option<i32>,
-
-    /// Name of the new process
-    #[arg(long)]
-    pub process_name: Option<String>,
-
-    /// Initial scheduling priority for child processes immediately after
-    /// forking
-    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub priority_initial: Option<i32>,
-
-    /// Final scheduling priority for child processes immediately before
-    /// entering application code
-    #[arg(long, value_parser(clap::value_parser!(i32).range(-20..20)))]
-    pub priority_final: Option<i32>,
-
-    /// SELinux context to switch to
-    #[arg(long)]
-    pub se_info: Option<String>,
-
-    /// Secondary group IDs for the new process
-    #[arg(long)]
-    pub secondary_groups: Vec<libc::gid_t>,
-}
-
-impl Launch {
-    fn to_spawn_message(&self) -> Result<Message<'_, '_>> {
-        Ok(Message::Spawn {
-            common: self.to_spawn_params(),
-            payload: self.payload.to_spawn_payload()?,
-        })
-    }
-
-    fn to_spawn_params(&self) -> SpawnParamsCommon {
-        SpawnParamsCommon {
-            uid: self.uid,
-            gid: self.gid,
-            process_name: self.process_name.clone(),
-            priority_initial: self.priority_initial,
-            priority_final: self.priority_final,
-            cap_effective: None,
-            cap_permitted: None,
-            cap_inheritable: None,
-            cap_bound: None,
-            se_info: self.se_info.clone(),
-            secondary_groups: self.secondary_groups.iter().cloned().collect(),
-            rlimits: ArrayVec::new(),
-        }
-    }
-}
-
-impl TryToParcel for Launch {
-    fn try_to_parcel<'a>(&self) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
-        Ok(self.to_spawn_message()?.to_parcel())
-    }
-}
 
 // The documentation string for this struct appears as the help message on the
 // command line, so the programmer-facing documentation is left as a regular
@@ -189,7 +63,8 @@ pub struct Server {
     #[arg(long, value_parser(clap::value_parser!(libc::uid_t).range(0..)))]
     pub preload_uid: Option<libc::uid_t>,
 
-    /// User-provided socket path for the Zygote server
+    /// User-provided socket path for the Zygote server.  The
+    /// [`Server::socket`] method can be used to access this value
     #[arg(long)]
     socket: Option<String>,
 
@@ -267,69 +142,5 @@ impl Server {
             secondary_groups: self.secondary_groups.iter().cloned().collect(),
             rlimits: ArrayVec::new(),
         }
-    }
-}
-
-/// Parse a string into a [`log::LevelFilter`]
-fn log_level_parser(parse_arg: &str) -> Result<log::LevelFilter> {
-    log::LevelFilter::from_str(parse_arg).or_else(|_| match parse_arg {
-        "0" => Ok(log::LevelFilter::Off),
-        "1" => Ok(log::LevelFilter::Error),
-        "2" => Ok(log::LevelFilter::Warn),
-        "3" => Ok(log::LevelFilter::Info),
-        "4" => Ok(log::LevelFilter::Debug),
-        "5" => Ok(log::LevelFilter::Trace),
-        level => bail!("Invalid log level: {}", level),
-    })
-}
-
-/// Parse a string into a [`tracing::level_filters::LevelFilter`]
-fn trace_level_parser(parse_arg: &str) -> Result<tracing::level_filters::LevelFilter> {
-    tracing::level_filters::LevelFilter::from_str(parse_arg).or_else(|_| match parse_arg {
-        "0" => Ok(tracing::level_filters::LevelFilter::OFF),
-        "1" => Ok(tracing::level_filters::LevelFilter::ERROR),
-        "2" => Ok(tracing::level_filters::LevelFilter::WARN),
-        "3" => Ok(tracing::level_filters::LevelFilter::INFO),
-        "4" => Ok(tracing::level_filters::LevelFilter::DEBUG),
-        "5" => Ok(tracing::level_filters::LevelFilter::TRACE),
-        level => bail!("Invalid trace level: {}", level),
-    })
-}
-
-/// Initialize the `log` and `tracing` crates.  This should be called before
-/// any log messages or tracing spans are emitted.  May only be called once.
-pub fn init_reporting<T: Into<Vec<u8>>>(
-    name: T,
-    log_level: log::LevelFilter,
-    trace_level: tracing::level_filters::LevelFilter,
-) -> tracing::subscriber::DefaultGuard {
-    if REPORTING_INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        // Given the current design of the Zygote server there is no legitimate
-        // reason to call this twice, so we panic to help with debugging.
-        panic!("Reporting initialization invoked multiple times");
-    } else {
-        logger::init(logger::Config::default().with_tag_on_device(name).with_max_level(log_level));
-
-        let fmt_registry = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::ACTIVE)
-                .with_filter(trace_level),
-        );
-
-        // While the Native Zygote has nothing to do with the Dalvik runtime
-        // there are a limited number of values in the AtraceTag bitfield and
-        // this tag has become a catch-all for system service and runtime
-        // related tracing.
-        #[cfg(target_os = "android")]
-        let fmt_registry = fmt_registry.with(AtraceSubscriber::new(atrace::AtraceTag::Dalvik));
-
-        fmt_registry.set_default()
-    }
-}
-
-/// Initialize the `log` crate for testing.  May be called multiple times.
-pub fn init_reporting_for_testing() {
-    if !REPORTING_INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        logger::init(logger::Config::default().with_tag_on_device("zygote_next_test"));
     }
 }

@@ -22,13 +22,41 @@ use clap::Parser;
 use flatbuffers::FlatBufferBuilder;
 use log::{error, info};
 
-use zygote::config;
-use zygote_messages::{self as messages, FromParcel, Message, TryToParcel};
+use zygote_core::{init_reporting, log_level_parser, trace_level_parser};
+use zygote_messages::{self as messages, FromParcel, Message, MessageParser, TryToParcel};
 use zygote_sys as sys;
 
+// The documentation string for this struct appears as the help message on the
+// command line, so the programmer-facing documentation is left as a regular
+// comment:
+//
+// Configuration values used by the Zygote command line interface.  This API
+// is temporary as the message types evolve.
+//
+/// Send messages to a Zygote server
+#[derive(Debug, Parser)]
+pub struct Cli {
+    /// Controls verbosity of logging; defaults to Warn; flag with no argument sets Debug
+    #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
+    pub log_level: log::LevelFilter,
+
+    /// Controls verbosity of tracing; defaults to Info; flag with no argument sets Trace
+    #[arg(long, num_args(0..=1), default_value("3"), default_missing_value("5"), value_parser(trace_level_parser))]
+    pub trace_level: tracing::level_filters::LevelFilter,
+
+    /// A path to the target Zygote's server socket; Abstract sockets are not
+    /// currently supported.
+    #[arg(required(true))]
+    pub socket: String,
+
+    /// Name of command and arguments to send
+    #[command(subcommand)]
+    pub command: MessageParser,
+}
+
 fn main() -> Result<()> {
-    let config = config::Cli::parse();
-    let _trace_guard = config::init_reporting("zygote_cli", config.log_level, config.trace_level);
+    let config = Cli::parse();
+    let _trace_guard = init_reporting("zygote_cli", config.log_level, config.trace_level);
 
     let builder = config.command.try_to_parcel()?;
 

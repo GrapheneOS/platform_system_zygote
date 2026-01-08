@@ -30,13 +30,12 @@ rust_defaults {
         "libitertools",
         "liblibc",
         "liblibloading",
-        "liblogger",
         "liblog_rust",
         "librustutils",
         "libstatic_assertions",
         "libtracing",
-        "libtracing_subscriber",
         "libzerocopy",
+        "libzygote_core",
         "libzygote_sys",
     ],
     target: {
@@ -50,8 +49,6 @@ rust_defaults {
                 "libselinux",
             ],
             rustlibs: [
-                "libatrace_rust",
-                "libatrace_tracing_subscriber",
                 "libnative_activity_thread",
                 "libprocessgroup_rust",
             ],
@@ -59,9 +56,6 @@ rust_defaults {
         host: {
             features: [
                 "libapp",
-            ],
-            rustlibs: [
-                "libtracing_subscriber",
             ],
         },
     },
@@ -101,9 +95,9 @@ rust_defaults {
     rustlibs: [
         "libanyhow",
         "libclap",
-        "liblogger",
         "liblog_rust",
-        "libzygote",
+        "libtracing",
+        "libzygote_core",
     ],
 }
 
@@ -114,6 +108,7 @@ rust_binary {
         "src/bin/zygote.rs",
     ],
     rustlibs: [
+        "libzygote",
         "libzygote_sys",
     ],
     init_rc: [
@@ -142,9 +137,10 @@ rust_binary {
         "src/bin/zygote_launch.rs",
     ],
     rustlibs: [
+        "libarrayvec",
         "libflatbuffers",
         "liblibc",
-        "liblibloading",
+        "libzygote",
         "libzygote_messages",
     ],
 }
