@@ -105,7 +105,7 @@ pub struct Server {
 
 impl Server {
     fn get_socket_dir(&self) -> &'static str {
-        if have_write_permissions(Path::new(SOCKET_DIR_DEV)).unwrap() {
+        if have_write_permissions(Path::new(SOCKET_DIR_DEV)).unwrap_or(false) {
             SOCKET_DIR_DEV
         } else {
             SOCKET_DIR_TMP

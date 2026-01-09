@@ -455,7 +455,7 @@ impl FileDescriptorRegistry {
         info!("Resetting FileDescriptorRegistry for subspecies");
         // Register FDs opened by the app's preload rountine.
         self.register_new();
-        self.audit().unwrap();
+        self.audit().expect("File descriptor audit failed");
     }
 
     /// Queries the Zygote and species abstract socket allow lists
@@ -684,7 +684,7 @@ impl FileDescriptorRegistry {
                     } else {
                         panic!(
                             "File path not found on allow list ({fd}): {:?}",
-                            path.as_cstr().unwrap()
+                            path.as_cstr().expect("Path is not a CStr")
                         );
                     }
                 }
