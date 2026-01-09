@@ -34,6 +34,8 @@ rust_defaults {
         "liblog_rust",
         "librustutils",
         "libstatic_assertions",
+        "libtracing",
+        "libtracing_subscriber",
         "libzerocopy",
         "libzygote_sys",
     ],
@@ -48,6 +50,8 @@ rust_defaults {
                 "libselinux",
             ],
             rustlibs: [
+                "libatrace_rust",
+                "libatrace_tracing_subscriber",
                 "libnative_activity_thread",
                 "libprocessgroup_rust",
             ],
@@ -55,6 +59,9 @@ rust_defaults {
         host: {
             features: [
                 "libapp",
+            ],
+            rustlibs: [
+                "libtracing_subscriber",
             ],
         },
     },
@@ -90,6 +97,7 @@ rust_library {
 rust_defaults {
     name: "zygote_executable_defaults",
     defaults: ["zygote_defaults"],
+    host_supported: true,
     rustlibs: [
         "libanyhow",
         "libclap",

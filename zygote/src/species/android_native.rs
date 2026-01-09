@@ -52,6 +52,20 @@ static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
 static ALLOWED_FILE_PATHS: &[AllowListEntry<CStr>] = &[
     // logger FDs will be closed in `sync_fd_state`
     AllowListEntry::new(c"/dev/pmsg0", FDAction::Ignore, "Logging", "hattorij", "2025-11-12"),
+    AllowListEntry::new(
+        c"/sys/kernel/debug/tracing/trace_marker",
+        FDAction::Ignore,
+        "Tracing",
+        "chriswailes",
+        "2025-12-16",
+    ),
+    AllowListEntry::new(
+        c"/sys/kernel/tracing/trace_marker",
+        FDAction::Ignore,
+        "Tracing",
+        "chriswailes",
+        "2025-12-16",
+    ),
 ];
 
 /// Path to the socket listened by the AMS to receive the exit status of child
@@ -107,11 +121,13 @@ impl UnsolicitedZygoteMessageSigChld {
 }
 
 /// Re-initialization data for AndroidNative applications
+#[derive(Debug)]
 pub struct ReInitData {
     fds_error_level: android::process::FDSanErrorLevel,
 }
 
 /// Behaviors for launching native Android applications.
+#[derive(Debug)]
 pub struct App;
 
 impl Species for App {
@@ -162,20 +178,21 @@ impl Species for App {
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::AndroidNative {
-            package,
-            start_seq,
-            target_sdk_version,
-            runtime_flags,
+            start_seq, target_sdk_version, runtime_flags, ..
         } = spawn_payload
         {
+            let scope_init =
+                tracing::span!(tracing::Level::TRACE, "AndroidNative::App::gestate").entered();
             app_process_init(*target_sdk_version, *runtime_flags);
-            println!("Hello from the child process.  My name is {package}");
+            let _scope_init = scope_init.exit();
+
             run_native_activity_thread(*start_seq);
         } else {
             panic!("Invalid spawn payload for species {}: {:?}", self.name(), spawn_payload);
         }
     }
 
+    #[tracing::instrument(skip_all)]
     fn speciate(&self, payload: &SpawnPayload) {
         let SpawnPayload::AndroidNativeSubspecies {
             target_sdk_version,

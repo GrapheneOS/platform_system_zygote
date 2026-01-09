@@ -23,7 +23,7 @@ use std::{convert::Infallible, ffi::OsStr, os::fd::RawFd, path::Path};
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
@@ -62,6 +62,7 @@ impl std::convert::From<&Server> for PollBuffer {
     }
 }
 
+#[derive(Debug)]
 struct PollPartition<'a> {
     pub signal: &'a PollFd,
     pub server: &'a PollFd,
@@ -114,6 +115,7 @@ enum ClientLoopControl<T> {
 }
 
 /// The main data structure for the Zygote process server.
+#[derive(Debug)]
 pub struct Server {
     name: String,
     species: SpeciesRef,
@@ -138,10 +140,11 @@ impl Server {
     /// reference.
     ///
     /// Add a destructor to clean up the socket if we create it.
+    #[tracing::instrument(level = "trace", skip_all)]
     pub fn new(config: &config::Server) -> Self {
         let mut registry = FileDescriptorRegistry::new(config.species);
 
-        let socket_path_or_fd = config.resolve_socket().unwrap();
+        let socket_path_or_fd = config.socket();
         let (server_socket, server_socket_path) =
             Self::get_server_socket(socket_path_or_fd).unwrap();
         registry.register(server_socket, file_descriptors::Action::Close);
@@ -206,6 +209,7 @@ impl Server {
     }
 
     /// Tailor the Server instance for the subspecies.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn re_initialize_as_subspecies(&mut self, child_socket_path: String) {
         self.registry.reset_for_subspecies();
 
@@ -283,6 +287,7 @@ impl Server {
     ///
     /// The function's return value indicates if the server should terminate
     /// after this call.
+    #[tracing::instrument(level = "trace", skip_all)]
     fn check_poll_events(
         &mut self,
         partition: PollPartition<'_>,
@@ -295,6 +300,7 @@ impl Server {
         self.check_client_sockets_events(&partition)
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn check_client_sockets_events(
         &mut self,
         partition: &PollPartition<'_>,
@@ -377,6 +383,7 @@ impl Server {
         ServerControl::Continue
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn check_server_socket_events(&mut self, partition: &PollPartition<'_>) {
         // POLLERR and POLLNVAL should never occur for the server socket.
         let checked_pollfd = partition.server.check().unwrap_or_else(|(_, error_events)| {
@@ -409,6 +416,7 @@ impl Server {
         // listen socket.
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn check_signalfd_events(
         &mut self,
         partition: &PollPartition<'_>,
@@ -533,6 +541,7 @@ impl Server {
         Break(ClientLoopControl::Shutdown)
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_identity_query<Thunk: FnOnce() -> Infallible>(
         &self,
         fd: RawFd,
@@ -557,6 +566,7 @@ impl Server {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn handle_spawn<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
@@ -640,7 +650,9 @@ impl Server {
                 //         "Either CLONE_NEWPID or CLONE_NEWUSER were specified and the resulting number of nested namespaces would exceed the maximum allowed depth: {clone_args:?}");
                 } else if errno.is(libc::EOPNOTSUPP) {
                     // TODO: Print the actual cgroup path once it is present in the spawn params.
-                    error!("Destination version 2 cgroup is currently in a domain invalid state: <TODO>");
+                    error!(
+                        "Destination version 2 cgroup is currently in a domain invalid state: <TODO>"
+                    );
                 // } else if errno.is(libc::EPERM) {
                 //     error!("Server lacks the correct permissions to clone with the provided arguments: {clone_args:?}");
                 } else {
@@ -653,6 +665,7 @@ impl Server {
     }
 
     #[allow(unreachable_code)]
+    #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_spawn(
         &mut self,
         fd: RawFd,
@@ -699,6 +712,7 @@ impl Server {
         })
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_spawn_subspecies<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
@@ -720,6 +734,7 @@ impl Server {
         })
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
@@ -761,7 +776,11 @@ impl Server {
         }
     }
 
-    fn preload<T: AsRef<OsStr>>(&self, libraries: &Vec<T>) {
+    #[tracing::instrument(level = "trace", skip_all)]
+    fn preload<T>(&self, libraries: &Vec<T>)
+    where
+        T: AsRef<OsStr> + std::fmt::Debug + tracing::Value,
+    {
         let _eid_context = sys::EffectiveIdContext::enter(self.preload_uid, self.preload_gid)
             .unwrap_or_else(|errno| {
                 error!(
@@ -772,7 +791,9 @@ impl Server {
             });
 
         for library_path in libraries {
-            // SAFETY: The Zygote process-server is designed to load and
+            span_scope!("dlopen", path = library_path);
+
+            // SAFETY: The Zygote process server is designed to load and
             //         execute code from shared libraries.  If a Zygote process
             //         is launched with permissions to access these files and
             //         the user has specified them in the preload set then the
@@ -795,6 +816,8 @@ impl Server {
                 }
             };
         }
+
+        // TODO: Add a callback to the species to allow it to preload libraries
     }
 
     fn remove_client_socket(&mut self, fd: RawFd) {

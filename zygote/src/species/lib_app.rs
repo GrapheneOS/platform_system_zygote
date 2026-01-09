@@ -34,6 +34,7 @@ use zygote_sys as sys;
 const ENTRY_SYMBOL_NAME: &CStr = c"zygote_entry";
 
 /// Behaviors for launching native Android applications.
+#[derive(Debug)]
 pub struct App;
 
 impl Species for App {

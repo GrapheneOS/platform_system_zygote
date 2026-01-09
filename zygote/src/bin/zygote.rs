@@ -42,12 +42,8 @@ fn main() -> Result<()> {
 /// before the thunk is evaluated.
 fn run_server() -> Option<impl FnOnce() -> Infallible> {
     let config = config::Server::parse();
-
-    logger::init(
-        logger::Config::default()
-            .with_tag_on_device(config.name.clone())
-            .with_max_level(config.log_level),
-    );
+    let _trace_guard =
+        config::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
 
     log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
 
