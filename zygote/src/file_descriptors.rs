@@ -75,8 +75,8 @@ enum SocketAddress {
 impl fmt::Display for SocketAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Path(path) => write!(f, "{path}"),
-            Self::Abstract(path) => write!(f, "@{path}"),
+            Self::Path(path) => write!(f, "{}", path.as_str()),
+            Self::Abstract(path) => write!(f, "@{}", path.as_str()),
         }
     }
 }
