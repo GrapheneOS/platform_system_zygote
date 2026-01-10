@@ -21,11 +21,11 @@ rust_library {
         "src/lib.rs",
     ],
     rustlibs: [
-        "libanyhow",
         "libarrayvec",
         "liblibc",
         "librand",
         "libstatic_assertions",
+        "libthiserror",
         "libzerocopy",
     ],
     target: {

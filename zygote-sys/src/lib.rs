@@ -16,7 +16,7 @@
 //! This module provides safe wrappers around unsafe libc calls.
 
 use core::{
-    ffi::{c_char, c_int, c_short, c_uint, c_void, CStr},
+    ffi::{c_char, c_int, c_short, c_uint, c_void, CStr, FromBytesUntilNulError},
     mem::{self, offset_of},
 };
 use std::{
@@ -26,10 +26,10 @@ use std::{
     ptr::NonNull,
 };
 
-use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use static_assertions::const_assert;
-use zerocopy::FromBytes;
+use thiserror::Error;
+use zerocopy::{error::ConvertError, FromBytes};
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -111,45 +111,61 @@ impl Errno {
     }
 }
 
-impl From<Errno> for std::fmt::Error {
-    fn from(_: Errno) -> std::fmt::Error {
-        std::fmt::Error
-    }
-}
-
 impl Display for Errno {
     #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(
-            f,
-            "Errno ({}): {}",
-            error_name(self.code)?.to_str().unwrap(),
-            error_description(self.code)?.as_cstr().unwrap().to_str().unwrap()
-        )
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        write!(f, "Errno")?;
+        if let Ok(name) = error_name(self.code) {
+            write!(f, " ({:?})", name)?;
+        }
+        if let Ok(buffer) = error_description(self.code)
+            && let Ok(desc) = buffer.as_cstr()
+        {
+            write!(f, ": {:?}", desc)
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(any(target_env = "musl", all(target_os = "linux", soong)))]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Errno: {}", error_description(self.code)?.as_cstr().unwrap().to_str().unwrap())
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        write!(f, "Errno")?;
+        if let Ok(buff) = error_description(self.code)
+            && let Ok(desc) = buff.as_cstr()
+        {
+            write!(f, ": {:?}", desc)
+        } else {
+            Ok(())
+        }
     }
 }
 
 impl Debug for Errno {
     #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        f.debug_struct("Errno")
-            .field("code", &self.code)
-            .field("name", &error_name(self.code)?)
-            .field("description", &error_description(self.code)?.as_cstr())
-            .finish()
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        let mut debug_struct = f.debug_struct("Errno");
+        debug_struct.field("code", &self.code);
+        if let Ok(name) = error_name(self.code) {
+            debug_struct.field("name", &name);
+        }
+        if let Ok(buff) = error_description(self.code)
+            && let Ok(desc) = buff.as_cstr()
+        {
+            debug_struct.field("description", &desc);
+        }
+        debug_struct.finish()
     }
 
     #[cfg(any(target_env = "musl", all(target_os = "linux", soong)))]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        f.debug_struct("Errno")
-            .field("code", &self.code)
-            .field("description", &error_description(self.code)?.as_cstr())
-            .finish()
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        let mut debug_struct = f.debug_struct("Errno");
+        debug_struct.field("code", &self.code);
+        if let Ok(buff) = error_description(self.code)
+            && let Ok(desc) = buff.as_cstr()
+        {
+            debug_struct.field("description", &desc);
+        }
+        debug_struct.finish()
     }
 }
 
@@ -183,8 +199,68 @@ fn errno_clear() {
     }
 }
 
-/// A Result type that uses Errno for the Error type
-pub type LibcResult<T> = std::result::Result<T, Errno>;
+/// Possible errors for the `zygote-sys` crate
+#[derive(Error, Debug)]
+pub enum Error {
+    /// C-style string was not nul-terminated
+    #[error("Invalid C string")]
+    InvalidCString(#[from] FromBytesUntilNulError),
+
+    /// An invalid wait state was provided by the caller
+    #[error("Invalid wait status: {0}")]
+    InvalidWaitStatus(c_int),
+
+    /// An error returned from a `libc` call
+    #[error("Libc error: {0}")]
+    Libc(#[from] Errno),
+
+    /// An OS-provided string is not a valid UTF-8 encoded string
+    #[error("OS string is not a valid UTF-8 encoded string")]
+    OsString(std::ffi::OsString),
+
+    /// A file descriptor passed to `poll` produced an error
+    #[error("Poll event error on FD {0}: {1}")]
+    PollEventError(RawFd, c_short),
+
+    /// A provided string is too long to fit into a buffer
+    #[error("Input string of length {0} exceeds buffer size {1}")]
+    StringExceedsBufferSize(usize, usize),
+
+    /// A provided byte array or OS string is not a valid UTF-8 encoded string
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] core::str::Utf8Error),
+
+    /// A `zerocopy` conversion failed
+    #[error("Error during zerocopy conversion from u8 to c_char")]
+    ZerocopyCast(),
+}
+
+impl<A, S, V> From<ConvertError<A, S, V>> for Error {
+    fn from(_: ConvertError<A, S, V>) -> Self {
+        Error::ZerocopyCast()
+    }
+}
+
+impl From<Error> for std::fmt::Error {
+    fn from(_: Error) -> std::fmt::Error {
+        std::fmt::Error
+    }
+}
+
+/// A Result type covering data validation and libc errors.
+pub type Result<T> = std::result::Result<T, Error>;
+
+impl<T> From<Errno> for Result<T> {
+    fn from(errno: Errno) -> Self {
+        Err(Error::Libc(errno))
+    }
+}
+
+impl<T> From<Error> for Result<T> {
+    fn from(error: Error) -> Self {
+        Err(error)
+    }
+}
 
 /// A wrapper struct for [`libc::pollfd`] that ensures error codes are checked
 /// before events are handled.
@@ -200,10 +276,10 @@ impl PollFd {
     }
 
     /// Returns `Err` in the presence of errors, else `Some(PollFdChecked)`.
-    pub fn check(&self) -> Result<PollFdChecked<'_>, (RawFd, c_short)> {
+    pub fn check(&self) -> Result<PollFdChecked<'_>> {
         const ERROR_MASK: c_short = libc::POLLERR | libc::POLLNVAL;
         if self.0.revents & ERROR_MASK != 0 {
-            Err((self.0.fd, self.0.revents & ERROR_MASK))
+            Err(Error::PollEventError(self.0.fd, self.0.revents & ERROR_MASK))
         } else {
             Ok(PollFdChecked(&self.0))
         }
@@ -274,12 +350,12 @@ from_bytes_c!(c_int, libc::ucred, libc::signalfd_siginfo);
 //         safety of casting to and from bytes up to the caller.
 unsafe impl<const N: usize> LibcFromBytes for [u8; N] {}
 
-/// Convert an integer return value from a `libc` call into a [`LibcResult`]
+/// Convert an integer return value from a `libc` call into a [`Result`]
 /// type.  If the return value is -1 the Error type will contain the resulting
 /// `errno` value.
-pub fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
+pub fn check_failure<T: Eq + From<i8>>(retval: T) -> Result<T> {
     if retval == T::from(-1) {
-        Err(errno())
+        errno().into()
     } else {
         Ok(retval)
     }
@@ -288,44 +364,79 @@ pub fn libc_result_from_int<T: Eq + From<i8>>(retval: T) -> LibcResult<T> {
 /// Test an integer `libc` return value and returns the auxiliary value if
 /// is not equal to -1 and the `errno` value if it is.  The payload thunk is
 /// only evaluated when `retval` does not indicate an error.
-pub fn libc_result_from_int_with_payload<T: Eq + From<i8>, P>(
+pub fn check_failure_with_payload<T: Eq + From<i8>, P>(
     retval: T,
-    payload: impl FnOnce() -> P,
-) -> LibcResult<P> {
+    payload: impl FnOnce(T) -> P,
+) -> Result<P> {
     if retval == T::from(-1) {
-        Err(errno())
+        errno().into()
     } else {
-        Ok(payload())
+        Ok(payload(retval))
     }
 }
 
 /// Test an integer `libc` return value and return `void` if it is not equal to
 /// -1 and the `errno` value if it is.
-pub fn libc_result_from_int_with_void<T: Eq + From<i8>>(retval: T) -> LibcResult<()> {
+pub fn check_failure_with_void<T: Eq + From<i8>>(retval: T) -> Result<()> {
     if retval == T::from(-1) {
-        Err(errno())
+        errno().into()
     } else {
         Ok(())
     }
 }
 
-/// Converts a pointer into a [`LibcResult`] type, returning an [`Errno`] if it
+/// Converts a pointer into a [`Result`] type, returning an [`Errno`] if it
 /// is `null` and converting it into the desired return type if it isn't.
 #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
-fn libc_result_from_ptr<T, U, C: Fn(NonNull<T>) -> U>(
+fn check_failure_with_ptr<T, U, C: Fn(NonNull<T>) -> U>(
     retval: *const T,
     constructor: C,
-) -> LibcResult<U> {
-    NonNull::new(retval as *mut T).map(constructor).ok_or(errno())
+) -> Result<U> {
+    NonNull::new(retval as *mut T).map(constructor).ok_or(errno().into())
 }
 
-/// Converts a pointer into a [`LibcResult`] type, returning an [`Errno`] if it
+/// Converts a pointer into a [`Result`] type, returning an [`Errno`] if it
 /// is `null` and converting it into the desired return type if it isn't.
-fn libc_result_from_mut_ptr<T, U, C: Fn(NonNull<T>) -> U>(
+fn check_failure_with_mut_ptr<T, U, C: Fn(NonNull<T>) -> U>(
     retval: *mut T,
     constructor: C,
-) -> LibcResult<U> {
-    NonNull::new(retval).map(constructor).ok_or(errno())
+) -> Result<U> {
+    NonNull::new(retval).map(constructor).ok_or(errno().into())
+}
+
+/// Convert an integer return value from a `libc` call into a [`Result`]
+/// type.  If the return value is not 0 the Error type will contain the
+/// resulting `errno` value.
+pub fn check_success<T: Eq + From<i8>>(retval: T) -> Result<T> {
+    if retval == T::from(0) {
+        Ok(retval)
+    } else {
+        errno().into()
+    }
+}
+
+/// Test an integer `libc` return value and returns the auxiliary value if
+/// is is equal to 0 and the `errno` value if it isn't.  The payload thunk is
+/// only evaluated when `retval` does not indicate an error.
+pub fn check_success_with_payload<T: Eq + From<i8>, P>(
+    retval: T,
+    payload: impl FnOnce(T) -> P,
+) -> Result<P> {
+    if retval == T::from(0) {
+        Ok(payload(retval))
+    } else {
+        errno().into()
+    }
+}
+
+/// Test an integer `libc` return value and return `void` if it is equal to 0
+/// and the `errno` value if it is.
+pub fn check_success_with_void<T: Eq + From<i8>>(retval: T) -> Result<()> {
+    if retval == T::from(0) {
+        Ok(())
+    } else {
+        errno().into()
+    }
 }
 
 /*
@@ -337,7 +448,7 @@ macro_rules! retry_eintr {
     ($libc_call:expr) => {
         loop {
             match $libc_call {
-                Err(errno) if errno.is(libc::EINTR) => {
+                Err(Error::Libc(errno)) if errno.is(libc::EINTR) => {
                     continue;
                 }
                 result => {
@@ -353,18 +464,18 @@ macro_rules! retry_eintr {
 pub fn abstract_socket_address(
     name: &str,
     family: libc::sa_family_t,
-) -> SocketAddr<libc::sockaddr_un> {
+) -> Result<SocketAddr<libc::sockaddr_un>> {
     let mut socket_addr = libc::sockaddr_un { sun_family: family, sun_path: [0; 108] };
     let name_view = &name.as_bytes()[0..std::cmp::min(name.len(), socket_addr.sun_path.len() - 1)];
 
     // Abstract socket names begin with a null character, so start copying the
     // name at index 1.
     socket_addr.sun_path[1..name_view.len() + 1]
-        .copy_from_slice(<[c_char]>::ref_from_bytes(name_view).unwrap());
+        .copy_from_slice(<[c_char]>::ref_from_bytes(name_view)?);
 
     let socklen = offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
 
-    SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t }
+    Ok(SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t })
 }
 
 /// Construct a bound socket name inside a [`libc::sockaddr_un`] struct from
@@ -372,20 +483,20 @@ pub fn abstract_socket_address(
 pub fn bound_socket_address(
     path: &str,
     family: libc::sa_family_t,
-) -> SocketAddr<libc::sockaddr_un> {
+) -> Result<SocketAddr<libc::sockaddr_un>> {
     let mut socket_addr = libc::sockaddr_un { sun_family: family, sun_path: [0; 108] };
     let name_view = &path.as_bytes()[0..std::cmp::min(path.len(), socket_addr.sun_path.len() - 1)];
 
     socket_addr.sun_path[0..name_view.len()]
-        .copy_from_slice(<[c_char]>::ref_from_bytes(name_view).unwrap());
+        .copy_from_slice(<[c_char]>::ref_from_bytes(name_view)?);
 
     let socklen = offset_of!(libc::sockaddr_un, sun_path) + path.len();
 
-    SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t }
+    Ok(SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t })
 }
 
 /// Construct a [`libc::sigset_t`] containing the provided signals.
-pub fn build_sigset(signals: &[c_int]) -> LibcResult<libc::sigset_t> {
+pub fn build_sigset(signals: &[c_int]) -> Result<libc::sigset_t> {
     let mut sigset = sigemptyset()?;
 
     for signum in signals {
@@ -440,7 +551,7 @@ impl<T> LoopExit<T> {
     }
 }
 
-/// This function calls the `task()` thunk and checks the LibcResult.  If the
+/// This function calls the `task()` thunk and checks the Result.  If the
 /// thunk exited with either `EAGAIN` or `EWOULDBLOCK` the function will
 /// immediately return a [`LoopExit::WouldBlock`] value.  If any other error
 /// was returned by the thunk it will be returned by this function.  If the
@@ -449,16 +560,16 @@ impl<T> LoopExit<T> {
 /// returns early the [`LoopStatus::Break`] value will be forwarded in a
 /// [`LoopExit::Early`] variant.
 pub fn call_until_would_block<T, U>(
-    task: impl Fn() -> LibcResult<T>,
+    task: impl Fn() -> Result<T>,
     mut handler: impl FnMut(T) -> LoopControl<U>,
-) -> LibcResult<LoopExit<U>> {
+) -> Result<LoopExit<U>> {
     loop {
         match task() {
             Ok(result) => match handler(result) {
                 LoopControl::Continue => continue,
                 LoopControl::Break(val) => return Ok(LoopExit::Early(val)),
             },
-            Err(errno) if errno.is(libc::EAGAIN) || errno.is(libc::EWOULDBLOCK) => {
+            Err(Error::Libc(errno)) if errno.is(libc::EAGAIN) || errno.is(libc::EWOULDBLOCK) => {
                 // Task would block
                 return Ok(LoopExit::WouldBlock);
             }
@@ -472,7 +583,7 @@ pub fn call_until_would_block<T, U>(
 /// Create a new UNIX domain datagram abstract socket with the provided name
 pub fn create_abstract_socket(name: &str, protocol: c_int) -> Result<RawFd> {
     let socket_fd = socket(libc::AF_UNIX, protocol, 0)?;
-    let socket_addr = abstract_socket_address(name, libc::AF_UNIX as libc::sa_family_t);
+    let socket_addr = abstract_socket_address(name, libc::AF_UNIX as libc::sa_family_t)?;
 
     bind(socket_fd, &socket_addr)?;
 
@@ -483,7 +594,7 @@ pub fn create_abstract_socket(name: &str, protocol: c_int) -> Result<RawFd> {
 /// system path
 pub fn create_bound_socket(path: &str, protocol: c_int) -> Result<RawFd> {
     let socket_fd = socket(libc::AF_UNIX, protocol, 0)?;
-    let socket_addr = bound_socket_address(path, libc::AF_UNIX as libc::sa_family_t);
+    let socket_addr = bound_socket_address(path, libc::AF_UNIX as libc::sa_family_t)?;
 
     bind(socket_fd, &socket_addr)?;
 
@@ -496,24 +607,24 @@ pub fn get_file_type(stat: libc::stat) -> libc::mode_t {
 }
 
 /// Get the socket type of a UNIX domain socket.
-pub fn get_socket_type(fd: RawFd) -> LibcResult<c_int> {
+pub fn get_socket_type(fd: RawFd) -> Result<c_int> {
     getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE)
 }
 
 /// Get the PID, UID, and GID for the remote end of a UNIX domain socket.
-pub fn get_socket_creds(fd: RawFd) -> LibcResult<libc::ucred> {
+pub fn get_socket_creds(fd: RawFd) -> Result<libc::ucred> {
     getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED)
 }
 
 /// Attempt to read `size_of::<T>()` bytes.  If the correct number of bytes
 /// were read the function returns `Ok(T)`, otherwise an `Err(Errno)` is
 /// returned with the `code` set to 0.
-pub fn read_exact<T: LibcFromBytes>(fd: RawFd) -> LibcResult<T> {
+pub fn read_exact<T: LibcFromBytes>(fd: RawFd) -> Result<T> {
     read::<T>(fd).and_then(|(read_len, result)| {
         if read_len == std::mem::size_of::<T>() as isize {
             Ok(result)
         } else {
-            Err(Errno { code: 0 })
+            Err(Error::Libc(Errno { code: 0 }))
         }
     })
 }
@@ -569,14 +680,18 @@ impl EffectiveIdContext {
 
 impl Drop for EffectiveIdContext {
     fn drop(&mut self) {
-        self.exit().unwrap()
+        if let Err(e) = self.exit()
+            && !std::thread::panicking()
+        {
+            panic!("Failed to restore effective permissions on drop: {e}")
+        }
     }
 }
 
 /// Build a buffer-allocated NUL-terminated representation of a string
 pub fn build_nul_terminated_string(str_in: &str) -> Result<CStringBuffer> {
     if str_in.len() >= BUFFER_SIZE_STRINGS {
-        bail!("String is too long");
+        return Err(Error::StringExceedsBufferSize(str_in.len(), BUFFER_SIZE_STRINGS));
     }
 
     let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
@@ -598,27 +713,27 @@ pub fn random_filename<const N: usize>() -> [u8; N] {
 /// Test to see if the current process can write to a path
 pub fn have_write_permissions(path: &std::path::Path) -> Result<bool> {
     let test_path = if path.exists() && path.is_dir() {
-        path.join(str::from_utf8(&random_filename::<16>()).unwrap())
+        path.join(str::from_utf8(&random_filename::<16>())?)
     } else {
         path.to_path_buf()
     };
 
     let preexisting_path = test_path.exists();
-    let path_buffer =
-        build_nul_terminated_string(test_path.to_str().unwrap()).map_err(|_| Errno { code: 0 })?;
-    let open_result =
-        open(path_buffer.as_cstr().unwrap(), libc::O_CREAT | libc::O_WRONLY, Some(0o600));
+    let path_buffer = build_nul_terminated_string(
+        test_path.to_str().ok_or(Error::OsString(test_path.as_os_str().to_os_string()))?,
+    )?;
+    let open_result = open(path_buffer.as_cstr()?, libc::O_CREAT | libc::O_WRONLY, Some(0o600));
 
     match open_result {
         Ok(fd) => {
             close(fd)?;
             if !preexisting_path {
-                unlink(path_buffer.as_cstr().unwrap())?;
+                unlink(path_buffer.as_cstr()?)?;
             }
             Ok(true)
         }
-        Err(Errno { code: libc::EACCES }) => Ok(false),
-        Err(errno) => Err(errno.into()),
+        Err(Error::Libc(Errno { code: libc::EACCES })) => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -632,20 +747,20 @@ pub fn have_write_permissions(path: &std::path::Path) -> Result<bool> {
 /// peer address information, we do not pass in a [`libc::sockaddr`] buffer.
 ///
 /// See: `man accept`
-pub fn accept(fd: RawFd) -> LibcResult<RawFd> {
+pub fn accept(fd: RawFd) -> Result<RawFd> {
     // SAFETY: If the file descriptor is invalid `accept()` will return -1 and
-    //         we will extract errno and wrap it in a LibcResult.
-    libc_result_from_int(unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) })
+    //         we will extract errno and wrap it in a Result.
+    check_failure(unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) })
 }
 
 /// A safe wrapper around [`libc::bind`].
 ///
 /// See: `man bind`
-pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> LibcResult<()> {
+pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> Result<()> {
     // SAFETY: The pointer argument to `libc::bind` is guaranteed to reference
     //         allocated memory and the return value is checked and wrapped in
-    //         a LibcResult.
-    libc_result_from_int_with_void(unsafe {
+    //         a Result.
+    check_failure_with_void(unsafe {
         libc::bind(
             fd,
             (&sockaddr.address as *const SockAddrType) as *const libc::sockaddr,
@@ -664,10 +779,10 @@ pub fn bind<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> Lib
 /// requirements of this call are listed in the manual pages.  Any non-trivial
 /// invocation of `clone3` will involve lengthy justifications for all
 /// arguments.
-pub unsafe fn clone3(args: &clone_args) -> LibcResult<libc::pid_t> {
+pub unsafe fn clone3(args: &clone_args) -> Result<libc::pid_t> {
     // SAFETY: The pointer argument is derived from a valid reference and the
-    //         result value is checked and wrapped in a LibcResult.
-    libc_result_from_int(unsafe { libc_fill::clone3(args) as libc::pid_t })
+    //         result value is checked and wrapped in a Result.
+    check_failure(unsafe { libc_fill::clone3(args) as libc::pid_t })
 }
 
 /// A safe wrapper around [`libc::close`].
@@ -676,32 +791,32 @@ pub unsafe fn clone3(args: &clone_args) -> LibcResult<libc::pid_t> {
 /// macro.
 ///
 /// See: `man close`
-pub fn close(fd: RawFd) -> LibcResult<c_int> {
+pub fn close(fd: RawFd) -> Result<c_int> {
     // SAFETY: If the file descriptor is invalid `close()` will return -1 and
-    //         we will extract errno and wrap it in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe { libc::close(fd) }))
+    //         we will extract errno and wrap it in a Result.
+    retry_eintr!(check_failure(unsafe { libc::close(fd) }))
 }
 
 /// A safe wrapper around [`libc::closedir`].
 ///
 /// See: `man closedir`
-pub fn closedir(dir: LibcDir) -> LibcResult<()> {
+pub fn closedir(dir: LibcDir) -> Result<()> {
     // SAFETY: The LibcDir argument can only be constructed by the `opendir`
     //         function which also checks to ensure that the pointer is
     //         non-null.  If the LibcDir object *does* contain an invalid
-    //         pointer then `libc` will return `-1` and a LibcResult::Err value
+    //         pointer then `libc` will return `-1` and a Result::Err value
     //         will be returned wrapping `errno`.
-    libc_result_from_int_with_void(unsafe { libc::closedir(dir.inner.as_ptr()) })
+    check_failure_with_void(unsafe { libc::closedir(dir.inner.as_ptr()) })
 }
 
 /// A safe wrapper around [`libc::connect`].
 ///
 /// See: `man connect`
-pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> LibcResult<()> {
+pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> Result<()> {
     // SAFETY: The pointer argument to `libc::connect` is guaranteed to reference
     //         allocated memory and the return value is checked and wrapped in
-    //         a LibcResult.
-    libc_result_from_int_with_void(unsafe {
+    //         a Result.
+    check_failure_with_void(unsafe {
         libc::connect(
             fd,
             (&sockaddr.address as *const SockAddrType) as *const libc::sockaddr,
@@ -713,30 +828,28 @@ pub fn connect<SockAddrType>(fd: RawFd, sockaddr: &SocketAddr<SockAddrType>) -> 
 /// A safe wrapper around [`libc::dirfd`].
 ///
 /// See: `man dirfd`
-pub fn dirfd(dir: &LibcDir) -> LibcResult<RawFd> {
+pub fn dirfd(dir: &LibcDir) -> Result<RawFd> {
     // SAFETY: The LibcDir argument can only be constructed by the `opendir`
     //         function which also checks to ensure that the pointer is
     //         non-null.  If the LibcDir object *does* contain an invalid
-    //         pointer then `libc` will return `-1` and a LibcResult::Err value
+    //         pointer then `libc` will return `-1` and a Result::Err value
     //         will be returned wrapping `errno`.
-    libc_result_from_int(unsafe { libc::dirfd(dir.inner.as_ptr()) })
+    check_failure(unsafe { libc::dirfd(dir.inner.as_ptr()) })
 }
 
 /// A safe wrapper around [`libc::dup3`].
 ///
 /// See: `man dup3`
-pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> LibcResult<()> {
+pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> Result<()> {
     #[cfg(not(target_os = "android"))]
     // SAFETY: Invalid arguments will result in an error code being returned
-    //         that will be wrapped by a LibcResult.
-    return retry_eintr!(libc_result_from_int_with_void(unsafe {
-        libc::dup3(old_fd, new_fd, flags)
-    }));
+    //         that will be wrapped by a Result.
+    return retry_eintr!(check_failure_with_void(unsafe { libc::dup3(old_fd, new_fd, flags) }));
 
     #[cfg(target_os = "android")]
     // SAFETY: Invalid arguments will result in an error code being returned
-    //         that will be wrapped by a LibcResult.
-    return retry_eintr!(libc_result_from_int_with_void(unsafe {
+    //         that will be wrapped by a Result.
+    return retry_eintr!(check_failure_with_void(unsafe {
         libc_fill::dup3(old_fd, new_fd, flags)
     }));
 }
@@ -746,7 +859,7 @@ pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> LibcResult<()> {
 /// This function uses `strerror_r` because `strerror` is not thread-safe.
 ///
 /// See: `man strerror`
-pub fn error_description(code: c_int) -> LibcResult<CStringBuffer> {
+pub fn error_description(code: c_int) -> Result<CStringBuffer> {
     let mut buffer: CStringBuffer = BUFFER_INIT_CSTRING;
 
     // SAFETY: The pointer argument refers to memory allocated in this function.
@@ -755,7 +868,7 @@ pub fn error_description(code: c_int) -> LibcResult<CStringBuffer> {
     if retval == 0 {
         Ok(buffer)
     } else {
-        Err(Errno { code: retval })
+        Err(Error::Libc(Errno { code: retval }))
     }
 }
 
@@ -763,13 +876,13 @@ pub fn error_description(code: c_int) -> LibcResult<CStringBuffer> {
 ///
 /// See: `man strerror`
 #[cfg(not(any(target_env = "musl", all(target_os = "linux", soong))))]
-pub fn error_name(code: c_int) -> LibcResult<&'static CStr> {
+pub fn error_name(code: c_int) -> Result<&'static CStr> {
     // SAFETY: This function takes no pointers and the return result is checked
-    //         and wrapped in a LibcResult.  The returned pointers point to
+    //         and wrapped in a Result.  The returned pointers point to
     //         statically allocated null-terminated strings and are safe to
     //         cast to `CStr`s.
     unsafe {
-        libc_result_from_ptr(libc_fill::strerrorname_np(code), |non_null_ptr: NonNull<c_char>| {
+        check_failure_with_ptr(libc_fill::strerrorname_np(code), |non_null_ptr: NonNull<c_char>| {
             CStr::from_ptr(non_null_ptr.as_ptr() as *const c_char)
         })
     }
@@ -779,40 +892,40 @@ pub fn error_name(code: c_int) -> LibcResult<&'static CStr> {
 /// `op`.
 ///
 /// See: `man fcntl`
-pub fn fcntl_getfd(fd: RawFd) -> LibcResult<c_int> {
+pub fn fcntl_getfd(fd: RawFd) -> Result<c_int> {
     // SAFETY: An invalid file descriptor will result in an error code being
-    //         returned that will be wrapped by a LibcResult.
-    libc_result_from_int(unsafe { libc::fcntl(fd, libc::F_GETFD) })
+    //         returned that will be wrapped by a Result.
+    check_failure(unsafe { libc::fcntl(fd, libc::F_GETFD) })
 }
 
 /// A safe wrapper around [`libc::fcntl`], passing [`libc::F_GETFL`] as the
 /// `op`.
 ///
 /// See: `man fcntl`
-pub fn fcntl_getfl(fd: RawFd) -> LibcResult<c_int> {
+pub fn fcntl_getfl(fd: RawFd) -> Result<c_int> {
     // SAFETY: An invalid file descriptor will result in an error code being
-    //         returned that will be wrapped by a LibcResult.
-    libc_result_from_int(unsafe { libc::fcntl(fd, libc::F_GETFL) })
+    //         returned that will be wrapped by a Result.
+    check_failure(unsafe { libc::fcntl(fd, libc::F_GETFL) })
 }
 
 /// A safe wrapper around [`libc::fcntl`], passing [`libc::F_SETFD`] as the
 /// `op`.
 ///
 /// See: `man fcntl`
-pub fn fcntl_setfd(fd: RawFd, flags: c_int) -> LibcResult<()> {
+pub fn fcntl_setfd(fd: RawFd, flags: c_int) -> Result<()> {
     // SAFETY: Invalid arguments will result in an error code being returned
-    //         that will be wrapped by a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::fcntl(fd, libc::F_SETFD, flags) })
+    //         that will be wrapped by a Result.
+    check_failure_with_void(unsafe { libc::fcntl(fd, libc::F_SETFD, flags) })
 }
 
 /// A safe wrapper around [`libc::fcntl`], passing [`libc::F_SETFL`] as the
 /// `op`.
 ///
 /// See: `man fcntl`
-pub fn fcntl_setfl(fd: RawFd, flags: c_int) -> LibcResult<()> {
+pub fn fcntl_setfl(fd: RawFd, flags: c_int) -> Result<()> {
     // SAFETY: Invalid arguments will result in an error code being returned
-    //         that will be wrapped by a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) })
+    //         that will be wrapped by a Result.
+    check_failure_with_void(unsafe { libc::fcntl(fd, libc::F_SETFL, flags) })
 }
 
 /// A safe wrapper around [`libc::fork`].
@@ -823,27 +936,27 @@ pub fn fcntl_setfl(fd: RawFd, flags: c_int) -> LibcResult<()> {
 /// calls to this function to be safe.
 ///
 /// See: `man fork`
-pub unsafe fn fork() -> LibcResult<libc::pid_t> {
+pub unsafe fn fork() -> Result<libc::pid_t> {
     // SAFETY: The `libc::fork` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int(unsafe { libc::fork() })
+    //         value is checked and wrapped in a Result.
+    check_failure(unsafe { libc::fork() })
 }
 
 /// A safe wrapper around [`libc::fstat`].
 ///
 /// See: `man fstat`
-pub fn fstat(fd: RawFd) -> LibcResult<libc::stat> {
+pub fn fstat(fd: RawFd) -> Result<libc::stat> {
     let mut buffer = MaybeUninit::<libc::stat>::uninit();
 
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The stat buffer pointer is guaranteed to point to a valid
         //         memory address due to its allocation inside this function's
         //         stack.  The return value is checked and wrapped in a
-        //         LibcResult.
+        //         Result.
         unsafe { libc::fstat(fd, buffer.as_mut_ptr().cast()) },
         // SAFETY: The `libc::fstat` function fully initializes the stat
         //         struct.
-        || unsafe { buffer.assume_init() },
+        |_| unsafe { buffer.assume_init() },
     )
 }
 
@@ -866,7 +979,7 @@ pub fn geteuid() -> libc::uid_t {
 /// A safe wrapper around [`libc::getpriority`]
 ///
 /// See: `man getpriority`
-pub fn getpriority(which: which_t, who: libc::id_t) -> LibcResult<c_int> {
+pub fn getpriority(which: which_t, who: libc::id_t) -> Result<c_int> {
     errno_clear();
 
     // SAFETY: `errno` is cleared before calling the function and checked upon
@@ -875,7 +988,7 @@ pub fn getpriority(which: which_t, who: libc::id_t) -> LibcResult<c_int> {
     if errno().code == 0 {
         Ok(result)
     } else {
-        Err(errno())
+        errno().into()
     }
 }
 
@@ -890,18 +1003,15 @@ pub fn getgid() -> libc::gid_t {
 /// A safe wrapper around [`libc::getgroups`]
 ///
 /// See: `man getgroups`
-pub fn getgroups<const N: usize>() -> LibcResult<ArrayVec<libc::gid_t, N>> {
+pub fn getgroups<const N: usize>() -> Result<ArrayVec<libc::gid_t, N>> {
     let mut buffer = [0; N];
 
     // SAFETY: The pointer argument refers to a stack-allocated buffer
     //         parameterized by N.  The result value is checked and wrapped in
-    //         LibcResult.
-    let result = unsafe { libc::getgroups(N as c_int, buffer.as_mut_ptr()) };
-
-    match result {
-        -1 => Err(errno()),
-        n => Ok(ArrayVec::from_iter(buffer.into_iter().take(n as usize))),
-    }
+    //         Result.
+    check_failure_with_payload(unsafe { libc::getgroups(N as c_int, buffer.as_mut_ptr()) }, |n| {
+        ArrayVec::from_iter(buffer.into_iter().take(n as usize))
+    })
 }
 
 /// A safe wrapper around [`libc::getpid`].
@@ -915,25 +1025,25 @@ pub fn getpid() -> libc::pid_t {
 /// A safe wrapper around [`libc::getrlimit`]
 ///
 /// See: `man getrlimit`
-pub fn getrlimit(resource: rlimit_resource_t) -> LibcResult<libc::rlimit> {
+pub fn getrlimit(resource: rlimit_resource_t) -> Result<libc::rlimit> {
     let mut rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
 
     // SAFETY: The pointer argument is derived from a local stack reference and
-    //         the return value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_payload(unsafe { libc::getrlimit(resource, &mut rlimit) }, || rlimit)
+    //         the return value is checked and wrapped in a Result.
+    check_failure_with_payload(unsafe { libc::getrlimit(resource, &mut rlimit) }, |_| rlimit)
 }
 
 /// A safe wrapper around [`libc::getsockopt`].
 ///
 /// See: `man getsockopt`
-pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> LibcResult<T> {
+pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> Result<T> {
     let mut optval = MaybeUninit::<T>::zeroed();
     let mut optlen = std::mem::size_of::<T>() as libc::socklen_t;
 
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The `optval` and `optlen` arguments are valid pointers to
         //         memory allocated in this function.  The return value is
-        //         checked and wrapped in a LibcResult.
+        //         checked and wrapped in a Result.
         unsafe {
             libc::getsockopt(
                 fd,
@@ -944,7 +1054,7 @@ pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> 
             )
         },
         // SAFETY: The call to `libc::getsockopt` will initialize this region.
-        || unsafe { optval.assume_init() },
+        |_| unsafe { optval.assume_init() },
     )
 }
 
@@ -953,7 +1063,7 @@ pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> 
 /// None will be returned if the socket family is not `AF_UNIX` or the socket is unbound.
 ///
 /// See: `man getsockname`
-pub fn getsockname(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> {
+pub fn getsockname(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
     let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
     let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
@@ -961,10 +1071,8 @@ pub fn getsockname(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> 
     //         memory that has been zeroed out.  This ensures that the any
     //         strings contained in the buffer will be valid null-terminated
     //         C strings.  The return value is checked and wrapped in a
-    //         LibcResult.
-    libc_result_from_int(unsafe {
-        libc::getsockname(fd, addr.as_mut_ptr().cast(), &mut addr_len)
-    })?;
+    //         Result.
+    check_failure(unsafe { libc::getsockname(fd, addr.as_mut_ptr().cast(), &mut addr_len) })?;
 
     debug_assert!(addr_len <= std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
 
@@ -991,7 +1099,7 @@ pub fn getsockname(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> 
 /// None will be returned if the socket family is not `AF_UNIX` or the socket is not connected.
 ///
 /// See: `man getpeername`
-pub fn getpeername(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> {
+pub fn getpeername(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
     let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
     let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
@@ -999,10 +1107,8 @@ pub fn getpeername(fd: RawFd) -> LibcResult<Option<(libc::sockaddr_un, usize)>> 
     //         memory that has been zeroed out.  This ensures that the any
     //         strings contained in the buffer will be valid null-terminated
     //         C strings.  The return value is checked and wrapped in a
-    //         LibcResult.
-    libc_result_from_int(unsafe {
-        libc::getpeername(fd, addr.as_mut_ptr().cast(), &mut addr_len)
-    })?;
+    //         Result.
+    check_failure(unsafe { libc::getpeername(fd, addr.as_mut_ptr().cast(), &mut addr_len) })?;
 
     // SAFETY: The memory had been zero initialized before `libc::getpeername`
     //         filled in any relevant data.  All strings should be valid C
@@ -1035,33 +1141,33 @@ pub fn getuid() -> libc::uid_t {
 /// A safe wrapper around [`libc::listen`].
 ///
 /// See: `man listen`
-pub fn listen(fd: RawFd, backlog: c_int) -> LibcResult<()> {
+pub fn listen(fd: RawFd, backlog: c_int) -> Result<()> {
     // SAFETY: The `libc::listen` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::listen(fd, backlog) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::listen(fd, backlog) })
 }
 
 /// A safe wrapper around [`libc::lseek64`].
 ///
 /// See: `man lseek64`
-pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> LibcResult<libc::off64_t> {
+pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: c_int) -> Result<libc::off64_t> {
     // SAFETY: The `libc::lseek64` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int(unsafe { libc::lseek64(fd, offset, whence) })
+    //         value is checked and wrapped in a Result.
+    check_failure(unsafe { libc::lseek64(fd, offset, whence) })
 }
 
 /// A safe wrapper around [`libc::mallopt`].
 ///
 /// See: `man mallopt`
 #[cfg(not(target_env = "musl"))]
-pub fn mallopt(cmd: c_int, arg: c_int) -> LibcResult<()> {
+pub fn mallopt(cmd: c_int, arg: c_int) -> Result<()> {
     // SAFETY: This function takes no pointer arguments and the return value
-    //         is checked and wrapped in a LibcResult.
+    //         is checked and wrapped in a Result.
     let retval = unsafe { libc::mallopt(cmd, arg) };
 
     // This function returns 1 on success and 0 on error.
     if retval == 0 {
-        Err(errno())
+        errno().into()
     } else {
         Ok(())
     }
@@ -1070,10 +1176,10 @@ pub fn mallopt(cmd: c_int, arg: c_int) -> LibcResult<()> {
 /// A safe wrapper around [`libc::open`].
 ///
 /// See: `man open`
-pub fn open(path: &CStr, flags: c_int, mode: Option<libc::mode_t>) -> LibcResult<RawFd> {
+pub fn open(path: &CStr, flags: c_int, mode: Option<libc::mode_t>) -> Result<RawFd> {
     // SAFETY: Path points to a valid, null-terminated C string and the return
-    //         value is checked and wrapped in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe {
+    //         value is checked and wrapped in a Result.
+    retry_eintr!(check_failure(unsafe {
         libc::open(path.as_ptr().cast(), flags, mode.unwrap_or(0) as c_uint)
     }))
 }
@@ -1081,40 +1187,40 @@ pub fn open(path: &CStr, flags: c_int, mode: Option<libc::mode_t>) -> LibcResult
 /// A safe wrapper around [`libc::opendir`].
 ///
 /// See: `man opendir`
-pub fn opendir(path: &CStr) -> LibcResult<LibcDir> {
+pub fn opendir(path: &CStr) -> Result<LibcDir> {
     // SAFETY: Path points to a valid, null-terminated C string and the return
-    //         value is checked and wrapped in a LibcResult.  The pointer
+    //         value is checked and wrapped in a Result.  The pointer
     //         itself has been verified as non-null and is thus wrapped in a
-    //         LibcResult.
-    libc_result_from_mut_ptr(unsafe { libc::opendir(path.as_ptr()) }, LibcDir::from_raw)
+    //         Result.
+    check_failure_with_mut_ptr(unsafe { libc::opendir(path.as_ptr()) }, LibcDir::from_raw)
 }
 
 /// A safe wrapper around [`libc::pipe`].
 ///
 /// See: `man pipe`
-pub fn pipe() -> LibcResult<(RawFd, RawFd)> {
+pub fn pipe() -> Result<(RawFd, RawFd)> {
     let mut pipes = [0; 2];
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The file descriptor buffer is guaranteed to point to valid
         //         memory and the return value is checked before the resulting
-        //         pipes are wrapped in a LibcResult.
+        //         pipes are wrapped in a Result.
         unsafe { libc::pipe(pipes.as_mut_ptr()) },
-        || (pipes[0], pipes[1]),
+        |_| (pipes[0], pipes[1]),
     )
 }
 
 /// A safe wrapper around [`libc::poll`].
 ///
 /// See `man poll`
-pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> LibcResult<c_int> {
+pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> Result<c_int> {
     // SAFETY: The `pollfds` pointer is valid because it is derived from a
     //         a valid slice reference and the length argument is obtained from
     //         the provided slice.  The return value is checked and wrapped in
-    //         a LibcResult.
+    //         a Result.
     //
     //         The cast between `*mut PollFd` and `*mut libc::pollfd` is safe
     //         due to the use of `#[repr(transparent)]` on PollFd.
-    libc_result_from_int(unsafe {
+    check_failure(unsafe {
         libc::poll(
             pollfds.as_mut_ptr() as *mut libc::pollfd,
             pollfds.len() as libc::nfds_t,
@@ -1142,45 +1248,45 @@ pub fn prctl_set_name<S: AsRef<[u8]> + ?Sized>(name: &S) {
 ///
 /// See: `man prctl`
 /// See: `man capabilities`
-pub fn prctl_get_securebits() -> LibcResult<c_int> {
+pub fn prctl_get_securebits() -> Result<c_int> {
     // SAFETY: The `libc::prctl` `PR_GET_SECUREBITS` operation takes no pointer
     //         arguments and can only return `EINVAL` if the argument is
     //         invalid.  The argument is guaranteed to be valid in this case.
-    libc_result_from_int(unsafe { libc::prctl(libc::PR_GET_SECUREBITS) })
+    check_failure(unsafe { libc::prctl(libc::PR_GET_SECUREBITS) })
 }
 
 /// A safe wrapper around the [`libc::prctl`] `PR_SET_SECUREBITS` operation.
 ///
 /// See: `man prctl`
 /// See: `man capabilities`
-pub fn prctl_set_securebits(securebits: c_int) -> LibcResult<()> {
+pub fn prctl_set_securebits(securebits: c_int) -> Result<()> {
     // SAFETY: The `libc::prctl` `PR_SET_SECUREBITS` operation takes an integer
     //         argument and can only return `EINVAL` if the argument is
     //         invalid.  The argument is guaranteed to be valid in this case.
-    libc_result_from_int_with_void(unsafe { libc::prctl(libc::PR_SET_SECUREBITS, securebits) })
+    check_failure_with_void(unsafe { libc::prctl(libc::PR_SET_SECUREBITS, securebits) })
 }
 
 /// A safe wrapper around the [`libc::prctl`] `PR_SET_NO_NEW_PRIVS` operation.
 ///
 /// See: `man prctl`
-pub fn prctl_set_no_new_privs() -> LibcResult<()> {
+pub fn prctl_set_no_new_privs() -> Result<()> {
     // SAFETY: The `libc::prctl` `PR_SET_NO_NEW_PRIVS` operation takes an integer
     //         argument and can only return `EINVAL` if the argument is
     //         invalid.  The argument is guaranteed to be valid in this case.
-    libc_result_from_int_with_void(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })
+    check_failure_with_void(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })
 }
 
 /// A safe wrapper around [`libc::read`].
 ///
 /// See: `man read`
-pub fn read<T: LibcFromBytes>(fd: RawFd) -> LibcResult<(isize, T)> {
+pub fn read<T: LibcFromBytes>(fd: RawFd) -> Result<(isize, T)> {
     let mut buffer = MaybeUninit::<T>::zeroed();
 
     // SAFETY: The `buff` pointer is valid because it is derived from a value
     //         allocated in this function and the `count` argument is
     //         calculated using `size_of()`.  The return value is checked and
-    //         wrapped in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe {
+    //         wrapped in a Result.
+    retry_eintr!(check_failure(unsafe {
         libc::read(fd, buffer.as_mut_ptr() as *mut c_void, std::mem::size_of::<T>())
     }))
     // SAFETY: The buffer was zero-initialized when it was allocated.  The call
@@ -1194,25 +1300,25 @@ pub fn read<T: LibcFromBytes>(fd: RawFd) -> LibcResult<(isize, T)> {
 /// See: `man readdir`
 pub fn readdir(dir: &LibcDir) -> Option<NonNull<libc::dirent>> {
     // SAFETY: The pointer to the directory is guaranteed to be NonNull and the
-    //         return value is checked and wrapped in a LibcResult.  The
+    //         return value is checked and wrapped in a Result.  The
     //         pointer itself has been verified as non-null and is thus wrapped
-    //         in a LibcResult.
-    libc_result_from_mut_ptr(unsafe { libc::readdir(dir.inner.as_ptr()) }, std::convert::identity)
+    //         in a Result.
+    check_failure_with_mut_ptr(unsafe { libc::readdir(dir.inner.as_ptr()) }, std::convert::identity)
         .ok()
 }
 
 /// A safe wrapper around [`libc::readlink`].
 ///
 /// See: `man readlink`
-pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
+pub fn readlink(path_name: &CStr) -> Result<CStringBuffer> {
     let mut link_buffer: CStringBuffer = BUFFER_INIT_CSTRING;
 
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The path name is guaranteed to be a valid null-terminated C
         //         string.  The link buffer is guaranteed to be a
         //         zero-initialized buffer and the size_of function is used to
         //         provide the buffer length to the libc call.  The return
-        //         value is checked and wrapped in a LibcResult.
+        //         value is checked and wrapped in a Result.
         unsafe {
             libc::readlink(
                 path_name.as_ptr(),
@@ -1220,7 +1326,7 @@ pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
                 std::mem::size_of::<CStringBuffer>(),
             )
         },
-        || link_buffer,
+        |_| link_buffer,
     )
 }
 
@@ -1233,7 +1339,7 @@ pub fn readlink(path_name: &CStr) -> LibcResult<CStringBuffer> {
 /// macro.
 ///
 /// See `man recvmsg` and `man readv`
-pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; BUFFER_SIZE])> {
+pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> Result<(isize, [u8; BUFFER_SIZE])> {
     let mut buffer = [0; BUFFER_SIZE];
 
     // Usage of `mem::zeroed()` is required as implementations of `msghdr`
@@ -1251,8 +1357,8 @@ pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; B
 
     // SAFETY: All of the pointers passed to `libc::recvmsg` point to regions
     //         allocated inside this function.  The return value is checked and
-    //         wrapped in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe { libc::recvmsg(fd, &mut msghdr, 0) }))
+    //         wrapped in a Result.
+    retry_eintr!(check_failure(unsafe { libc::recvmsg(fd, &mut msghdr, 0) }))
         .and_then(|retval| Ok((retval, buffer)))
 }
 
@@ -1265,7 +1371,7 @@ pub fn recvmsg<const BUFFER_SIZE: usize>(fd: RawFd) -> LibcResult<(isize, [u8; B
 /// macro.
 ///
 /// See: `man sendmsg`
-pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
+pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> Result<isize> {
     // Usage of `mem::zeroed()` is required as implementations of `msghdr`
     // can include private fields (e.g. aarch64-musl).
     //
@@ -1281,159 +1387,154 @@ pub fn sendmsg(socket_fd: RawFd, buffer: &[u8]) -> LibcResult<isize> {
 
     // SAFETY: All of the pointers passed to `libc::sendmsg` point to regions
     //         allocated inside this function.  The return value is checked and
-    //         wrapped in a LibcResult.
-    retry_eintr!(libc_result_from_int(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) }))
+    //         wrapped in a Result.
+    retry_eintr!(check_failure(unsafe { libc::sendmsg(socket_fd, &msghdr, 0) }))
 }
 
 /// A safe wrapper around [`libc::setgroups`]
 ///
 /// See: `man setgroups`
-pub fn setgroups(groups: &[libc::gid_t]) -> LibcResult<()> {
+pub fn setgroups(groups: &[libc::gid_t]) -> Result<()> {
     // SAFETY: The length and pointer arguments are derived from a reference
     //         that outlives the call, and the return value is wrapped in a
-    //         LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setgroups(groups.len(), groups.as_ptr()) })
+    //         Result.
+    check_failure_with_void(unsafe { libc::setgroups(groups.len(), groups.as_ptr()) })
 }
 
 /// A safe wrapper around [`libc::setpgid`].
 ///
 /// See: `man setpgid`
-pub fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> LibcResult<()> {
+pub fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> Result<()> {
     // SAFETY: The `libc::setpgid` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setpgid(pid, pgid) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setpgid(pid, pgid) })
 }
 
 /// A safe wrapper around [`libc::setpriority`]
 ///
 /// See: `man setpriority`
-pub fn setpriority(which: which_t, who: libc::id_t, prio: c_int) -> LibcResult<c_int> {
+pub fn setpriority(which: which_t, who: libc::id_t, prio: c_int) -> Result<c_int> {
     errno_clear();
 
     // SAFETY: `errno` is cleared before calling the function and checked upon
     //         return.
-    let result: c_int = unsafe { libc::setpriority(which, who, prio) };
-    if errno().code == 0 {
-        Ok(result)
-    } else {
-        Err(errno())
-    }
+    check_success(unsafe { libc::setpriority(which, who, prio) })
 }
 
 /// A safe wrapper around [`libc::setregid`]
 ///
 /// See: `man setregid`
-pub fn setregid(rgid: libc::gid_t, egid: libc::gid_t) -> LibcResult<()> {
+pub fn setregid(rgid: libc::gid_t, egid: libc::gid_t) -> Result<()> {
     // SAFETY: The `libc::setregid` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setregid(rgid, egid) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setregid(rgid, egid) })
 }
 
 /// A safe wrapper around [`libc::setresgid`]
 ///
 /// See: `man setresgid`
-pub fn setresgid(rgid: libc::gid_t, egid: libc::gid_t, sgid: libc::gid_t) -> LibcResult<()> {
+pub fn setresgid(rgid: libc::gid_t, egid: libc::gid_t, sgid: libc::gid_t) -> Result<()> {
     // SAFETY: The `libc::setresgid` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setresgid(rgid, egid, sgid) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setresgid(rgid, egid, sgid) })
 }
 
 /// A safe wrapper around [`libc::setreuid`]
 ///
 /// See : `man setreuid`
-pub fn setreuid(ruid: libc::uid_t, euid: libc::uid_t) -> LibcResult<()> {
+pub fn setreuid(ruid: libc::uid_t, euid: libc::uid_t) -> Result<()> {
     // SAFETY: The `libc::setreuid` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setreuid(ruid, euid) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setreuid(ruid, euid) })
 }
 
 /// A safe wrapper around [`libc::setresuid`]
 ///
 /// See : `man setresuid`
-pub fn setresuid(ruid: libc::uid_t, euid: libc::uid_t, suid: libc::uid_t) -> LibcResult<()> {
+pub fn setresuid(ruid: libc::uid_t, euid: libc::uid_t, suid: libc::uid_t) -> Result<()> {
     // SAFETY: The `libc::setresuid` function takes no pointers and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setresuid(ruid, euid, suid) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setresuid(ruid, euid, suid) })
 }
 
 /// A safe wrapper around [`libc::setrlimit`]
 ///
 /// See: `man setrlimit`
-pub fn setrlimit(resource: rlimit_resource_t, rlimit: &libc::rlimit) -> LibcResult<()> {
+pub fn setrlimit(resource: rlimit_resource_t, rlimit: &libc::rlimit) -> Result<()> {
     // SAFETY: The pointer argument is derived from a valid reference and the
-    //         return value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::setrlimit(resource, rlimit) })
+    //         return value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::setrlimit(resource, rlimit) })
 }
 
 /// A safe wrapper around [`libc::sigaddset`]
 ///
 /// See: `man sigsetops`
-pub fn sigaddset(sigset: &mut libc::sigset_t, signum: c_int) -> LibcResult<()> {
+pub fn sigaddset(sigset: &mut libc::sigset_t, signum: c_int) -> Result<()> {
     // SAFETY: The argument pointer is constructed from a valid reference.  The
-    //         return value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::sigaddset(sigset, signum) })
+    //         return value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::sigaddset(sigset, signum) })
 }
 
 /// A safe wrapper around [`libc::sigemptyset`]
 ///
 /// See: `man sigsetops`
-pub fn sigemptyset() -> LibcResult<libc::sigset_t> {
+pub fn sigemptyset() -> Result<libc::sigset_t> {
     let mut sigset = MaybeUninit::<libc::sigset_t>::uninit();
 
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The passed in pointer is valid and points to a location
         //         allocated on the previous line.
         unsafe { libc::sigemptyset(sigset.as_mut_ptr()) },
         // SAFETY: Libc guarantees that this signal set is now initialized.
-        || unsafe { sigset.assume_init() },
+        |_| unsafe { sigset.assume_init() },
     )
 }
 
 /// A safe wrapper around [`libc::signalfd`].
 ///
 /// See: `man signalfd`
-pub fn signalfd(fd: RawFd, sigset: &libc::sigset_t, flags: c_int) -> LibcResult<RawFd> {
+pub fn signalfd(fd: RawFd, sigset: &libc::sigset_t, flags: c_int) -> Result<RawFd> {
     // SAFETY: The sigset pointer is guaranteed to be valid because it is
     //         passed in as a reference.  Invalid argument values will
     //         result in an error being returned by `libc::signalfd`.  The
-    //         return value is checked and wrapped in a LibcResult.
-    libc_result_from_int(unsafe { libc::signalfd(fd, sigset, flags) })
+    //         return value is checked and wrapped in a Result.
+    check_failure(unsafe { libc::signalfd(fd, sigset, flags) })
 }
 
 /// A safe wrapper around [`libc::sigprocmask`]
 ///
 /// See `man sigprocmask`
-pub fn sigprocmask(how: c_int, sigset: &libc::sigset_t) -> LibcResult<libc::sigset_t> {
+pub fn sigprocmask(how: c_int, sigset: &libc::sigset_t) -> Result<libc::sigset_t> {
     let mut sigset_out = MaybeUninit::<libc::sigset_t>::uninit();
 
-    libc_result_from_int_with_payload(
+    check_failure_with_payload(
         // SAFETY: The pointer arguments are guaranteed to be valid memory
         //         addresses as they are created from references.  The return
-        //         value is checked and wrapped in a LibcResult.
+        //         value is checked and wrapped in a Result.
         unsafe { libc::sigprocmask(how, sigset, sigset_out.as_mut_ptr()) },
         // SAFETY: Lib guarantees that this memory now contains a valid
         //         libc::sigset_t.
-        || unsafe { sigset_out.assume_init() },
+        |_| unsafe { sigset_out.assume_init() },
     )
 }
 
 /// A safe wrapper around [`libc::socket`].
 ///
 /// See: `man socket`
-pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> LibcResult<RawFd> {
+pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> Result<RawFd> {
     // SAFETY: Invalid argument values will result in a error being returned
     //         by `libc::socket`.  The return value is checked and wrapped in
-    //         a LibcResult.
-    libc_result_from_int(unsafe { libc::socket(domain, ty, protocol) })
+    //         a Result.
+    check_failure(unsafe { libc::socket(domain, ty, protocol) })
 }
 
 /// A safe wrapper around [`libc::unlink`].
 ///
 /// See: `man 2 unlink`
-pub fn unlink(path: &CStr) -> LibcResult<()> {
+pub fn unlink(path: &CStr) -> Result<()> {
     // SAFETY: Path points to a valid, null-terminated C string and the return
-    //         value is checked and wrapped in a LibcResult.
-    libc_result_from_int_with_void(unsafe { libc::unlink(path.as_ptr()) })
+    //         value is checked and wrapped in a Result.
+    check_failure_with_void(unsafe { libc::unlink(path.as_ptr()) })
 }
 
 /// The status of a waited-for child process.
@@ -1466,7 +1567,7 @@ impl WaitStatus {
         } else if libc::WIFCONTINUED(status) {
             Ok(WaitStatus::Continued)
         } else {
-            bail!("Unexpected integer for wait status: {status}");
+            Err(Error::InvalidWaitStatus(status))
         }
     }
 
@@ -1509,10 +1610,10 @@ impl WaitStatus {
 pub fn waitpid(
     pid: Option<libc::pid_t>,
     options: c_int,
-) -> LibcResult<Option<(libc::pid_t, WaitStatus)>> {
+) -> Result<Option<(libc::pid_t, WaitStatus)>> {
     let mut status = 0;
     let pid_arg = pid.unwrap_or(-1);
-    let result = retry_eintr!(libc_result_from_int(
+    let result = retry_eintr!(check_failure(
         // SAFETY: `&mut status` is a valid mutable pointer to a stack-allocated `c_int`.
         //         The return value is immediately checked for errors.
         unsafe { libc::waitpid(pid_arg, &mut status, options) }
@@ -1523,5 +1624,5 @@ pub fn waitpid(
         return Ok(None);
     }
 
-    Ok(Some((result, WaitStatus::from_status(status).unwrap())))
+    Ok(Some((result, WaitStatus::from_status(status)?)))
 }
