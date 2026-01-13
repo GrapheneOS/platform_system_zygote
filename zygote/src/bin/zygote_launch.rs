@@ -83,7 +83,7 @@ pub struct Launch {
 }
 
 impl Launch {
-    fn to_spawn_message(&self) -> Result<Message<'_, '_>> {
+    fn to_spawn_message(&self) -> zygote_messages::Result<Message<'_, '_>> {
         Ok(Message::Spawn {
             common: self.to_spawn_params(),
             payload: self.payload.to_spawn_payload()?,
@@ -109,7 +109,7 @@ impl Launch {
 }
 
 impl TryToParcel for Launch {
-    fn try_to_parcel<'a>(&self) -> Result<flatbuffers::FlatBufferBuilder<'a>> {
+    fn try_to_parcel<'a>(&self) -> zygote_messages::Result<flatbuffers::FlatBufferBuilder<'a>> {
         Ok(self.to_spawn_message()?.to_parcel())
     }
 }

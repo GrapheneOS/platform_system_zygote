@@ -16,10 +16,12 @@
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Expr, Field, Fields, GenericParam, Ident, Type, Variant};
+use syn::{
+    Attribute, Data, DeriveInput, Expr, Field, Fields, GenericParam, Ident, LitStr, Type, Variant,
+};
 
 use crate::utils::{
-    extract_inner_type_name, get_flatten_into_ident, get_inner_type_ident,
+    extract_inner_type_name, get_error_type_ident, get_flatten_into_ident, get_inner_type_ident,
     get_inner_type_ident_from_variant,
 };
 
@@ -107,6 +109,7 @@ fn gen_unmarshal_struct(ast: &DeriveInput) -> TokenStream {
 // Generates the FromParcel trait implementation.
 fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
     let name = &ast.ident;
+    let name_lit = LitStr::new(&name.to_string(), name.span());
     let where_clause = ast.generics.where_clause.as_ref();
 
     let variants = match &ast.data {
@@ -124,6 +127,9 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
         _ => quote! { p },
     });
 
+    let error_type_ident =
+        get_error_type_ident(&ast.attrs).unwrap_or_else(|| Ident::new("Error", name.span()));
+
     quote! {
         impl<'a> FromParcel<'a> for #name <#(#ty_generics),*> #where_clause {
             #[tracing::instrument(skip_all)]
@@ -131,7 +137,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
                 let parcel: inner::Parcel<'a> = flatbuffers::root::<inner::Parcel>(buffer)?;
                 match parcel.message_type() {
                     #(#unmarshal_arms),*
-                    inner::#name(tag) => anyhow::bail!("Unknown #name type: {tag}"),
+                    inner::#name(tag) => return Err(#error_type_ident::UnknownVariant(#name_lit, tag)),
                 }
             }
         }
@@ -152,7 +158,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
 //       }
 //       ..
 //       inner::SpawnPayload(tag) => {
-//         bail!("Unknown SpawnPayload type: {tag}")
+//         return Err(Error::UnknownVariant("SpawnPayload", tag))
 //       }
 //     }
 //   }
@@ -160,6 +166,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
 // ```
 fn gen_unmarshal_from(ast: &DeriveInput, source_type: &Type, field_name: &Ident) -> TokenStream {
     let name = &ast.ident;
+    let name_lit = LitStr::new(&name.to_string(), name.span());
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
     let variants = match &ast.data {
@@ -177,12 +184,15 @@ fn gen_unmarshal_from(ast: &DeriveInput, source_type: &Type, field_name: &Ident)
     let from_method =
         Ident::new(&format!("from_{}", type_name).to_snake_case(), type_method.span());
 
+    let error_type_ident =
+        get_error_type_ident(&ast.attrs).unwrap_or_else(|| Ident::new("Error", name.span()));
+
     quote! {
         impl #impl_generics #name #ty_generics #where_clause {
             fn #from_method(source: #source_type) -> Result<Self> {
                 match source.#type_method() {
                     #(#unmarshal_arms),*
-                    inner::#name(tag) => anyhow::bail!("Unknown #name type: {tag}"),
+                    inner::#name(tag) => return Err(#error_type_ident::UnknownVariant(#name_lit, tag)),
                 }
             }
         }
