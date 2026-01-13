@@ -36,7 +36,7 @@ macro_rules! span_scope {
 }
 
 pub(crate) mod arguments;
-pub mod child_process;
+pub(crate) mod child_process;
 pub mod config;
 pub mod file_descriptors;
 pub mod introspection;

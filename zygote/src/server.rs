@@ -20,15 +20,15 @@
 
 use std::{convert::Infallible, ffi::OsStr, os::fd::RawFd, path::Path};
 
-use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::ArrayVec;
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
+use thiserror::Error;
 use tracing::{error, info, warn};
 
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry, ForkType},
-    introspection::{debug_assert_single_threaded, get_proc_fd_path, ProcStat},
+    introspection::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     species::SpeciesRef,
 };
 use zygote_messages::{
@@ -83,6 +83,33 @@ impl<'a> Partition<'a> for PollBuffer {
     }
 }
 
+#[derive(Debug, Error)]
+enum ServerSocketError {
+    #[error("Failed to create server socket: {0}")]
+    CreationError(#[from] sys::Error),
+
+    #[error("Failed to create server socket directory: {0}")]
+    DirectoryCreationError(std::io::Error),
+
+    #[error("Failed to fstat provided file descriptor: {0}")]
+    FstatFailure(sys::Error),
+
+    #[error("Socket argument path already exists: {0}")]
+    PathExists(String),
+
+    #[error("Socket path must have a parent directory")]
+    PathHasNoParent,
+
+    #[error("Provided integer argument does not refer to an open file: {0}")]
+    ProvidedFdNotOpenFile(RawFd),
+
+    #[error("Provided file descriptor does not refer to a seqpacket socket: {0}")]
+    ProvidedFdNotSeqPacket(RawFd),
+
+    #[error("Provided file descriptor does not refer to a valid socket: {0}")]
+    ProvidedFdNotSocket(RawFd),
+}
+
 #[derive(Debug)]
 enum ServerControl<T> {
     Continue,
@@ -106,11 +133,29 @@ impl<T> ServerControl<T> {
     }
 }
 
+#[derive(Debug, Error)]
+enum ClientLoopError {
+    #[error("Failed to send IdentityQuery response: {0}")]
+    IdentityQueryResponseFailure(sys::Error),
+
+    #[error("Failed to create new process: {0}")]
+    ProcessCreationFailure(sys::Error),
+
+    #[error("Failed to send Spawn response: {0}")]
+    SpawnResponseFailure(sys::Error),
+
+    #[error("Failed to read procfs stats file: {0}")]
+    StatReadError(introspection::ProcFsError),
+
+    #[error("Failed to send Stat response: {0}")]
+    StatResponseFailure(sys::Error),
+}
+
 enum ClientLoopControl<T> {
     Child(T),
     Break,
     NextSocket,
-    Error(RawFd, anyhow::Error),
+    Error(RawFd, ClientLoopError),
     Shutdown,
 }
 
@@ -238,21 +283,21 @@ impl Server {
     ///   * Using the provided integer as a file descriptor
     ///   * Opening a new socket and binding it to the provided path
     ///   * Opening a new socket and binding it to a default path
-    fn get_server_socket(socket_path_or_fd: String) -> Result<(RawFd, Option<String>)> {
+    fn get_server_socket(
+        socket_path_or_fd: String,
+    ) -> Result<(RawFd, Option<String>), ServerSocketError> {
         if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {
-                bail!("Provided integer argument does not refer to an open file: {}", fd);
+                return Err(ServerSocketError::ProvidedFdNotOpenFile(fd));
             }
 
-            let stat = sys::fstat(fd).with_context(|| {
-                format!("fstat of provided server socket file descriptor ({fd}) failed")
-            })?;
+            let stat = sys::fstat(fd).map_err(ServerSocketError::FstatFailure)?;
             if sys::get_file_type(stat) != libc::S_IFSOCK {
-                bail!("Provided file descriptor does not refer to a valid socket: {}", fd);
+                return Err(ServerSocketError::ProvidedFdNotSocket(fd));
             }
 
             if sys::get_socket_type(fd)? != libc::SOCK_SEQPACKET {
-                bail!("Provided file descriptor does not refer to a seqpacket socket: {}", fd);
+                return Err(ServerSocketError::ProvidedFdNotSeqPacket(fd));
             }
 
             sys::fcntl_setfl(fd, libc::O_NONBLOCK)?;
@@ -262,22 +307,22 @@ impl Server {
         } else {
             let arg_path = Path::new(&socket_path_or_fd);
 
-            let (socket_fd, server_socket_path) = if let Some(abs_socket_addr) =
-                socket_path_or_fd.strip_prefix("@")
-            {
-                (sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)?, None)
-            } else {
-                if arg_path.exists() {
-                    bail!("Socket argument paths already exists: {}", &socket_path_or_fd);
-                }
-                std::fs::create_dir_all(
-                    arg_path.parent().ok_or(anyhow!("Socket path must have a parent directory"))?,
-                )?;
-                (
-                    sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?,
-                    Some(socket_path_or_fd.clone()),
-                )
-            };
+            let (socket_fd, server_socket_path) =
+                if let Some(abs_socket_addr) = socket_path_or_fd.strip_prefix("@") {
+                    (sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)?, None)
+                } else {
+                    if arg_path.exists() {
+                        return Err(ServerSocketError::PathExists(socket_path_or_fd.clone()));
+                    }
+                    std::fs::create_dir_all(
+                        arg_path.parent().ok_or(ServerSocketError::PathHasNoParent)?,
+                    )
+                    .map_err(ServerSocketError::DirectoryCreationError)?;
+                    (
+                        sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?,
+                        Some(socket_path_or_fd.clone()),
+                    )
+                };
             sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
             sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
 
@@ -576,11 +621,11 @@ impl Server {
 
         match Self::send_response(fd, response.to_parcel().finished_data()) {
             Ok(_) => Continue,
-            Err(errno) => {
-                error!("Failed to send IdentityQuery response: {errno}");
+            Err(error) => {
+                error!("Failed to send IdentityQuery response: {error}");
                 Break(ClientLoopControl::Error(
                     fd,
-                    anyhow!("IdentityQuery response failed: {errno}"),
+                    ClientLoopError::IdentityQueryResponseFailure(error),
                 ))
             }
         }
@@ -641,9 +686,12 @@ impl Server {
                 let response = Message::SpawnResponse { pid: new_pid };
                 match Self::send_response(fd, response.to_parcel().finished_data()) {
                     Ok(_) => Continue,
-                    Err(errno) => {
-                        error!("Failed to send Spawn response: {errno}");
-                        Break(ClientLoopControl::Error(fd, errno))
+                    Err(error) => {
+                        error!("Failed to send Spawn response: {error}");
+                        Break(ClientLoopControl::Error(
+                            fd,
+                            ClientLoopError::SpawnResponseFailure(error),
+                        ))
                     }
                 }
             }
@@ -680,11 +728,13 @@ impl Server {
                     error!("Unexpected error code returned by call to `clone3()`: {errno}");
                 }
 
-                Break(ClientLoopControl::Error(fd, errno.into()))
+                Break(ClientLoopControl::Error(
+                    fd,
+                    ClientLoopError::ProcessCreationFailure(errno.into()),
+                ))
             }
-            Err(e) => {
-                error!("Unexpected error returned by call to `clone3()`: {e}");
-                Break(ClientLoopControl::Error(fd, e.into()))
+            Err(_) => {
+                unreachable!("The fork and clone3 calls can only return sys::Error::Libc variants")
             }
         }
     }
@@ -770,7 +820,7 @@ impl Server {
             Ok(proc) => proc,
             Err(err) => {
                 error!("Failed to get ProcStat: {err:?}");
-                return Break(ClientLoopControl::Error(fd, err));
+                return Break(ClientLoopControl::Error(fd, ClientLoopError::StatReadError(err)));
             }
         };
         let response = Message::StatResponse {
@@ -792,12 +842,9 @@ impl Server {
                 // Continue the `recvmsg` loop
                 Continue
             }
-            Err(errno) => {
-                error!("Failed to send Stat response: {errno}");
-                Break(ClientLoopControl::Error(
-                    fd,
-                    anyhow!("Failed to send Stat response: {errno}"),
-                ))
+            Err(error) => {
+                error!("Failed to send Stat response: {error}");
+                Break(ClientLoopControl::Error(fd, ClientLoopError::StatResponseFailure(error)))
             }
         }
     }
@@ -861,7 +908,8 @@ impl Server {
     /// Send the provided response through the socket and panic on errors that
     /// indicate an irrecoverable bug.
     ///
-    /// The following errors will cause a panic:
+    /// The following errors indicate a critical logic error.  In these cases
+    /// the server will panic to prevent any unintended behavior:
     /// * [`libc::EACCES`]
     /// * [`libc::EALREADY`]
     /// * [`libc::EBADF`]
@@ -870,24 +918,30 @@ impl Server {
     /// * [`libc::EINVAL`]
     /// * [`libc::EISCONN`]
     /// * [`libc::EMSGSIZE`]
-    /// * [`libc::ENOBUFS`]
-    /// * [`libc::ENOMEM`]
     /// * [`libc::ENOTCONN`]
     /// * [`libc::ENOTSOCK`]
     /// * [`libc::EOPNOTSUPP`]
     /// * [`libc::EPIPE`]
     ///
+    /// The following errors indicate the system is in a very unhealthy state.
+    /// The server will panic and allow the system to recover:
+    /// * [`libc::ENOBUFS`]
+    /// * [`libc::ENOMEM`]
+    ///
     /// The following errors will be returned to the caller:
     /// * [`libc::EAGAIN`]
     /// * [`libc::EWOULDBLOCK`]
     /// * [`libc::ECONNRESET`]
-    fn send_response(fd: RawFd, buffer: &[u8]) -> Result<()> {
+    fn send_response(fd: RawFd, buffer: &[u8]) -> Result<(), sys::Error> {
         match sys::sendmsg(fd, buffer) {
             Ok(_) => Ok(()),
             Err(sys::Error::Libc(errno))
                 if errno.matches(&[libc::EAGAIN | libc::EWOULDBLOCK | libc::ECONNRESET]) =>
             {
                 Err(errno.into())
+            }
+            Err(sys::Error::Libc(errno)) if errno.matches(&[libc::ENOBUFS | libc::ENOMEM]) => {
+                panic!("System is in a critical low-memory state: {errno}. Exiting.")
             }
             Err(errno) => panic!("Unexpected error when sending response on fd {fd}: {errno}"),
         }
