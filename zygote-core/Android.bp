@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2025 The Android Open-Source Project
+// Copyright (C) 2026 The Android Open-Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,21 +13,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
-rust_proc_macro {
-    name: "libzygote_proc_macros",
-    crate_name: "zygote_proc_macros",
-    cargo_env_compat: true,
+rust_library {
+    name: "libzygote_core",
+    crate_name: "zygote_core",
     defaults: ["zygote_defaults"],
-    crate_root: "src/lib.rs",
+    srcs: [
+        "src/lib.rs",
+    ],
     rustlibs: [
         "libanyhow",
-        "libheck",
-        "libproc_macro2",
-        "libquote",
-        "libsyn",
+        "liblog_rust",
+        "liblogger",
+        "libtracing",
+        "libtracing_subscriber",
     ],
+    target: {
+        android: {
+            rustlibs: [
+                "libatrace_rust",
+                "libatrace_tracing_subscriber",
+            ],
+        },
+        host: {
+            rustlibs: [
+                "libtracing_subscriber",
+            ],
+        },
+    },
 }

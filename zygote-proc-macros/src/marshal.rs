@@ -115,7 +115,7 @@ fn gen_marshal_struct(
     let inner_type_args_name = quote::format_ident!("{}Args", inner_type_name);
 
     let assignments = fields.named.iter().map(|field| {
-        let field_name = field.ident.as_ref().unwrap();
+        let field_name = field.ident.as_ref().expect("Field should have an identifier");
         gen_field_assignment(
             &quote! { args },
             field,
@@ -160,7 +160,7 @@ fn gen_marshal_arm(variant: &Variant, enum_name: &Ident) -> TokenStream {
         Fields::Named(fields) => {
             let inner_type_args_name = quote! { inner_type_args };
             let assignments = fields.named.iter().map(|field| {
-                let field_name = field.ident.as_ref().unwrap();
+                let field_name = field.ident.as_ref().expect("Field should have an identifier");
                 gen_field_assignment(
                     &inner_type_args_name,
                     field,
@@ -168,7 +168,10 @@ fn gen_marshal_arm(variant: &Variant, enum_name: &Ident) -> TokenStream {
                     &quote! { builder },
                 )
             });
-            let field_names = fields.named.iter().map(|f| f.ident.as_ref().unwrap());
+            let field_names = fields
+                .named
+                .iter()
+                .map(|f| f.ident.as_ref().expect("Field should have an identifier"));
             quote! {
                 #enum_name::#variant_id { #(#field_names),* } => {
                     let mut #inner_type_args_name = inner::#inner_type_arg_id::default();
@@ -231,7 +234,7 @@ pub(crate) fn gen_flatten_marshal_parcel(ast: &DeriveInput) -> TokenStream {
     };
 
     let assignments = fields_named.named.iter().map(|field| {
-        let field_name = field.ident.as_ref().unwrap();
+        let field_name = field.ident.as_ref().expect("Field should have an identifier");
         gen_field_assignment(
             &quote! { args },
             field,
@@ -259,7 +262,7 @@ fn gen_field_assignment(
     field_access: &TokenStream,
     builder: &TokenStream,
 ) -> TokenStream {
-    let field_name = field.ident.as_ref().unwrap();
+    let field_name = field.ident.as_ref().expect("Field should have an identifier");
     match MarshalAttr::new(field) {
         Some(MarshalAttr::Default(lit)) => {
             quote! { #args.#field_name = #field_access.unwrap_or(#lit) }

@@ -23,7 +23,7 @@ use std::convert::Infallible;
 use anyhow::Result;
 use clap::Parser;
 
-use zygote::{config, server};
+use zygote::server;
 use zygote_sys as sys;
 
 #[allow(unreachable_code)]
@@ -41,9 +41,9 @@ fn main() -> Result<()> {
 /// frame to ensure that the configuration and server resources are dropped
 /// before the thunk is evaluated.
 fn run_server() -> Option<impl FnOnce() -> Infallible> {
-    let config = config::Server::parse();
+    let config = zygote::config::Server::parse();
     let _trace_guard =
-        config::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
+        zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
 
     log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
 

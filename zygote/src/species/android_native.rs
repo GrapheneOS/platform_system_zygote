@@ -258,8 +258,8 @@ impl Species for App {
         sys::android::set_selinux_context(
             uid as libc::uid_t,
             false,
-            se_info_buffer.as_cstr().unwrap(),
-            process_name_buffer.as_cstr().unwrap(),
+            se_info_buffer.as_cstr().expect("se_info_buffer should be null-terminated"),
+            process_name_buffer.as_cstr().expect("process_name_buffer should be null-terminated"),
         )
         .expect("Unable to transition SE Linux contexts");
     }
@@ -274,7 +274,10 @@ impl Species for App {
         // SAFETY: This is called in a single-threaded context
         unsafe {
             android::process::fdsan_set_error_level(
-                re_init_data.as_android_native().unwrap().fds_error_level,
+                re_init_data
+                    .as_android_native()
+                    .expect("Expected AndroidNative ReInitData")
+                    .fds_error_level,
             );
         }
 
@@ -289,7 +292,7 @@ impl Species for App {
         // Create a cgroup for the process
         if sys::getuid() == 0 {
             cgroup::create(
-                spawn_params.uid.expect("No UID specified").try_into().unwrap(),
+                spawn_params.uid.expect("No UID specified").try_into().expect("Invalid UID"),
                 sys::getpid(),
             )
             .expect("Unable to create cgroup for process");
@@ -297,12 +300,14 @@ impl Species for App {
 
         // Set the cpuset policy and panic on failure
         if cpusets_enabled() {
-            sys::android::set_cpuset_policy(0, SchedPolicy::Default).unwrap();
+            sys::android::set_cpuset_policy(0, SchedPolicy::Default)
+                .expect("Failed to set cpuset policy");
         }
 
         // Set the scheduling policy and panic on failure.  Must be called
         // before losing the permission to set scheduler policy.
-        sys::android::set_sched_policy(0, SchedPolicy::Default).unwrap();
+        sys::android::set_sched_policy(0, SchedPolicy::Default)
+            .expect("Failed to set scheduler policy");
 
         // We are going to lose the permission to set scheduler policy during
         // the specialization, so make sure that we don't cache the fd of

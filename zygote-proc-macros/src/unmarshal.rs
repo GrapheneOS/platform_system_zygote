@@ -224,7 +224,7 @@ fn gen_unmarshal_arm(
             let cast_method = quote::format_ident!("{}_as_{}", field_name, inner_type_snake_name);
             quote! {
                 inner::#enum_name::#inner_type_id => {
-                    let #parsed_variant = #source.#cast_method().unwrap();
+                    let #parsed_variant = #source.#cast_method().expect("Unable to cast to #inner_type_snake_name");
                     Ok(#enum_name::#variant_id {
                         #(#field_values),*
                     })
@@ -290,7 +290,7 @@ pub(crate) fn gen_flatten_unmarshal_parcel(ast: &DeriveInput) -> TokenStream {
 
 // Sets a value of the field #field_name of the given #args, depending on the #[unmarshal(..)] attribute
 fn gen_field_value(field: &Field, source: &TokenStream) -> TokenStream {
-    let field_name = field.ident.as_ref().unwrap();
+    let field_name = field.ident.as_ref().expect("Field should have an identifier");
     let ty = &field.ty;
     match UnmarshalAttr::new(field) {
         Some(UnmarshalAttr::ValidRange(range)) => quote! {
@@ -302,7 +302,7 @@ fn gen_field_value(field: &Field, source: &TokenStream) -> TokenStream {
         },
         Some(UnmarshalAttr::Map(map)) => quote! { #field_name: #map(&#source.#field_name()) },
         Some(UnmarshalAttr::Table) => {
-            quote! { #field_name: <#ty>::from_table(#source.#field_name().unwrap()) }
+            quote! { #field_name: <#ty>::from_table(#source.#field_name().expect("Missing table in flatbuffer")) }
         }
         Some(UnmarshalAttr::Flatten) => quote! { #field_name: <#ty>::unflatten(#source) },
         Some(UnmarshalAttr::Union(source_type)) => {

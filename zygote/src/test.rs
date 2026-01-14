@@ -18,7 +18,7 @@
 use core::ffi::CStr;
 use std::{ffi::OsStr, panic, sync::Mutex};
 
-use crate::config::init_reporting_for_testing;
+use zygote_core::init_reporting_for_testing;
 
 pub(crate) static MUTEX: Mutex<()> = Mutex::new(());
 

@@ -1,6 +1,0 @@
-[workspace]
-resolver = "3"
-members = ["memmark", "zygote", "zygote-messages", "zygote-proc-macros", "zygote-sys"]
-
-[patch.crates-io]
-libc = { path = "../../external/rust/android-crates-io/crates/libc/" }

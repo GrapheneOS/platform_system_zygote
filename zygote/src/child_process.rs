@@ -76,22 +76,22 @@ pub(crate) fn re_initialize(
     if let Some(cap_permitted) = spawn_params.cap_permitted {
         CapabilitiesSet::new(CapabilityFlags::empty(), CapabilityFlags::empty(), cap_permitted)
             .store_additive()
-            .unwrap();
+            .expect("Failed to store additive capabilities");
     }
 
     // Drop capabilities bounding set if requested
     if let Some(cap_bound) = spawn_params.cap_bound {
         for flag in cap_bound.complement().iter() {
             let cap = Capability::try_from(flag.bits().trailing_zeros()).unwrap();
-            if cap::cap_within_bound(cap).unwrap() {
-                cap::cap_drop_bound(cap).unwrap();
+            if cap::cap_within_bound(cap).expect("Failed to check capability bound") {
+                cap::cap_drop_bound(cap).expect("Failed to drop capability bound");
             }
         }
     }
 
     // Add the process to any secondary groups if requested
     if !spawn_params.secondary_groups.is_empty() {
-        sys::setgroups(spawn_params.secondary_groups.as_slice()).unwrap();
+        sys::setgroups(spawn_params.secondary_groups.as_slice()).expect("Failed to set groups");
     }
 
     // Set rlimits
@@ -100,13 +100,14 @@ pub(crate) fn re_initialize(
             rlimit.resource,
             &libc::rlimit { rlim_cur: rlimit.soft, rlim_max: rlimit.hard },
         )
-        .unwrap();
+        .expect("Failed to set rlimit");
     }
 
     // Set the main group ID
     if let Some(gid) = spawn_params.gid {
         let gid = gid as libc::gid_t;
-        sys::setresgid(gid, gid, gid).unwrap();
+        sys::setresgid(gid, gid, gid)
+            .unwrap_or_else(|errno| panic!("Failed to set GID to {gid}: {errno}"));
     }
 
     // Set SecComp filters
@@ -120,19 +121,19 @@ pub(crate) fn re_initialize(
 
     if let Some(uid) = spawn_params.uid {
         let uid = uid as libc::uid_t;
-        sys::setresuid(uid, uid, uid).unwrap();
+        sys::setresuid(uid, uid, uid).expect("Failed to set UID");
     }
 
     // Overwrite the capabilities set with the new values
     CapabilitiesSet::load()
-        .unwrap()
+        .expect("Failed to load capabilities")
         .overwrite_some(
             spawn_params.cap_effective,
             spawn_params.cap_permitted,
             spawn_params.cap_inheritable,
         )
         .store_overwrite()
-        .unwrap();
+        .expect("Failed to store overwritten capabilities");
 
     // Set the process name
     if let Some(name) = &spawn_params.process_name

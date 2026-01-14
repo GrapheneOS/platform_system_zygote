@@ -28,6 +28,7 @@ phony {
     required: [
         "libmemmark",
         "libzygote",
+        "libzygote_core",
         "libzygote_sys",
         "libzygote_messages",
         "libzygote_test",

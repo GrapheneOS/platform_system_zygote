@@ -62,8 +62,12 @@ impl Species for App {
         if let SpawnPayload::LibApp { path, args } = spawn_payload {
             let library_path = std::path::Path::new(path);
 
-            let cstring_args: Vec<CString> =
-                args.iter().map(|arg: &&str| CString::new(arg.as_bytes()).unwrap()).collect();
+            let cstring_args: Vec<CString> = args
+                .iter()
+                .map(|arg: &&str| {
+                    CString::new(arg.as_bytes()).expect("Argument contains null byte")
+                })
+                .collect();
             let library_args: Vec<*const c_char> =
                 cstring_args.iter().map(|arg: &CString| arg.as_ptr()).collect();
 
