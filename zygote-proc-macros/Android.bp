@@ -24,7 +24,6 @@ rust_proc_macro {
     defaults: ["zygote_defaults"],
     crate_root: "src/lib.rs",
     rustlibs: [
-        "libanyhow",
         "libheck",
         "libproc_macro2",
         "libquote",

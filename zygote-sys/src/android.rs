@@ -19,7 +19,7 @@ use core::ffi::{c_char, CStr};
 
 use processgroup::sched;
 
-use crate::{libc_result_from_int_with_void, LibcResult};
+use crate::{check_failure_with_void, Result};
 
 /// A wrapper around [`inner::__android_log_close`]
 pub fn log_close() {
@@ -32,15 +32,15 @@ pub fn set_application_target_sdk_version(target: i32) {
 }
 
 /// A wrapper function for [`processgroup::sched::set_cpuset_policy`] that
-/// wraps the returned value in a LibcResult.
-pub fn set_cpuset_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(sched::set_cpuset_policy(tid, policy))
+/// wraps the returned value in a Result.
+pub fn set_cpuset_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> Result<()> {
+    check_failure_with_void(sched::set_cpuset_policy(tid, policy))
 }
 
 /// A wrapper function for [`processgroup::sched::set_sched_policy`] that wraps
-/// the returned value in a LibcResult.
-pub fn set_sched_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> LibcResult<()> {
-    libc_result_from_int_with_void(sched::set_sched_policy(tid, policy))
+/// the returned value in a Result.
+pub fn set_sched_policy(tid: libc::pid_t, policy: sched::SchedPolicy) -> Result<()> {
+    check_failure_with_void(sched::set_sched_policy(tid, policy))
 }
 
 /// An alias around [`inner::setprogname`]
@@ -59,9 +59,9 @@ pub fn set_selinux_context(
     is_system_server: bool,
     se_info: &CStr,
     name: &CStr,
-) -> LibcResult<()> {
+) -> Result<()> {
     // SAFETY: Both `seinfo` and `name` are valid, null-terminated, C-strings
-    libc_result_from_int_with_void(unsafe {
+    check_failure_with_void(unsafe {
         selinux_bindgen::selinux_android_setcontext(
             uid,
             is_system_server,

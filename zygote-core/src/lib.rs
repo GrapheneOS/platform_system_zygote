@@ -17,9 +17,9 @@
 
 use std::{str::FromStr, sync::atomic::AtomicBool};
 
-use anyhow::{bail, Result};
 #[cfg(target_os = "android")]
 use atrace_tracing_subscriber::AtraceSubscriber;
+use thiserror::Error;
 use tracing_subscriber::{
     layer::{Layer, SubscriberExt},
     util::SubscriberInitExt,
@@ -27,8 +27,19 @@ use tracing_subscriber::{
 
 static REPORTING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Errors that can occur in the zygote-core crate.
+#[derive(Error, Debug)]
+pub enum Error {
+    /// The provided log level is not a valid log level.
+    #[error("Invalid log level: {0}")]
+    InvalidLogLevel(String),
+    /// The provided trace level is not a valid trace level.
+    #[error("Invalid trace level: {0}")]
+    InvalidTraceLevel(String),
+}
+
 /// Parse a string into a [`log::LevelFilter`]
-pub fn log_level_parser(parse_arg: &str) -> Result<log::LevelFilter> {
+pub fn log_level_parser(parse_arg: &str) -> Result<log::LevelFilter, Error> {
     log::LevelFilter::from_str(parse_arg).or_else(|_| match parse_arg {
         "0" => Ok(log::LevelFilter::Off),
         "1" => Ok(log::LevelFilter::Error),
@@ -36,12 +47,12 @@ pub fn log_level_parser(parse_arg: &str) -> Result<log::LevelFilter> {
         "3" => Ok(log::LevelFilter::Info),
         "4" => Ok(log::LevelFilter::Debug),
         "5" => Ok(log::LevelFilter::Trace),
-        level => bail!("Invalid log level: {}", level),
+        _ => Err(Error::InvalidLogLevel(parse_arg.to_owned())),
     })
 }
 
 /// Parse a string into a [`tracing::level_filters::LevelFilter`]
-pub fn trace_level_parser(parse_arg: &str) -> Result<tracing::level_filters::LevelFilter> {
+pub fn trace_level_parser(parse_arg: &str) -> Result<tracing::level_filters::LevelFilter, Error> {
     tracing::level_filters::LevelFilter::from_str(parse_arg).or_else(|_| match parse_arg {
         "0" => Ok(tracing::level_filters::LevelFilter::OFF),
         "1" => Ok(tracing::level_filters::LevelFilter::ERROR),
@@ -49,7 +60,7 @@ pub fn trace_level_parser(parse_arg: &str) -> Result<tracing::level_filters::Lev
         "3" => Ok(tracing::level_filters::LevelFilter::INFO),
         "4" => Ok(tracing::level_filters::LevelFilter::DEBUG),
         "5" => Ok(tracing::level_filters::LevelFilter::TRACE),
-        level => bail!("Invalid trace level: {}", level),
+        _ => Err(Error::InvalidTraceLevel(parse_arg.to_owned())),
     })
 }
 

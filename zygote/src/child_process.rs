@@ -62,7 +62,7 @@ pub(crate) fn re_initialize(
     // Tell the kernel that this thread should keep its capabilities after it
     // changes it UID.
     match sys::prctl_set_securebits(libc::SECBIT_KEEP_CAPS) {
-        Err(errno) if errno.is(libc::EPERM) => {
+        Err(sys::Error::Libc(errno)) if errno.is(libc::EPERM) => {
             warn!("Insufficient permissions to set SECBIT_KEEP_CAPS in child process");
         }
         Err(errno) => {

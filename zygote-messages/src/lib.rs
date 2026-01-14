@@ -20,10 +20,10 @@ mod inner {
     include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 }
 
-use anyhow::Result;
 use arrayvec::ArrayVec;
 use clap::{Args, Subcommand};
 use itertools::Itertools;
+use thiserror::Error;
 
 use cap::{CapabilityFlags, RawCap};
 use zygote_proc_macros::{MarshalParcel, UnmarshalParcel};
@@ -44,6 +44,26 @@ pub type MessageBuffer = [u8; MESSAGE_BUFFER_SIZE];
 /// The maximum size for buffers holding message arguments.
 #[allow(dead_code)]
 const MESSAGE_ARG_BUFFER_MAX: usize = 32;
+
+/// Possible errors when handling Zygote Messages
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Input was not a properly formatted FlatBuffer
+    #[error("Invalid FlatBuffer")]
+    InvalidFlatBuffer,
+    /// FlatBuffer contained an unknown variant; schemas may be out of sync
+    #[error("Unknown {0} variant: {1}")]
+    UnknownVariant(&'static str, u8),
+}
+
+impl From<flatbuffers::InvalidFlatbuffer> for Error {
+    fn from(_: flatbuffers::InvalidFlatbuffer) -> Self {
+        Error::InvalidFlatBuffer
+    }
+}
+
+/// Result type for error handling
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// A trait for helper structs that can be marshaled into a FlatBuffer
 trait MarshalParcel<'builder> {

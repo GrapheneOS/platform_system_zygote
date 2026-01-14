@@ -36,7 +36,7 @@ use zygote_messages::{
     MESSAGE_BUFFER_SIZE,
 };
 use zygote_sys::{
-    self as sys, LibcResult,
+    self as sys,
     LoopControl::{self, *},
     LoopExit, PollFd,
 };
@@ -310,9 +310,8 @@ impl Server {
     ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
         for client_pollfd in partition.clients {
             // POLLERR and POLLNVAL should never occur for a client socket.
-            let checked_pollfd = client_pollfd.check().unwrap_or_else(|(fd, error_events)| {
-                panic!("Received polling error for client socket {fd}: {error_events:?}")
-            });
+            let checked_pollfd =
+                client_pollfd.check().unwrap_or_else(|err| panic!("Client socket: {err}"));
 
             let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
                 sys::call_until_would_block(
@@ -391,8 +390,8 @@ impl Server {
     #[tracing::instrument(level = "trace", skip_all)]
     fn check_server_socket_events(&mut self, partition: &PollPartition<'_>) {
         // POLLERR and POLLNVAL should never occur for the server socket.
-        let checked_pollfd = partition.server.check().unwrap_or_else(|(_, error_events)| {
-            panic!("Received polling error for server socket: {error_events:?}");
+        let checked_pollfd = partition.server.check().unwrap_or_else(|err| {
+            panic!("Server socket: {err}");
         });
 
         checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
@@ -429,8 +428,8 @@ impl Server {
         partition: &PollPartition<'_>,
     ) -> ServerControl<impl FnOnce() -> Infallible> {
         // POLLERR and POLLNVAL should never occur for a signalfd.
-        let checked_pollfd = partition.signal.check().unwrap_or_else(|(_, error_events)| {
-            panic!("Received polling error for signalfd: {error_events:?}");
+        let checked_pollfd = partition.signal.check().unwrap_or_else(|err| {
+            panic!("Signalfd: {err}");
         });
 
         checked_pollfd
@@ -644,11 +643,11 @@ impl Server {
                     Ok(_) => Continue,
                     Err(errno) => {
                         error!("Failed to send Spawn response: {errno}");
-                        Break(ClientLoopControl::Error(fd, errno.into()))
+                        Break(ClientLoopControl::Error(fd, errno))
                     }
                 }
             }
-            Err(errno) => {
+            Err(sys::Error::Libc(errno)) => {
                 // Server process
 
                 if errno.is(libc::EACCES) {
@@ -682,6 +681,10 @@ impl Server {
                 }
 
                 Break(ClientLoopControl::Error(fd, errno.into()))
+            }
+            Err(e) => {
+                error!("Unexpected error returned by call to `clone3()`: {e}");
+                Break(ClientLoopControl::Error(fd, e.into()))
             }
         }
     }
@@ -878,11 +881,13 @@ impl Server {
     /// * [`libc::EAGAIN`]
     /// * [`libc::EWOULDBLOCK`]
     /// * [`libc::ECONNRESET`]
-    fn send_response(fd: RawFd, buffer: &[u8]) -> LibcResult<()> {
+    fn send_response(fd: RawFd, buffer: &[u8]) -> Result<()> {
         match sys::sendmsg(fd, buffer) {
             Ok(_) => Ok(()),
-            Err(errno) if errno.matches(&[libc::EAGAIN | libc::EWOULDBLOCK | libc::ECONNRESET]) => {
-                Err(errno)
+            Err(sys::Error::Libc(errno))
+                if errno.matches(&[libc::EAGAIN | libc::EWOULDBLOCK | libc::ECONNRESET]) =>
+            {
+                Err(errno.into())
             }
             Err(errno) => panic!("Unexpected error when sending response on fd {fd}: {errno}"),
         }

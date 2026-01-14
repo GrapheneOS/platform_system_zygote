@@ -21,9 +21,9 @@ rust_library {
         "src/lib.rs",
     ],
     rustlibs: [
-        "libanyhow",
         "liblog_rust",
         "liblogger",
+        "libthiserror",
         "libtracing",
         "libtracing_subscriber",
     ],
