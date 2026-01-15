@@ -44,6 +44,7 @@ fn run_server() -> Option<impl FnOnce() -> Infallible> {
     let config = zygote::config::Server::parse();
     let _trace_guard =
         zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
+    config.species.on_start();
 
     log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
 

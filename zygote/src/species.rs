@@ -109,6 +109,9 @@ pub trait Species: std::fmt::Debug {
     /// Returns the default action for the given path to a connected socket
     fn get_peer_socket_action(&self, path: &str) -> Option<crate::file_descriptors::Action>;
 
+    /// A callback called when the zygote server starts.
+    fn on_start(&self) {}
+
     /// A callback called when the zygote server in the parent process is ready.
     fn on_server_ready(&self) {}
 
