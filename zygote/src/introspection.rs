@@ -40,29 +40,6 @@ const PROC_SELF_FD_DIR_CSTR: &std::ffi::CStr = c"/proc/self/fd";
 #[cfg(test)]
 const PROC_SELF_EXE: &str = "/proc/self/exe";
 
-/// Panic if the [`Result`] is [`Err`].
-#[macro_export]
-macro_rules! assert_ok {
-    ($result:expr) => {
-        match $result {
-            Ok(_) => {}
-            Err(err_val) => {
-                panic!("Unexpected error: {:?}", err_val);
-            }
-        }
-    };
-}
-
-/// Panic if the [`Result`] is [`Err`].
-#[macro_export]
-macro_rules! debug_assert_ok {
-    ($result:expr) => {
-        if cfg!(debug_assertions) {
-            assert_ok!($result);
-        }
-    };
-}
-
 /// Panic if there is more than one thread in the current process.
 #[track_caller]
 pub fn assert_single_threaded() {

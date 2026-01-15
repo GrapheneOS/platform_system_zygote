@@ -187,14 +187,18 @@ impl Server {
     /// Add a destructor to clean up the socket if we create it.
     #[tracing::instrument(level = "trace", skip_all)]
     pub fn new(config: &config::Server) -> Self {
-        let mut registry = FileDescriptorRegistry::new(config.species);
+        let mut registry = FileDescriptorRegistry::new(config.species)
+            .expect("Failed to create file descriptor registry");
 
         let socket_path_or_fd = config.socket();
         let (server_socket, server_socket_path) =
             Self::get_server_socket(socket_path_or_fd).expect("Failed to create server socket");
-        registry.register(server_socket, file_descriptors::Action::Close);
+        registry
+            .register(server_socket, file_descriptors::Action::Close)
+            .expect("Failed to register server socket");
 
-        let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
+        let sigset =
+            sys::build_sigset(Self::blocked_signals()).expect("Failed to build signal set");
         // These masks are unblocked in Server::drop.
         sys::sigprocmask(libc::SIG_BLOCK, &sigset).expect("Failed to set signal mask");
         let signal_fd =
@@ -204,10 +208,12 @@ impl Server {
         //     "After a fork(2), the child inherits a copy of the signalfd file
         //     descriptor.  A read(2) from the file descriptor in the child will
         //     return information about signals queued to the child."
-        registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies);
+        registry
+            .register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)
+            .expect("Failed to register signalfd");
 
         // Register any unregistered file descriptors such as those used for logging.
-        registry.register_new();
+        registry.register_new().expect("Failed to register new file descriptors");
         registry.audit().expect("File descriptor audit failed");
 
         let server = Self {
@@ -257,11 +263,13 @@ impl Server {
     /// Tailor the Server instance for the subspecies.
     #[tracing::instrument(level = "trace", skip(self))]
     fn re_initialize_as_subspecies(&mut self, child_socket_path: String) {
-        self.registry.reset_for_subspecies();
+        self.registry.reset_for_subspecies().expect("Failed to reset file descriptor registry");
 
         let (child_socket_fd, child_socket_path) = Self::get_server_socket(child_socket_path)
             .expect("Failed to create server socket for subspecies");
-        self.registry.register(child_socket_fd, file_descriptors::Action::Close);
+        self.registry
+            .register(child_socket_fd, file_descriptors::Action::Close)
+            .expect("Failed to register server socket for subspecies");
 
         // All the RawFds of client sockets are closed in the
         // `reset_for_subspecies()` call above and they are stateless, thus
@@ -451,7 +459,9 @@ impl Server {
                 sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK).expect("fcntl_setfl failed");
 
                 self.client_sockets.push(new_client_fd);
-                self.registry.register(new_client_fd, file_descriptors::Action::Close);
+                self.registry
+                    .register(new_client_fd, file_descriptors::Action::Close)
+                    .expect("Failed to register client socket");
 
                 // Continue reading
                 LoopControl::<()>::Continue
@@ -982,14 +992,20 @@ impl Drop for Server {
             self.species.on_server_destroy();
 
             // Clean up the server code in the server process
-            self.registry.override_and_close();
+            if let Err(error) = self.registry.override_and_close() {
+                error!("Failed to close file descriptors during server shutdown: {}", error);
+            }
 
-            if let Some(path) = &self.server_socket_path {
-                std::fs::remove_file(path).expect("Failed to remove socket file");
+            if let Some(path) = &self.server_socket_path
+                && let Err(error) = std::fs::remove_file(path)
+            {
+                error!("Failed to remove server socket file: {}", error);
             }
         } else {
             // Clean up the server code in the child process
-            self.registry.execute_actions(ForkType::Application);
+            self.registry
+                .execute_actions(ForkType::Application)
+                .expect("Failed to file descriptor registry actions");
         }
 
         let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
