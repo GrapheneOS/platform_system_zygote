@@ -34,6 +34,7 @@ use zerocopy::{error::ConvertError, FromBytes};
 #[cfg(target_os = "android")]
 pub mod android;
 mod libc_fill;
+pub mod procfs;
 
 pub use libc_fill::clone_args;
 

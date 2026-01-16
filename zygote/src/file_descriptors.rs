@@ -36,13 +36,12 @@ use log::info;
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
-use crate::{
-    introspection::{
-        debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator, ProcFsError,
-    },
-    species::SpeciesRef,
+use crate::species::SpeciesRef;
+use zygote_sys::{
+    self as sys,
+    procfs::{debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator, ProcFsError},
+    AsCStr, CStringBuffer, BUFFER_SIZE_STRINGS,
 };
-use zygote_sys::{self as sys, AsCStr, CStringBuffer, BUFFER_SIZE_STRINGS};
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
 const REGISTRY_SIZE: usize = 512;
@@ -328,7 +327,7 @@ impl FileDescriptorInfo {
 #[cfg(feature = "test")]
 #[track_caller]
 pub fn assert_fd_open_to(fd: RawFd, target: &str) {
-    assert!(crate::introspection::get_proc_fd_path(fd).exists());
+    assert!(zygote_sys::procfs::get_proc_fd_path(fd).exists());
 
     match FileDescriptorInfo::try_from(fd).unwrap() {
         FileDescriptorInfo::BoundSocket(address) => {
@@ -1075,7 +1074,8 @@ mod test {
     use zygote_sys::{self as sys, create_abstract_socket, create_bound_socket, AsCStr};
 
     use super::{FileDescriptorInfo, SocketAddress};
-    use crate::{introspection::get_executable_path, test::manage_test};
+    use crate::test::manage_test;
+    use zygote_sys::procfs::get_executable_path;
 
     #[test]
     #[rustfmt::skip]

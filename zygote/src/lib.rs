@@ -62,7 +62,7 @@ pub(crate) mod arguments;
 pub(crate) mod child_process;
 pub mod config;
 pub mod file_descriptors;
-pub mod introspection;
+
 pub mod server;
 pub mod species;
 #[cfg(any(test, feature = "test"))]

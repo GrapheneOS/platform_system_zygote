@@ -28,13 +28,13 @@ use tracing::{error, info, warn};
 use crate::{
     assert_ok, child_process, config, debug_assert_ok,
     file_descriptors::{self, FileDescriptorRegistry, ForkType},
-    introspection::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     species::SpeciesRef,
 };
 use zygote_messages::{
     self as messages, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel,
     MESSAGE_BUFFER_SIZE,
 };
+use zygote_sys::procfs::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat};
 use zygote_sys::{
     self as sys,
     LoopControl::{self, *},
@@ -145,7 +145,7 @@ enum ClientLoopError {
     SpawnResponseFailure(sys::Error),
 
     #[error("Failed to read procfs stats file: {0}")]
-    StatReadError(introspection::ProcFsError),
+    StatReadError(procfs::ProcFsError),
 
     #[error("Failed to send Stat response: {0}")]
     StatResponseFailure(sys::Error),
