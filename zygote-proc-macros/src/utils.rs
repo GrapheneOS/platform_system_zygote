@@ -19,6 +19,10 @@ pub(crate) fn get_inner_type_ident(attrs: &[Attribute]) -> Option<Ident> {
     get_attribute_ident(attrs, "inner_type_name")
 }
 
+pub(crate) fn get_error_type_ident(attrs: &[Attribute]) -> Option<Ident> {
+    get_attribute_ident(attrs, "error_type")
+}
+
 pub(crate) fn get_inner_type_ident_from_variant(variant: &Variant) -> Ident {
     get_inner_type_ident(&variant.attrs).unwrap_or_else(|| variant.ident.clone())
 }

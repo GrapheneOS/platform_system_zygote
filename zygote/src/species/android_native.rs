@@ -47,6 +47,13 @@ static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
         "chibar",
         "2025-12-03",
     ),
+    AllowListEntry::new(
+        "/dev/socket/statsdw",
+        FDAction::Ignore,
+        "Log statsd Atoms",
+        "hattorij",
+        "2026-01-13",
+    ),
 ];
 
 static ALLOWED_FILE_PATHS: &[AllowListEntry<CStr>] = &[
@@ -329,6 +336,13 @@ impl Species for App {
 
     fn tag(&self) -> SpeciesTag {
         SpeciesTag::AndroidNative
+    }
+
+    fn on_start(&self) {
+        let atom = statslog_native_zygote::native_zygote_started::NativeZygoteStarted {};
+        if let Err(err) = atom.stats_write() {
+            log::error!("Error logging the NativeZygoteStarted Atom: {err}");
+        }
     }
 
     fn on_server_ready(&self) {

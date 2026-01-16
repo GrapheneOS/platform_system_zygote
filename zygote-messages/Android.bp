@@ -58,7 +58,6 @@ rust_defaults {
         ":libzygote_messages_schemas-rust",
     ],
     rustlibs: [
-        "libanyhow",
         "libarrayvec",
         "libbitflags",
         "libcap_rust",
@@ -67,6 +66,7 @@ rust_defaults {
         "libitertools",
         "liblibc",
         "libtracing",
+        "libthiserror",
         "libzygote_sys",
     ],
     proc_macros: ["libzygote_proc_macros"],

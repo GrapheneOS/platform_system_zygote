@@ -1,11 +1,10 @@
-//
-// Copyright (C) 2025 The Android Open-Source Project
+// Copyright 2026, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,20 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::undocumented_unsafe_blocks)]
+#![allow(missing_docs)]
+#![allow(unused)]
 
-rust_proc_macro {
-    name: "libzygote_proc_macros",
-    crate_name: "zygote_proc_macros",
-    cargo_env_compat: true,
-    defaults: ["zygote_defaults"],
-    crate_root: "src/lib.rs",
-    rustlibs: [
-        "libheck",
-        "libproc_macro2",
-        "libquote",
-        "libsyn",
-    ],
-}
+include!(concat!(env!("OUT_DIR"), "/statslog_native_zygote.rs"));

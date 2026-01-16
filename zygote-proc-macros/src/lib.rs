@@ -48,7 +48,7 @@ pub fn flatten_marshal_parcel_derive(input: proc_macro::TokenStream) -> proc_mac
 /// A derive macro for implementing the UnmarshalParcel trait.
 #[proc_macro_derive(
     UnmarshalParcel,
-    attributes(flatten, unmarshal, unmarshal_from, inner_type_name, union, table)
+    attributes(error_type, flatten, inner_type_name, table, union, unmarshal, unmarshal_from)
 )]
 pub fn unmarshal_parcel_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);

@@ -51,6 +51,7 @@ rust_defaults {
             rustlibs: [
                 "libnative_activity_thread",
                 "libprocessgroup_rust",
+                "libstatslog_native_zygote_rust",
             ],
         },
         host: {
