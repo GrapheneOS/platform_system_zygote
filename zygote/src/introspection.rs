@@ -18,14 +18,15 @@
 
 use core::{ffi::CStr, iter::Iterator};
 use std::{
+    ffi,
     fs::File,
     io::{Read, Write},
     os::fd::RawFd,
     path::Path,
 };
 
-use anyhow::{anyhow, Context, Result};
 use arrayvec::ArrayVec;
+use thiserror::Error;
 
 use zygote_sys as sys;
 
@@ -38,29 +39,6 @@ const PROC_SELF_FD_DIR_CSTR: &std::ffi::CStr = c"/proc/self/fd";
 
 #[cfg(test)]
 const PROC_SELF_EXE: &str = "/proc/self/exe";
-
-/// Panic if the [`Result`] is [`Err`].
-#[macro_export]
-macro_rules! assert_ok {
-    ($result:expr) => {
-        match $result {
-            Ok(_) => {}
-            Err(err_val) => {
-                panic!("Unexpected error: {:?}", err_val);
-            }
-        }
-    };
-}
-
-/// Panic if the [`Result`] is [`Err`].
-#[macro_export]
-macro_rules! debug_assert_ok {
-    ($result:expr) => {
-        if cfg!(debug_assertions) {
-            assert_ok!($result);
-        }
-    };
-}
 
 /// Panic if there is more than one thread in the current process.
 #[track_caller]
@@ -90,41 +68,83 @@ pub fn assert_fd_closed(fd: RawFd) {
 
 /// Query procfs for the path of the current executable
 #[cfg(test)]
-pub(crate) fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
+pub fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
     std::fs::read_link(PROC_SELF_EXE)
 }
 
+/// Errors that can occur when reading from procfs
+#[derive(Debug, Error)]
+pub enum ProcFsError {
+    /// The /proc/self/fd directory is not iterable
+    #[error("The /proc/self/fd directory is inaccessible: {0}")]
+    InaccessibleFdDir(sys::Error),
+
+    /// The /proc/self/stat file is inaccessible
+    #[error("The /proc/self/stat file is inaccessible: {0}")]
+    InaccessibleProcStat(std::io::Error),
+
+    /// OS provided string is not nul-terminated
+    #[error("OS provided string is not nul-terminated")]
+    InvalidCString,
+
+    /// A member of the /proc/self/fd directory is not a valid file descriptor
+    #[error("Invalid /proc/self/fd entry: {0}")]
+    InvalidProcEntry(std::num::ParseIntError),
+
+    /// The /proc/self/fd directory contains an invalid symlink
+    #[error("Invalid /proc/self/fd symlink: {0}")]
+    InvalidProcSymlink(sys::Error),
+
+    /// The contents of /proc/self/stat do not follow the expected format
+    #[error("Contents of /proc/self/stat do not follow the expected format: {0}")]
+    UnexpectedProcStatFormat(String),
+
+    /// A provided byte array or OS string is not a valid UTF-8 encoded string
+    #[error("OS provided string is not a valid UTF-8 string: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+}
+
+impl From<ffi::FromBytesUntilNulError> for ProcFsError {
+    fn from(_: ffi::FromBytesUntilNulError) -> Self {
+        Self::InvalidCString
+    }
+}
+
+type ProcFsResult<T> = Result<T, ProcFsError>;
+
 /// Read the contents of the /proc/self/fd directory to get a list of open
 /// file descriptors.
-pub(crate) struct ProcFdIterator {
+pub struct ProcFdIterator {
     dir: sys::LibcDir,
     dir_fd: RawFd,
 }
 
 impl ProcFdIterator {
-    pub(crate) fn new() -> Result<Self> {
-        assert!(Path::new(PROC_SELF_FD_DIR_CSTR.to_str()?).exists());
+    /// Create an iterator over all file descriptors opened by the current
+    /// process.
+    pub fn new() -> ProcFsResult<Self> {
+        assert!(Path::new(PROC_SELF_FD_DIR_STR).exists());
         // The `std::fs::read_dir` function will open two file descriptors when
         // called and there is no way to gain access to their values.  Manually
         // opening and iterating over the directory allows us to avoid adding
         // transient file descriptor to the registry.
-        let dir = sys::opendir(PROC_SELF_FD_DIR_CSTR)?;
-        let dir_fd = sys::dirfd(&dir)?;
+        let dir = sys::opendir(PROC_SELF_FD_DIR_CSTR).map_err(ProcFsError::InaccessibleFdDir)?;
+        let dir_fd = sys::dirfd(&dir).map_err(ProcFsError::InaccessibleFdDir)?;
         Ok(Self { dir, dir_fd })
     }
 
-    fn next_fd(&self, dir_entry: &CStr) -> Result<Option<RawFd>> {
+    fn next_fd(&self, dir_entry: &CStr) -> ProcFsResult<Option<RawFd>> {
         if !dir_entry.to_bytes().first().is_some_and(|c| c.is_ascii_digit()) {
-            return Ok(None);
+            Ok(None)
+        } else {
+            let open_fd = dir_entry.to_str()?.parse().map_err(ProcFsError::InvalidProcEntry)?;
+            Ok((self.dir_fd != open_fd).then_some(open_fd))
         }
-        let open_fd =
-            dir_entry.to_str()?.parse().context("Failed to parse proc file descriptor entry")?;
-        Ok((self.dir_fd != open_fd).then_some(open_fd))
     }
 }
 
 impl Iterator for ProcFdIterator {
-    type Item = Result<RawFd>;
+    type Item = ProcFsResult<RawFd>;
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(dir_entry) = sys::readdir(&self.dir) {
@@ -140,12 +160,15 @@ impl Iterator for ProcFdIterator {
 }
 
 /// Read file descriptor information from procfs into a CStringBuffer.
-pub(crate) fn get_proc_fd_link_info(fd: RawFd) -> Result<sys::CStringBuffer> {
+pub fn get_proc_fd_link_info(fd: RawFd) -> ProcFsResult<sys::CStringBuffer> {
     let mut path_cstr_buff = ArrayVec::<u8, { sys::BUFFER_SIZE_STRINGS }>::new();
-    write!(path_cstr_buff, "{PROC_SELF_FD_DIR_STR}/{fd}\0")?;
-    let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice()).unwrap();
 
-    sys::readlink(path_cstr).with_context(|| format!("Unable to read procfs symlink for fd {fd}"))
+    // The buffer size (512) can store more decimal digits than can be
+    // represented in the file descriptor storage type.
+    write!(path_cstr_buff, "{PROC_SELF_FD_DIR_STR}/{fd}\0").expect("Proc path exceeds buffer size");
+    let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice())?;
+
+    sys::readlink(path_cstr).map_err(ProcFsError::InvalidProcSymlink)
 }
 
 /// Construct PathBuf pointing to an entry in /proc/self/fd.  The entry may or
@@ -190,15 +213,15 @@ impl ProcStat {
     /// Query procfs for statistics on the current process.
     #[rustfmt::skip]
     #[tracing::instrument(level = "trace")]
-    pub fn get() -> Result<Self> {
-        let mut proc_file = File::open(Self::PROC_STAT_PATH_STR)?;
+    pub fn get() -> ProcFsResult<Self> {
+        let mut proc_file = File::open(Self::PROC_STAT_PATH_STR).map_err(ProcFsError::InaccessibleProcStat)?;
         let mut proc_buf: [u8; Self::PROC_STAT_BUFFER_SIZE] = [0; Self::PROC_STAT_BUFFER_SIZE];
 
-        let read_len = proc_file.read(&mut proc_buf)?;
+        let read_len = proc_file.read(&mut proc_buf).map_err(ProcFsError::InaccessibleProcStat)?;
         let text = String::from_utf8_lossy(&proc_buf[0..read_len]);
 
-        let (text_left, text_right) = text.rsplit_once(") ").ok_or(anyhow!("Malformed /proc/self/stat output"))?;
-        let (pid_str, _) = text_left.split_once(" (").ok_or(anyhow!("Malformed /proc/self/stat output"))?;
+        let (text_left, text_right) = text.rsplit_once(") ").ok_or(ProcFsError::UnexpectedProcStatFormat(text.to_string()))?;
+        let (pid_str, _) = text_left.split_once(" (").ok_or(ProcFsError::UnexpectedProcStatFormat(text.to_string()))?;
         let rest = text_right
             .split_whitespace()
             .collect::<ArrayVec<&str, { Self::PROC_STAT_NUM_ENTRIES }>>();
@@ -206,17 +229,17 @@ impl ProcStat {
         assert_eq!(rest.len(), Self::PROC_STAT_NUM_ENTRIES - 2);
 
         Ok(Self {
-            pid:         pid_str.parse()?,
-            pgrp:        rest[ 2].parse()?,
-            minflt:      rest[ 7].parse()?,
-            cminflt:     rest[ 8].parse()?,
-            majflt:      rest[ 9].parse()?,
-            cmajflt:     rest[10].parse()?,
-            utime:       rest[11].parse()?,
-            stime:       rest[12].parse()?,
-            num_threads: rest[17].parse()?,
-            vsize:       rest[20].parse()?,
-            rss:         rest[21].parse()?,
+            pid:         pid_str.parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(pid_str.to_owned()))?,
+            pgrp:        rest[ 2].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[2].to_owned()))?,
+            minflt:      rest[ 7].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[7].to_owned()))?,
+            cminflt:     rest[ 8].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[8].to_owned()))?,
+            majflt:      rest[ 9].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[9].to_owned()))?,
+            cmajflt:     rest[10].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[10].to_owned()))?,
+            utime:       rest[11].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[11].to_owned()))?,
+            stime:       rest[12].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[12].to_owned()))?,
+            num_threads: rest[17].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[17].to_owned()))?,
+            vsize:       rest[20].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[20].to_owned()))?,
+            rss:         rest[21].parse().map_err(|_| ProcFsError::UnexpectedProcStatFormat(rest[21].to_owned()))?,
         })
     }
 }

@@ -42,7 +42,7 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
          * Initialize registry
          */
 
-        let mut registry = FileDescriptorRegistry::new(&zygote::species::mock::Turtle);
+        let mut registry = FileDescriptorRegistry::new(&zygote::species::mock::Turtle).unwrap();
         assert_eq!(registry.size(), 3);
         assert_ok!(registry.audit());
 
@@ -52,8 +52,8 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
 
         // Test registration of FIFO descriptors
         let (pipe0, pipe1) = sys::pipe().unwrap();
-        registry.register(pipe0, Action::Close);
-        registry.register(pipe1, Action::Close);
+        registry.register(pipe0, Action::Close).unwrap();
+        registry.register(pipe1, Action::Close).unwrap();
 
         // Test automatic registration and global file allow list
         let urandom_fd = File::open(file_descriptors::DEV_URANDOM_PATH).unwrap().into_raw_fd();
@@ -86,16 +86,16 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
         // Manually register an abstract socket for testing the Ignore action
         let abstract_socket_3 =
             sys::create_abstract_socket(test::SOCKET_NAME_3, libc::SOCK_DGRAM).unwrap();
-        registry.register(abstract_socket_3.as_raw_fd(), Action::Ignore);
+        registry.register(abstract_socket_3.as_raw_fd(), Action::Ignore).unwrap();
 
         // Test automatic registration of new file descriptors.
-        registry.register_new();
+        registry.register_new().unwrap();
 
         /*
          * Test action handling
          */
 
-        registry.execute_actions(ForkType::Application);
+        registry.execute_actions(ForkType::Application).unwrap();
 
         // Test that the FIFO descriptors have been closed
         assert_fd_closed(pipe0);

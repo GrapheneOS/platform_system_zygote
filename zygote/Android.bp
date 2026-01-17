@@ -22,7 +22,6 @@ rust_defaults {
     defaults: ["zygote_defaults"],
     srcs: ["src/lib.rs"],
     rustlibs: [
-        "libanyhow",
         "libarrayvec",
         "libcap_rust",
         "libclap",
@@ -33,6 +32,7 @@ rust_defaults {
         "liblog_rust",
         "librustutils",
         "libstatic_assertions",
+        "libthiserror",
         "libtracing",
         "libzerocopy",
         "libzygote_core",

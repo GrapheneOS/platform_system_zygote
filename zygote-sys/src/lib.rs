@@ -94,7 +94,7 @@ impl AsCStr for &[u8] {
 }
 
 /// Wrapper struct for UNIX-like error numbers
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Errno {
     code: c_int,
 }
@@ -200,7 +200,7 @@ fn errno_clear() {
 }
 
 /// Possible errors for the `zygote-sys` crate
-#[derive(Error, Debug)]
+#[derive(Clone, Error, Debug)]
 pub enum Error {
     /// C-style string was not nul-terminated
     #[error("Invalid C string")]
@@ -232,12 +232,12 @@ pub enum Error {
 
     /// A `zerocopy` conversion failed
     #[error("Error during zerocopy conversion from u8 to c_char")]
-    ZerocopyCast(),
+    ZerocopyCast,
 }
 
 impl<A, S, V> From<ConvertError<A, S, V>> for Error {
     fn from(_: ConvertError<A, S, V>) -> Self {
-        Error::ZerocopyCast()
+        Error::ZerocopyCast
     }
 }
 

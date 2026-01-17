@@ -22,27 +22,27 @@
 // TODO: Figure out a strategy for the dynamic allocations currently involved
 //       in string handling.
 
-use core::{
-    ffi::{c_int, CStr},
-    fmt,
-};
+use core::{ffi::c_int, fmt};
 use std::{
     cmp::Ordering,
     convert::TryFrom,
-    os::fd::{AsRawFd, RawFd},
+    ffi::{CStr, CString, FromBytesWithNulError},
+    os::fd::RawFd,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
 use arrayvec::{ArrayString, ArrayVec};
 use itertools::{EitherOrBoth, Itertools};
 use log::info;
+use thiserror::Error;
 use zerocopy::IntoBytes;
 
 use crate::{
-    introspection::{debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator},
+    introspection::{
+        debug_assert_single_threaded, get_proc_fd_link_info, ProcFdIterator, ProcFsError,
+    },
     species::SpeciesRef,
 };
-use zygote_sys::{self as sys, AsCStr, CStringBuffer};
+use zygote_sys::{self as sys, AsCStr, CStringBuffer, BUFFER_SIZE_STRINGS};
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
 const REGISTRY_SIZE: usize = 512;
@@ -66,7 +66,7 @@ static ALLOWED_SOCKET_PATHS: &[&str] = &[];
 /// Peer socket paths that the Zygote is allowed to connect to
 static ALLOWED_PEER_SOCKET_PATHS: &[&str] = &[];
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SocketAddress {
     Path(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
     Abstract(ArrayString<{ sys::BUFFER_SIZE_STRINGS }>),
@@ -90,9 +90,54 @@ impl AsRef<str> for SocketAddress {
     }
 }
 
+/// Errors that can occur when gathering information about file descriptors.
+#[derive(Debug, Error)]
+enum FileDescriptorInfoError {
+    #[error("Unable to fetch the file descriptor flags: {0}")]
+    DescriptorFlagsFailure(sys::Error),
+
+    #[error("OS provided string is not nul-terminated")]
+    InvalidCString,
+
+    #[error("File descriptor {0} is not a UNIX-domain socket.")]
+    InvalidSocketType(RawFd),
+
+    #[error(
+        "Default buffer size ({buffer_size} bytes) is too small to fit the name ({name_size} bytes)"
+    )]
+    NameBufferTooSmall { buffer_size: usize, name_size: usize },
+
+    #[error("Failed to get peer name for file descriptor {fd}: {error:?}")]
+    PeerNameFailure { fd: RawFd, error: sys::Error },
+
+    #[error("Error reading from procfs: {0}")]
+    ProcFsError(#[from] ProcFsError),
+
+    #[error("Failed to stat file descriptor {fd}: {error:?}")]
+    StatFailure { fd: RawFd, error: sys::Error },
+
+    #[error("Unable to fetch the file descriptor status flags: {0}")]
+    StatusFlagsFailure(sys::Error),
+
+    #[error("Unsupported file type {file_type} for file descriptor {fd}")]
+    UnsupportedFileType { fd: RawFd, file_type: u32 },
+
+    /// A provided byte array or OS string is not a valid UTF-8 encoded string
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] core::str::Utf8Error),
+}
+
+impl From<FromBytesWithNulError> for FileDescriptorInfoError {
+    fn from(_: FromBytesWithNulError) -> Self {
+        Self::InvalidCString
+    }
+}
+
+type FileDescriptorInfoResult<T> = Result<T, FileDescriptorInfoError>;
+
 /// Information necessary to identify and perform actions for supported file
 /// types.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum FileDescriptorInfo {
     BoundSocket(SocketAddress),
     ConnectedSocket(SocketAddress),
@@ -130,10 +175,11 @@ impl fmt::Display for FileDescriptorInfo {
 ///   * FIFO files
 ///   * Sockets
 impl TryFrom<RawFd> for FileDescriptorInfo {
-    type Error = anyhow::Error;
+    type Error = FileDescriptorInfoError;
 
-    fn try_from(fd: RawFd) -> Result<Self> {
-        let stat = sys::fstat(fd)?;
+    fn try_from(fd: RawFd) -> FileDescriptorInfoResult<Self> {
+        let stat =
+            sys::fstat(fd).map_err(|error| FileDescriptorInfoError::StatFailure { fd, error })?;
 
         // The file descriptor registry supports regular files, character
         // devices, sockets, and pipes. Character devices must provide a
@@ -147,20 +193,23 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
             libc::S_IFCHR | libc::S_IFREG => Self::get_file_info(fd, &stat),
             libc::S_IFSOCK => Self::get_socket_info(fd),
             file_type => {
-                let proc_metadata_buffer =
-                    get_proc_fd_link_info(fd).expect("Failed to read link info");
-                let proc_metadata_cstr =
-                    proc_metadata_buffer.as_cstr().expect("Failed to view string buffer as a CStr");
+                let proc_metadata_buffer = get_proc_fd_link_info(fd)?;
+                let proc_metadata_cstr = proc_metadata_buffer
+                    .as_cstr()
+                    .map_err(|_| FileDescriptorInfoError::InvalidCString)?;
 
                 if proc_metadata_cstr == PROC_METADATA_SIGNALFD {
                     Ok(FileDescriptorInfo::SignalFd)
                 } else {
-                    Err(anyhow!(
-                        "Unable to generate info for file descriptor {}. Type: '{:?}' Metadata: '{:?}'",
+                    // The conversion of the `file_type` value is only
+                    // necessary on some systems, but it is easier to leave
+                    // the call in and suppress the warnings than it is to
+                    // fully enumerate the conversions for each platform.
+                    #[allow(clippy::useless_conversion)]
+                    Err(FileDescriptorInfoError::UnsupportedFileType {
                         fd,
-                        file_type,
-                        proc_metadata_cstr,
-                    ))
+                        file_type: file_type.into(),
+                    })
                 }
             }
         }
@@ -171,14 +220,14 @@ impl FileDescriptorInfo {
     /// Gather information about the provided file descriptor from procfs,
     /// fcntl, and lseek64.  Combine this new information with the provided
     /// stat data to build a new FileInfo struct.
-    fn get_file_info(fd: RawFd, stat: &libc::stat) -> Result<FileDescriptorInfo> {
+    fn get_file_info(fd: RawFd, stat: &libc::stat) -> FileDescriptorInfoResult<Self> {
         let link_path = get_proc_fd_link_info(fd)?;
 
         // File descriptor flags : currently on FD_CLOEXEC. We can set these
         // using F_SETFD - we're single threaded at this point of execution so
         // there won't be any races.
-        let fd_flags = sys::fcntl_getfd(fd)
-            .with_context(|| format!("Unable to call fcntl(F_GETFD) for FD {fd}"))?;
+        let fd_flags =
+            sys::fcntl_getfd(fd).map_err(FileDescriptorInfoError::DescriptorFlagsFailure)?;
 
         // File status flags :
         // - File access mode : (O_RDONLY, O_WRONLY...) we'll pass these through
@@ -192,8 +241,7 @@ impl FileDescriptorInfo {
         //   can only set O_APPEND, O_ASYNC, O_DIRECT, O_NOATIME, and O_NONBLOCK.
         //   In particular, it can't set O_SYNC and O_DSYNC. We'll have to test for
         //   their presence and pass them in to open().
-        let fs_flags = sys::fcntl_getfl(fd)
-            .with_context(|| format!("Unable to call fcntl(F_GETFL) for FD {fd}"))?;
+        let fs_flags = sys::fcntl_getfl(fd).map_err(FileDescriptorInfoError::StatusFlagsFailure)?;
 
         // File offset : Ignore the offset for non seekable files.
         let offset = sys::lseek64(fd, 0, libc::SEEK_CUR).unwrap_or_default();
@@ -215,16 +263,21 @@ impl FileDescriptorInfo {
     }
 
     /// Get the socket name and parse it into either a Abstract or Bound
-    /// SocketInfo struct.
-    fn get_socket_info(fd: RawFd) -> Result<FileDescriptorInfo> {
-        match sys::getsockname(fd)? {
+    /// SocketInfo struct.  The operation will fail if the provided fd is not
+    /// a socket.
+    fn get_socket_info(fd: RawFd) -> FileDescriptorInfoResult<Self> {
+        match sys::getsockname(fd)
+            .map_err(|error| FileDescriptorInfoError::PeerNameFailure { fd, error })?
+        {
             Some((addr, path_len)) => {
                 let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
                 let socket_address = Self::get_socket_address(sun_bytes)?;
                 Ok(FileDescriptorInfo::BoundSocket(socket_address))
             }
             None => {
-                let (addr, path_len) = sys::getpeername(fd)?.expect("Unable to get peer name");
+                let (addr, path_len) = sys::getpeername(fd)
+                    .map_err(|error| FileDescriptorInfoError::PeerNameFailure { fd, error })?
+                    .ok_or(FileDescriptorInfoError::InvalidSocketType(fd))?;
                 let sun_bytes = &addr.sun_path.as_bytes()[..path_len];
                 let socket_address = Self::get_socket_address(sun_bytes)?;
                 Ok(FileDescriptorInfo::ConnectedSocket(socket_address))
@@ -232,21 +285,39 @@ impl FileDescriptorInfo {
         }
     }
 
-    fn get_socket_address(sun_bytes: &[u8]) -> Result<SocketAddress> {
+    fn get_socket_address(sun_bytes: &[u8]) -> FileDescriptorInfoResult<SocketAddress> {
         match sun_bytes {
             [0, text @ ..] => Ok(SocketAddress::Abstract(
                 // Retain any NUL bytes in abstract socket. These are *not* truncated when looking
                 // up abstract sockets, unlike bound sockets which uses NUL-terminated filesystem
                 // paths.
-                ArrayString::from(std::str::from_utf8(text)?)
-                    .expect("Failed to build abstract socket name from byte buffer"),
+                ArrayString::from(std::str::from_utf8(text)?).map_err(|_| {
+                    FileDescriptorInfoError::NameBufferTooSmall {
+                        buffer_size: BUFFER_SIZE_STRINGS,
+                        name_size: text.len(),
+                    }
+                })?,
             )),
             text => Ok(SocketAddress::Path(
                 // getsockname() on bound sockets always return NUL-terminated names, so use
                 // from_bytes_with_nul() to truncated that here.
-                ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?)
-                    .expect("Failed to build bound socket name from byte buffer"),
+                ArrayString::from(CStr::from_bytes_with_nul(text)?.to_str()?).map_err(|_| {
+                    FileDescriptorInfoError::NameBufferTooSmall {
+                        buffer_size: BUFFER_SIZE_STRINGS,
+                        name_size: text.len(),
+                    }
+                })?,
             )),
+        }
+    }
+
+    fn type_str(self) -> &'static str {
+        match self {
+            Self::BoundSocket(_) => "Bound Socket",
+            Self::ConnectedSocket(_) => "Connected Socket",
+            Self::Fifo => "FIFO",
+            Self::File { .. } => "File",
+            Self::SignalFd => "SignalFD",
         }
     }
 }
@@ -269,10 +340,7 @@ pub fn assert_fd_open_to(fd: RawFd, target: &str) {
         FileDescriptorInfo::File { path, .. } => {
             assert_eq!(path.as_cstr().unwrap().to_str().unwrap(), target)
         }
-        _ => panic!(
-            "File descriptor {} refers to kernel object without a file system path",
-            fd.as_raw_fd()
-        ),
+        _ => panic!("File descriptor {} refers to kernel object without a file system path", fd),
     }
 }
 
@@ -303,116 +371,387 @@ pub enum ForkType {
     Subspecies,
 }
 
+#[derive(Clone, Debug, Error)]
+enum FileDescriptorEntryErrorRepr {
+    /// Failed to close a file descriptor
+    #[error("Failed to close file descriptor {fd}: {error}")]
+    CloseFailed { fd: RawFd, error: sys::Error },
+
+    /// Failed to use `dup3` to clone a file descriptor
+    #[error(
+        "Failed to dup3 new file descriptor ({new_fd}) to existing descriptor ({existing_fd} -> {path:?}): {error}"
+    )]
+    DupFailed { existing_fd: RawFd, new_fd: RawFd, path: CString, error: sys::Error },
+
+    /// Failed to dup3 a file descriptor to /dev/null
+    #[error("Failed to dup3 file descriptor {fd} to /dev/null: {error}")]
+    DupNullFailed { fd: RawFd, error: sys::Error },
+
+    /// OS provided string is not nul-terminated
+    #[error("OS provided string is not nul-terminated")]
+    InvalidCString,
+
+    /// Failed to create a new file descriptor the entry's path
+    #[error("Failed to open new file descriptor to the entry's path ({path:?}): {error:?}")]
+    OpenFailure { path: CString, error: sys::Error },
+
+    /// Failed to seek to the recorded offset
+    #[error(
+        "Failed to set seek head for new file descriptor (fd: {fd}, path: {path:?}, offset: {offset}): {error:?}"
+    )]
+    SeekFailure { fd: RawFd, path: CString, offset: i64, error: sys::Error },
+
+    /// Failed to set the file descriptor flags
+    #[error(
+        "Failed to set descriptor flags for new file descriptor (fd: {fd}, path: {path:?}, flags: {flags}): {error}"
+    )]
+    SetFdFlagsFailure { fd: RawFd, path: CString, flags: i32, error: sys::Error },
+
+    /// Failed to set the file status flags
+    #[error(
+        "Failed to set status flags for new file descriptor (fd: {fd}, path: {path:?}, flags: {flags}): {error}"
+    )]
+    SetFdStatusFlagsFailure { fd: RawFd, path: CString, flags: i32, error: sys::Error },
+}
+
+/// Errors that can occur when executing an Entry's action.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct FileDescriptorEntryError(#[from] FileDescriptorEntryErrorRepr);
+
+impl From<std::ffi::FromBytesUntilNulError> for FileDescriptorEntryError {
+    fn from(_: std::ffi::FromBytesUntilNulError) -> Self {
+        Self(FileDescriptorEntryErrorRepr::InvalidCString)
+    }
+}
+
+impl FileDescriptorEntryError {
+    fn close_failed(fd: RawFd, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::CloseFailed { fd, error })
+    }
+
+    fn dup_failed(existing_fd: RawFd, new_fd: RawFd, path: &CStr, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::DupFailed {
+            existing_fd,
+            new_fd,
+            path: path.to_owned(),
+            error,
+        })
+    }
+
+    fn dup_null_failed(fd: RawFd, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::DupNullFailed { fd, error })
+    }
+
+    fn invalid_cstring() -> Self {
+        Self(FileDescriptorEntryErrorRepr::InvalidCString)
+    }
+
+    fn open_failure(path: &CStr, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::OpenFailure { path: path.to_owned(), error })
+    }
+
+    fn seek_failure(fd: RawFd, path: &CStr, offset: i64, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::SeekFailure { fd, path: path.to_owned(), offset, error })
+    }
+
+    fn set_fd_flags_failure(fd: RawFd, path: &CStr, flags: i32, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::SetFdFlagsFailure {
+            fd,
+            path: path.to_owned(),
+            flags,
+            error,
+        })
+    }
+
+    fn set_fd_status_flags_failure(fd: RawFd, path: &CStr, flags: i32, error: sys::Error) -> Self {
+        Self(FileDescriptorEntryErrorRepr::SetFdStatusFlagsFailure {
+            fd,
+            path: path.to_owned(),
+            flags,
+            error,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct FileDescriptorEntry {
     fd: RawFd,
     info: FileDescriptorInfo,
     action: Action,
+    executed: bool,
 }
 
 impl FileDescriptorEntry {
+    /// Create a new file descriptor registry entry
+    fn new(fd: RawFd, info: FileDescriptorInfo, action: Action) -> Self {
+        Self { fd, info, action, executed: false }
+    }
+
+    /// Check to see if the file descriptor has been closed
+    fn closed(&self) -> bool {
+        match self.action {
+            Action::Close | Action::CloseUnlessSpawnSubspecies => self.executed,
+            Action::DupeNull | Action::Ignore | Action::Reopen => false,
+        }
+    }
+
     /// Handle Close, DupeNull, and Reopen actions for the associated file
     /// descriptor.  This function shall only be called after a fork even in
-    /// the context of the child process.  Returns if the file descriptor is
-    /// closed.
-    fn execute(&self, dev_null_fd: RawFd, fork_type: ForkType) -> bool {
-        match self.action {
-            Action::Close => {
-                sys::close(self.fd).expect("Failed to close file descriptor");
-                true
-            }
-            Action::CloseUnlessSpawnSubspecies => match fork_type {
-                ForkType::Application => {
-                    sys::close(self.fd).expect("Failed to close file descriptor");
-                    true
+    /// the context of the child process.  The action will only be executed the
+    /// first time the function is called, in which case `true` is returned.
+    /// Subsequent calls will not execute the action and return `false`.
+    fn execute(
+        &mut self,
+        dev_null_fd: RawFd,
+        fork_type: ForkType,
+    ) -> Result<bool, FileDescriptorEntryError> {
+        if !self.executed {
+            match self.action {
+                Action::Close => {
+                    sys::close(self.fd)
+                        .map_err(|error| FileDescriptorEntryError::close_failed(self.fd, error))?;
+                    self.executed = true;
                 }
-                ForkType::Subspecies => false,
-            },
-            Action::DupeNull => {
-                sys::dup3(dev_null_fd, self.fd, libc::O_CLOEXEC)
-                    .unwrap_or_else(|_| panic!("Failed to dup3 fd {} to /dev/null", self.fd));
-                false
-            }
-            Action::Ignore => {
-                // Nothing to see here
-                false
-            }
-            Action::Reopen => match &self.info {
-                FileDescriptorInfo::File {
-                    path,
-                    fd_flags,
-                    fs_flags_open,
-                    fs_flags_fcntl: fs_flags_rest,
-                    offset,
-                    ..
-                } => {
-                    let new_fd = sys::open(
-                        path.as_cstr().expect("Failed to view as CStr"),
-                        *fs_flags_open,
-                        None,
-                    )
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Failed to open new file descriptor to existing path: {:?}",
-                            path.as_cstr()
-                        )
-                    });
-
-                    sys::fcntl_setfd(new_fd, *fd_flags).unwrap_or_else(|errno| {
-                        panic!("Failed to set descriptor flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fd_flags, errno);
-                    });
-
-                    sys::fcntl_setfl(new_fd, *fs_flags_rest).unwrap_or_else(|errno| {
-                        panic!("Failed to set status flags for new file descriptor (path: {:?}, flags: {:?}): {}", path.as_cstr(), fs_flags_rest, errno);
-                    });
-
-                    sys::lseek64(new_fd, *offset, libc::SEEK_SET).unwrap_or_else(|errno| {
-                        panic!("Failed to set seek head for new file descriptor (path: {:?}, offset: {}): {}", path.as_cstr(), offset, errno);
-                    });
-
-                    // TODO: Move bit-twiddling into a function
-                    let dup_flags = if (fd_flags & libc::FD_CLOEXEC) == libc::FD_CLOEXEC {
-                        libc::O_CLOEXEC
-                    } else {
-                        0
-                    };
-
-                    sys::dup3(new_fd, self.fd, dup_flags).unwrap_or_else(|errno| {
-                        panic!("Failed to dup3 a new file descriptor to existing descriptor (path: {:?}, existing: {}, new: {:?}): {}", path.as_cstr(), self.fd, new_fd, errno);
-                    });
-
-                    sys::close(new_fd).expect("Failed to close new file descriptor");
-                    true
+                Action::CloseUnlessSpawnSubspecies => {
+                    if matches!(fork_type, ForkType::Application) {
+                        sys::close(self.fd).map_err(|error| {
+                            FileDescriptorEntryError::close_failed(self.fd, error)
+                        })?;
+                        self.executed = true;
+                    }
                 }
-                _ => {
-                    panic!("Invalid file type ({}) registered with `Reopen` action", &self.info);
+                Action::DupeNull => {
+                    sys::dup3(dev_null_fd, self.fd, libc::O_CLOEXEC).map_err(|error| {
+                        FileDescriptorEntryError::dup_null_failed(self.fd, error)
+                    })?;
+                    self.executed = true;
                 }
-            },
+                Action::Ignore => {
+                    // Nothing to see here
+                }
+                Action::Reopen => match &self.info {
+                    FileDescriptorInfo::File {
+                        path,
+                        fd_flags,
+                        fs_flags_open,
+                        fs_flags_fcntl: fs_flags_rest,
+                        offset,
+                        ..
+                    } => {
+                        let path_cstr = path
+                            .as_cstr()
+                            .map_err(|_| FileDescriptorEntryError::invalid_cstring())?;
+                        let new_fd =
+                            sys::open(path_cstr, *fs_flags_open, None).map_err(|error| {
+                                FileDescriptorEntryError::open_failure(path_cstr, error)
+                            })?;
+
+                        sys::fcntl_setfd(new_fd, *fd_flags).map_err(|error| {
+                            FileDescriptorEntryError::set_fd_flags_failure(
+                                new_fd, path_cstr, *fd_flags, error,
+                            )
+                        })?;
+
+                        sys::fcntl_setfl(new_fd, *fs_flags_rest).map_err(|error| {
+                            FileDescriptorEntryError::set_fd_status_flags_failure(
+                                new_fd,
+                                path_cstr,
+                                *fs_flags_rest,
+                                error,
+                            )
+                        })?;
+
+                        sys::lseek64(new_fd, *offset, libc::SEEK_SET).map_err(|error| {
+                            FileDescriptorEntryError::seek_failure(
+                                new_fd, path_cstr, *offset, error,
+                            )
+                        })?;
+
+                        // TODO: Move bit-twiddling into a function
+                        let dup_flags = if (fd_flags & libc::FD_CLOEXEC) == libc::FD_CLOEXEC {
+                            libc::O_CLOEXEC
+                        } else {
+                            0
+                        };
+
+                        sys::dup3(new_fd, self.fd, dup_flags).map_err(|error| {
+                            FileDescriptorEntryError::dup_failed(self.fd, new_fd, path_cstr, error)
+                        })?;
+
+                        sys::close(new_fd).map_err(|error| {
+                            FileDescriptorEntryError::close_failed(self.fd, error)
+                        })?;
+                        self.executed = true;
+                    }
+                    _ => {
+                        // The FileDescriptorRegistry::register() function
+                        // returns an error if the caller attempts to register
+                        // any other file type with the Reopen action.
+                        unreachable!()
+                    }
+                },
+            }
         }
+        Ok(self.executed)
     }
 
     /// Close the file descriptor if it is registered with `DupeNull`, `Close`,
     /// `CloseUnlessSpawnSubspecies`, or `Reopen` actions.
-    fn override_and_close(&mut self) {
+    fn override_and_close(&mut self) -> Result<(), FileDescriptorEntryError> {
         match self.action {
             Action::Close
             | Action::CloseUnlessSpawnSubspecies
             | Action::DupeNull
-            | Action::Reopen => {
-                sys::close(self.fd).expect("Failed to close file descriptor");
-            }
+            | Action::Reopen => match sys::close(self.fd) {
+                Ok(_) => Ok(()),
+                Err(error) => Err(FileDescriptorEntryError::close_failed(self.fd, error)),
+            },
             Action::Ignore => {
                 // Nothing to do here
+                Ok(())
             }
         }
     }
 }
 
-// TODO: Either arena-allocate the strings or switch to using ArrayString
+#[allow(missing_docs)]
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct FileDescriptorInfoErrorWrapper(#[from] FileDescriptorInfoError);
+
+/// Errors for the [`FileDescriptorRegistry`]
+#[allow(missing_docs)]
+#[derive(Debug, Error)]
+pub enum FdRegistryError {
+    /// An audit of the registry failed
+    #[error(transparent)]
+    AuditFailure(#[from] AuditError),
+
+    /// Failed to open /dev/null
+    #[error("Failed to open /dev/null: {0}")]
+    DevNullFailure(sys::Error),
+
+    /// Failed to execute entry action
+    #[error("Failed to execute entry action: {0}")]
+    EntryActionFailure(#[from] FileDescriptorEntryError),
+
+    /// Failed to fetch file descriptor information
+    #[error(transparent)]
+    FdInfoFailure(#[from] FileDescriptorInfoErrorWrapper),
+
+    /// Attempted to register a fd with an invalid Action variant
+    #[error("Attempting to register fd with invalid Action variant: {fd}, {type_str}, {action:?}")]
+    InvalidActionForFileType { fd: RawFd, type_str: &'static str, action: Action },
+
+    /// A string is not nul-terminated
+    #[error("String is not nul-terminated")]
+    InvalidCString,
+
+    /// Reading from procfs failed
+    #[error("Error reading /proc/self/fd entries: {0}")]
+    ProcFsError(#[from] ProcFsError),
+
+    /// File descriptor is already registered
+    #[error("File descriptor {0} is already registered")]
+    ReregisteredFd(RawFd),
+
+    /// Unregistered bound socket is not allowlisted
+    #[error("Unregistered bound socket is not allowlisted: {fd} -> {address}")]
+    UnregisteredBoundSocket { fd: RawFd, address: String },
+
+    /// Unregistered connected socket is not allowlisted
+    #[error("Unregistered connected socket is not allowlisted: {fd} -> {address}")]
+    UnregisteredConnectedSocket { fd: RawFd, address: String },
+
+    /// Unregistered fifo was found
+    #[error("Unregistered FIFO found: {fd}")]
+    UnregisteredFifoFd { fd: RawFd },
+
+    /// Unregistered file is not allowlisted
+    #[error("Unregistered file is not allowlisted: {fd} -> {path:?}")]
+    UnregisteredFile { fd: RawFd, path: CString },
+
+    /// Unregistered signalfd was found
+    #[error("Unregistered signalfd found: {fd}")]
+    UnregisteredSignalFd { fd: RawFd },
+
+    /// Regular file descriptor is not registered
+    #[error("File descriptor is not registered: {0}")]
+    UnregisteredFd(RawFd),
+
+    /// File path was not a valid UTF-8 string
+    #[error("File path string is not valid UTF-8: {0}")]
+    Utf8(#[from] core::str::Utf8Error),
+}
+
+impl From<FileDescriptorInfoError> for FdRegistryError {
+    fn from(error: FileDescriptorInfoError) -> Self {
+        Self::FdInfoFailure(error.into())
+    }
+}
+
+type FdRegistryResult<T> = Result<T, FdRegistryError>;
+
+/// Errors for the [`FileDescriptorRegistry::audit`] function
+#[allow(missing_docs)]
+#[derive(Debug, Error)]
+enum AuditErrorRepr {
+    /// A file descriptor was CLOSED unexpectedly.
+    #[error("File descriptor {fd} ({info:?}) was CLOSED unexpectedly.")]
+    FileDescriptorAbsent { fd: RawFd, info: Box<FileDescriptorInfo> },
+
+    /// A failure was encountered when fetching file descriptor information.
+    #[error(transparent)]
+    FileDescriptorInfoFailure(#[from] FileDescriptorInfoError),
+
+    /// A file descriptor was OPENED unexpectedly.
+    #[error("File descriptor {fd} ({info:?}) was OPENED unexpectedly.")]
+    FileDescriptorUnexpected { fd: RawFd, info: Box<FileDescriptorInfo> },
+
+    /// Error reading /proc/self/fd entries
+    #[error("Error reading /proc/self/fd entries: {0}")]
+    ProcFsError(#[from] ProcFsError),
+
+    /// Registry ordering is out of sync with the kernel.
+    #[error("Registry is out of sync. Expected fd {expected} but found fd {actual}")]
+    RegistryOrderMismatch { expected: RawFd, actual: RawFd },
+
+    /// Registry state is out of sync with the kernel.
+    #[error(
+        "Registry is out of sync: File descriptor {fd} has been REOPENED or MODIFIED. Expected state {expected:?} but found {actual:?}"
+    )]
+    RegistryStateMismatch {
+        fd: RawFd,
+        expected: Box<FileDescriptorInfo>,
+        actual: Box<FileDescriptorInfo>,
+    },
+}
+
+/// Errors for the [`FileDescriptorRegistry::audit`] function
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct AuditError(#[from] AuditErrorRepr);
+
+type AuditResult<T> = Result<T, AuditError>;
+
+impl From<FileDescriptorInfoError> for AuditError {
+    fn from(error: FileDescriptorInfoError) -> Self {
+        AuditError(AuditErrorRepr::FileDescriptorInfoFailure(error))
+    }
+}
+
+impl From<ProcFsError> for AuditError {
+    fn from(error: ProcFsError) -> Self {
+        AuditError(AuditErrorRepr::ProcFsError(error))
+    }
+}
 
 /// A struct for associating file descriptor information with [`Action`]s.
 /// This can be used to ensure file descriptors are accounted for and handled
 /// appropriately when the Zygote forks a new process.
+//
+// TODO: Either arena-allocate the strings or switch to using ArrayString
 #[derive(Debug)]
 pub struct FileDescriptorRegistry {
     species: SpeciesRef,
@@ -423,10 +762,11 @@ pub struct FileDescriptorRegistry {
     allowed_peer_socket_paths: ArrayVec<String, DYNAMIC_ALLOW_LIST_SIZE>,
 }
 
+#[allow(dead_code)]
 impl FileDescriptorRegistry {
     /// Construct a new registry for a given species.  The Species reference
     /// is used to query for species specific allowed files and sockets.
-    pub fn new(species: SpeciesRef) -> Self {
+    pub fn new(species: SpeciesRef) -> FdRegistryResult<Self> {
         let mut registry = Self {
             species,
             data: ArrayVec::new(),
@@ -437,25 +777,25 @@ impl FileDescriptorRegistry {
         };
 
         // Register the stdio file descriptors
-        registry.register(0, Action::Ignore);
-        registry.register(1, Action::Ignore);
-        registry.register(2, Action::Ignore);
+        registry.register(0, Action::Ignore)?;
+        registry.register(1, Action::Ignore)?;
+        registry.register(2, Action::Ignore)?;
 
-        registry
+        Ok(registry)
     }
 
     /// Reset the registry after spawning a subspecies process.
-    pub fn reset_for_subspecies(&mut self) {
-        self.execute_actions(ForkType::Subspecies);
+    pub fn reset_for_subspecies(&mut self) -> FdRegistryResult<()> {
+        self.execute_actions(ForkType::Subspecies)?;
 
         self.species.sync_fd_state();
         // This line needs to come after calling [`sys::android::log_close`],
         // which is done in [`sync_fd_state`], so that it will open new file
         // descriptors for logging.
         info!("Resetting FileDescriptorRegistry for subspecies");
-        // Register FDs opened by the app's preload rountine.
-        self.register_new();
-        self.audit().expect("File descriptor audit failed");
+        // Register FDs opened by the app's preload routine.
+        self.register_new()?;
+        self.audit().map_err(FdRegistryError::AuditFailure)
     }
 
     /// Queries the Zygote and species abstract socket allow lists
@@ -484,42 +824,52 @@ impl FileDescriptorRegistry {
     ///   * There are any files open that are not in the registry
     ///   * There are files descriptors in the registry that are no longer open
     ///   * A file descriptor's saved state is not equal to the current state
-    ///
-    /// If the audit is successful the function returns the number of open
-    /// file descriptors.
     #[tracing::instrument(level = "trace", skip_all)]
-    pub fn audit(&self) -> Result<usize> {
+    pub fn audit(&self) -> AuditResult<()> {
         debug_assert_single_threaded();
 
-        for item in self.data.iter().zip_longest(ProcFdIterator::new()?) {
+        for item in
+            self.data.iter().filter(|entry| !entry.closed()).zip_longest(ProcFdIterator::new()?)
+        {
             match item {
                 EitherOrBoth::Both(entry, Ok(open_fd)) => {
                     if entry.fd != open_fd {
-                        bail!("Registry out of sync: expected {} but found {}", entry.fd, open_fd);
+                        return Err(AuditErrorRepr::RegistryOrderMismatch {
+                            expected: entry.fd,
+                            actual: open_fd,
+                        }
+                        .into());
                     }
                     let current_info = FileDescriptorInfo::try_from(open_fd)?;
                     if entry.info != current_info {
-                        bail!(
-                            "File descriptor {} ({}) has been REOPENED or MODIFIED",
-                            entry.fd,
-                            entry.info
-                        );
+                        return Err(AuditErrorRepr::RegistryStateMismatch {
+                            fd: entry.fd,
+                            expected: Box::new(entry.info.clone()),
+                            actual: Box::new(current_info.clone()),
+                        }
+                        .into());
                     }
                 }
                 EitherOrBoth::Left(entry) => {
-                    bail!("File descriptor {} ({}) was CLOSED unexpectedly.", entry.fd, entry.info)
+                    return Err(AuditErrorRepr::FileDescriptorAbsent {
+                        fd: entry.fd,
+                        info: Box::new(entry.info.clone()),
+                    }
+                    .into());
                 }
                 EitherOrBoth::Right(Ok(open_fd)) => {
-                    let fd = FileDescriptorInfo::try_from(open_fd)?;
-                    bail!("File descriptor {} ({}) was OPENED unexpectedly.", open_fd, fd)
+                    let info = FileDescriptorInfo::try_from(open_fd)?;
+                    return Err(AuditErrorRepr::FileDescriptorUnexpected {
+                        fd: open_fd,
+                        info: Box::new(info),
+                    }
+                    .into());
                 }
-                EitherOrBoth::Both(_, Err(e)) | EitherOrBoth::Right(Err(e)) => {
-                    bail!(e)
-                }
+                EitherOrBoth::Both(_, Err(e)) | EitherOrBoth::Right(Err(e)) => return Err(e.into()),
             }
         }
 
-        Ok(self.data.len())
+        Ok(())
     }
 
     /// Queries the Zygote and species bound socket allow lists
@@ -540,27 +890,27 @@ impl FileDescriptorRegistry {
     /// CloseUnlessSpawnSubspecies, DupeNull, and Reopen actions. This should be
     /// performed immediately after a fork event.
     #[tracing::instrument(level = "trace", skip(self))]
-    pub fn execute_actions(&mut self, fork_type: ForkType) {
+    pub fn execute_actions(&mut self, fork_type: ForkType) -> FdRegistryResult<()> {
         debug_assert_single_threaded();
 
         let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None)
-            .expect("Failed to open /dev/null");
+            .map_err(FdRegistryError::DevNullFailure)?;
 
-        self.data.retain(|entry| {
-            let closed = entry.execute(dev_null_fd, fork_type);
-            !closed
-        });
+        for entry in &mut self.data {
+            entry.execute(dev_null_fd, fork_type)?;
+        }
 
         self.species.sync_fd_state();
+        Ok(())
     }
 
     /// Queries the Zygote and species allowed files lists.
-    fn file_is_allowed(&self, path: &CStr) -> bool {
-        ALLOWED_FILE_PATHS.contains(&path.to_str().expect("Failed to view path as a string"))
-            || self
-                .allowed_file_paths
-                .contains(&path.to_str().expect("Failed to view path as a string").to_owned())
-            || self.species.file_is_allowed(path)
+    fn file_is_allowed(&self, path: &CStr) -> FdRegistryResult<bool> {
+        let path_str = path.to_str().map_err(FdRegistryError::Utf8)?;
+
+        Ok(ALLOWED_FILE_PATHS.contains(&path_str)
+            || self.allowed_file_paths.iter().any(|allowed_path| allowed_path == path_str)
+            || self.species.file_is_allowed(path))
     }
 
     /// Searches through the sorted list of file descriptors (starting from
@@ -583,49 +933,55 @@ impl FileDescriptorRegistry {
     /// Close all file descriptors registered with `DupeNull`, `Close`, and
     /// `Reopen` actions.
     #[tracing::instrument(level = "trace", skip_all)]
-    pub fn override_and_close(&mut self) {
+    pub fn override_and_close(&mut self) -> FdRegistryResult<()> {
         debug_assert_single_threaded();
 
         for entry in &mut self.data {
-            entry.override_and_close();
+            entry.override_and_close()?;
         }
 
         self.species.sync_fd_state();
+        Ok(())
     }
 
     /// Adds a file descriptor to the registry and associates it with the
     /// provided action.
-    pub fn register(&mut self, fd: RawFd, action: Action) {
+    pub fn register(&mut self, fd: RawFd, action: Action) -> FdRegistryResult<()> {
         debug_assert_single_threaded();
 
-        match self.data.binary_search_by(|entry| entry.fd.cmp(&fd.as_raw_fd())) {
-            Ok(_) => {
-                panic!(
-                    "Attempting to register an already registered file descriptor: {}",
-                    fd.as_raw_fd()
-                );
+        match self.data.binary_search_by(|entry| entry.fd.cmp(&fd)) {
+            Ok(entry_index) => {
+                if self.data[entry_index].closed() {
+                    self.data[entry_index] =
+                        FileDescriptorEntry::new(fd, FileDescriptorInfo::try_from(fd)?, action);
+                    Ok(())
+                } else {
+                    Err(FdRegistryError::ReregisteredFd(fd))
+                }
             }
             Err(insert_index) => {
-                self.data.insert(
-                    insert_index,
-                    FileDescriptorEntry {
-                        fd: fd.as_raw_fd(),
-                        info: FileDescriptorInfo::try_from(fd.as_raw_fd())
-                            .expect("Unable to get file descriptor info"),
+                let info = FileDescriptorInfo::try_from(fd)?;
+                if action == Action::Reopen && !matches!(info, FileDescriptorInfo::File { .. }) {
+                    Err(FdRegistryError::InvalidActionForFileType {
+                        fd,
+                        type_str: info.type_str(),
                         action,
-                    },
-                );
+                    })
+                } else {
+                    self.data.insert(insert_index, FileDescriptorEntry::new(fd, info, action));
+                    Ok(())
+                }
             }
         }
     }
 
     /// Remove the given file descriptor from the registry
-    pub fn remove(&mut self, fd: RawFd) -> Result<()> {
+    pub fn remove(&mut self, fd: RawFd) -> FdRegistryResult<()> {
         self.data.remove(
             self.data
                 .as_slice()
                 .binary_search_by(|entry| entry.fd.cmp(&fd))
-                .or_else(|_| bail!("File descriptor is not registered: {}", fd))?,
+                .map_err(|_| FdRegistryError::UnregisteredFd(fd))?,
         );
 
         Ok(())
@@ -634,23 +990,20 @@ impl FileDescriptorRegistry {
     /// Iterate through all open file descriptors and register any unregistered
     /// descriptors using a default action.
     #[tracing::instrument(level = "trace", skip_all)]
-    pub fn register_new(&mut self) {
+    pub fn register_new(&mut self) -> FdRegistryResult<()> {
         debug_assert_single_threaded();
         assert!(self.data.is_sorted_by_key(|entry| entry.fd));
 
         let mut registry_index: usize = 0;
         let num_preexisting_entries = self.data.len();
 
-        for fd in
-            ProcFdIterator::new().expect("Unable to iterate over /proc/self file descriptor info")
-        {
-            let fd = fd.expect("Unable to read entry from /proc/self");
+        for fd_result in ProcFdIterator::new()? {
+            let fd = fd_result?;
             if self.is_registered(fd, &mut registry_index, num_preexisting_entries) {
                 continue;
             }
 
-            let info =
-                FileDescriptorInfo::try_from(fd).expect("Unable to get file descriptor info");
+            let info = FileDescriptorInfo::try_from(fd)?;
             let action = match info {
                 FileDescriptorInfo::BoundSocket(SocketAddress::Abstract(ref name))
                     if self.bound_abstract_socket_is_allowed(name) =>
@@ -663,7 +1016,10 @@ impl FileDescriptorRegistry {
                     Action::DupeNull
                 }
                 FileDescriptorInfo::BoundSocket(address) => {
-                    panic!("Bound socket not found in allow list ({fd}): {address}");
+                    return Err(FdRegistryError::UnregisteredBoundSocket {
+                        fd,
+                        address: address.to_string(),
+                    });
                 }
                 FileDescriptorInfo::ConnectedSocket(SocketAddress::Path(ref path))
                     if self.peer_socket_path_is_allowed(path) =>
@@ -671,34 +1027,39 @@ impl FileDescriptorRegistry {
                     self.species.get_peer_socket_action(path).unwrap_or(Action::DupeNull)
                 }
                 FileDescriptorInfo::ConnectedSocket(address) => {
-                    panic!("Unregistered connected socket found ({fd}): {address}");
+                    return Err(FdRegistryError::UnregisteredConnectedSocket {
+                        fd,
+                        address: address.to_string(),
+                    });
                 }
                 FileDescriptorInfo::Fifo => {
-                    panic!("Unregistered FIFO fd found: {fd}");
+                    return Err(FdRegistryError::UnregisteredFifoFd { fd });
                 }
                 FileDescriptorInfo::File { ref path, .. } => {
-                    if self.file_is_allowed(path.as_cstr().expect("Failed to view path as CStr")) {
-                        self.species
-                            .get_file_action(path.as_cstr().expect("Failed ot view path as CStr"))
-                            .unwrap_or(Action::Reopen)
+                    let path_cstr = path.as_cstr().map_err(|_| FdRegistryError::InvalidCString)?;
+
+                    if self.file_is_allowed(path_cstr)? {
+                        self.species.get_file_action(path_cstr).unwrap_or(Action::Reopen)
                     } else {
-                        panic!(
-                            "File path not found on allow list ({fd}): {:?}",
-                            path.as_cstr().expect("Path is not a CStr")
-                        );
+                        return Err(FdRegistryError::UnregisteredFile {
+                            fd,
+                            path: path_cstr.to_owned(),
+                        });
                     }
                 }
                 FileDescriptorInfo::SignalFd => {
-                    panic!("Unregistered signal fd found: {fd}");
+                    return Err(FdRegistryError::UnregisteredSignalFd { fd });
                 }
             };
 
-            self.data.push(FileDescriptorEntry { fd, info, action });
+            self.data.push(FileDescriptorEntry::new(fd, info, action));
         }
 
         if self.data.len() != num_preexisting_entries {
             self.data.sort_by_key(|entry| entry.fd);
         }
+
+        Ok(())
     }
 
     /// Return the number of registered file descriptors.

@@ -20,7 +20,7 @@
 use core::ffi::{c_int, CStr};
 use std::{env, fmt::Debug, str::FromStr};
 
-use anyhow::Result;
+use thiserror::Error;
 
 use crate::file_descriptors;
 use zygote_messages::{SpawnParamsCommon, SpawnPayload, SpawnPayloadParser};
@@ -258,6 +258,11 @@ where
     }
 }
 
+/// Indicates that the wrong [`ReInitWrapper`] variant was passed to a function
+#[derive(Debug, Error)]
+#[error("Wrong ReInitWrapper variant provided")]
+pub struct WrongWrapperType;
+
 /// Re-initialization data that is gathered and then consumed by species code
 #[derive(Debug)]
 pub enum ReInitWrapper {
@@ -277,10 +282,10 @@ impl ReInitWrapper {
     /// struct
     #[cfg(all(target_os = "android", feature = "android-native"))]
     #[allow(unreachable_patterns)]
-    pub fn as_android_native(&self) -> anyhow::Result<&android_native::ReInitData> {
+    pub fn as_android_native(&self) -> Result<&android_native::ReInitData, WrongWrapperType> {
         match self {
             ReInitWrapper::AndroidNative(data) => Ok(data),
-            _ => Err(anyhow::anyhow!("Invalid re-initialization data type")),
+            _ => Err(WrongWrapperType),
         }
     }
 }
@@ -300,7 +305,7 @@ pub(crate) mod test {
     }
 
     impl TryFrom<&str> for DateFreshness {
-        type Error = anyhow::Error;
+        type Error = chrono::format::ParseError;
 
         fn try_from(value: &str) -> Result<Self, Self::Error> {
             let reviewed_date = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(

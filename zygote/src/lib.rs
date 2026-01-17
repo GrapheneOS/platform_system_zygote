@@ -35,8 +35,31 @@ macro_rules! span_scope {
     };
 }
 
+/// Panic if the [`Result`] is [`Err`].
+#[macro_export]
+macro_rules! assert_ok {
+    ($result:expr) => {
+        match $result {
+            Ok(_) => {}
+            Err(err_val) => {
+                panic!("Assertion failed: Expected Ok but received Err({:?})", err_val);
+            }
+        }
+    };
+}
+
+/// Panic if the [`Result`] is [`Err`].
+#[macro_export]
+macro_rules! debug_assert_ok {
+    ($result:expr) => {
+        if cfg!(debug_assertions) {
+            assert_ok!($result);
+        }
+    };
+}
+
 pub(crate) mod arguments;
-pub mod child_process;
+pub(crate) mod child_process;
 pub mod config;
 pub mod file_descriptors;
 pub mod introspection;
