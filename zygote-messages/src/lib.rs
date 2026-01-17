@@ -352,6 +352,21 @@ impl Message<'_, '_> {
             _ => None,
         }
     }
+
+    /// Return the name of the variant as a static string
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Message::AckResponse => "AckResponse",
+            Message::Exit => "Exit",
+            Message::IdentityQuery => "IdentityQuery",
+            Message::IdentityQueryResponse { .. } => "IdentityQueryResponse",
+            Message::Spawn { .. } => "Spawn",
+            Message::SpawnSubspecies { .. } => "SpawnSubspecies",
+            Message::SpawnResponse { .. } => "SpawnResponse",
+            Message::Stat => "Stat",
+            Message::StatResponse { .. } => "StatResponse",
+        }
+    }
 }
 
 impl ToParcel for Message<'_, '_> {

@@ -25,22 +25,22 @@ use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use thiserror::Error;
 use tracing::{error, info, warn};
 
-use crate::{
-    child_process, config,
-    file_descriptors::{self, FileDescriptorRegistry, ForkType},
-    species::SpeciesRef,
-};
 #[allow(unused_imports)]
 use crate::debug_assert_ok;
+use crate::{
+    child_process, config,
+    file_descriptors::{self, FdRegistryError, FileDescriptorRegistry, ForkType},
+    species::SpeciesRef,
+};
 use zygote_messages::{
     self as messages, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel,
     MESSAGE_BUFFER_SIZE,
 };
-use zygote_sys::procfs::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat};
 use zygote_sys::{
     self as sys,
+    procfs::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     LoopControl::{self, *},
-    LoopExit, PollFd,
+    LoopExit, PollFd, TaskFailure,
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
@@ -85,32 +85,205 @@ impl<'a> Partition<'a> for PollBuffer {
     }
 }
 
+/// Errors that may be encountered when performing signal-handling operations
 #[derive(Debug, Error)]
-enum ServerSocketError {
-    #[error("Failed to create server socket: {0}")]
-    CreationError(#[from] sys::Error),
+pub enum SignalHandlerError {
+    /// Failed to poll the signalfd
+    #[error("Failed to poll the signalfd: {0}")]
+    Poll(sys::Error),
 
+    /// Failed to account for a terminated child process
+    #[error("Failed to account for a terminated child process: {0}")]
+    ProcessAccounting(sys::Error),
+
+    /// Failed to read signal information
+    #[error("Failed to read signal information: {0}")]
+    Read(sys::Error),
+
+    /// Failed to set the signal mask
+    #[error("Failed to set signal mask: {0}")]
+    SetMask(sys::Error),
+
+    /// Failed to build a signal set
+    #[error("Failed to build signal set: {0}")]
+    SigSet(sys::Error),
+
+    /// Failed to create a signalfd
+    #[error("Failed to create signalfd: {0}")]
+    SignalFd(sys::Error),
+}
+
+impl TaskFailure for SignalHandlerError {
+    fn task_failure(error: sys::Error) -> Self {
+        SignalHandlerError::Read(error)
+    }
+}
+
+type SignalHandlerResult<T> = Result<T, SignalHandlerError>;
+
+/// Errors that may be encountered when interacting with the server socket
+#[derive(Debug, Error)]
+pub enum ServerSocketError {
+    /// Failed to accept a new client connection
+    #[error("Failure to accept a new client connection: {0}")]
+    Accept(sys::Error),
+
+    /// Failed to register a new client socket file descriptor
+    #[error("Failure while registering new client socket: {0}")]
+    ClientRegistration(FdRegistryError),
+
+    /// Failed to create the server socket
+    #[error("Failed to create the server socket: {0}")]
+    Creation(sys::Error),
+
+    /// Failed to create the server socket directory
     #[error("Failed to create server socket directory: {0}")]
-    DirectoryCreationError(std::io::Error),
+    DirectoryCreation(std::io::Error),
 
+    /// Failed to fstat the provided file descriptor
     #[error("Failed to fstat provided file descriptor: {0}")]
-    FstatFailure(sys::Error),
+    Fstat(sys::Error),
 
+    /// Failed to listen on the server socket
+    #[error("Failed to listen on the server socket: {0}")]
+    Listen(sys::Error),
+
+    /// Failed to gather metadata about the socket
+    #[error("Failed to gather socket metadata: {0}")]
+    Metadata(sys::Error),
+
+    /// Socket argument path already exists
     #[error("Socket argument path already exists: {0}")]
     PathExists(String),
 
-    #[error("Socket path must have a parent directory")]
-    PathHasNoParent,
+    /// Socket argument path has no parent directory
+    #[error("Socket path must have a parent directory: {0}")]
+    PathHasNoParent(String),
 
+    /// Failed to poll the server socket
+    #[error("Failed to poll server socket: {0}")]
+    Poll(sys::Error),
+
+    /// Provided integer argument does not refer to an open file
     #[error("Provided integer argument does not refer to an open file: {0}")]
     ProvidedFdNotOpenFile(RawFd),
 
+    /// Provided file descriptor does not refer to a sequence packet socket
     #[error("Provided file descriptor does not refer to a seqpacket socket: {0}")]
     ProvidedFdNotSeqPacket(RawFd),
 
+    /// Provided file descriptor does not refer to a valid socket
     #[error("Provided file descriptor does not refer to a valid socket: {0}")]
     ProvidedFdNotSocket(RawFd),
 }
+
+impl TaskFailure for ServerSocketError {
+    fn task_failure(error: sys::Error) -> Self {
+        ServerSocketError::Accept(error)
+    }
+}
+
+type ServerSocketResult<T> = Result<T, ServerSocketError>;
+
+/// Errors that may be encountered when interacting with clients
+#[derive(Debug, Error)]
+pub enum ClientError {
+    /// Failed to close a file descriptor
+    #[error("Failed to close file descriptor {0}: {1}")]
+    Close(RawFd, sys::Error),
+
+    /// Failed to send IdentityQuery response
+    #[error("Failed to send IdentityQuery response: {0}")]
+    IdentityQueryResponse(RawFd, sys::Error),
+
+    /// Provided FD is not a client socket
+    #[error("Provided FD is not a client socket: {0}")]
+    InvalidClientSocketFd(RawFd),
+
+    /// Spawn message is missing spawn parameters
+    #[error("Spawn message is missing spawn parameters")]
+    MissingSpawnParams,
+
+    /// Spawn message is missing a payload
+    #[error("Spawn message is missing a payload")]
+    MissingSpawnPayload,
+
+    /// Failed to poll client socket
+    #[error("Failed to poll client socket socket: {0}")]
+    Poll(sys::Error),
+
+    /// Failed to create a new process
+    #[error("Failed to create new process: {0}")]
+    ProcessCreationFailure(RawFd, sys::Error),
+
+    /// Failed to read from client socket
+    #[error("Failed to read from client socket: {0}")]
+    Read(sys::Error),
+
+    /// Failed to remove client file descriptor from the registry
+    #[error("Failed to remove client file descriptor from the registry: {0}")]
+    RegistryUpdate(#[from] FdRegistryError),
+
+    /// Failed to re-initialize the server for a subspecies
+    #[error("Failed to re-initialize the server for a subspecies")]
+    Reinitialization,
+
+    /// Failed to send Spawn response
+    #[error("Failed to send Spawn response: {0}")]
+    SpawnResponse(RawFd, sys::Error),
+
+    /// Failed read process statistics
+    #[error("Failed to read procfs stats file: {0}")]
+    StatRead(RawFd, procfs::ProcFsError),
+
+    /// Failed to send Stat response
+    #[error("Failed to send Stat response: {0}")]
+    StatResponse(RawFd, sys::Error),
+}
+
+impl TaskFailure for ClientError {
+    fn task_failure(error: sys::Error) -> Self {
+        ClientError::Read(error)
+    }
+}
+
+type ClientResult<T> = Result<T, ClientError>;
+
+/// Errors for the [`Server`] class.
+#[derive(Debug, Error)]
+pub enum ServerError {
+    /// A failure was encountered when interacting with a client
+    #[error(transparent)]
+    ClientSocketFailure(#[from] ClientError),
+
+    /// A failure was encountered while setting effective permissions for the
+    /// process
+    #[error("Failed to set effective permissions: ({0:?}, {1:?}): {2}")]
+    EffectivePermissionsFailure(Option<libc::uid_t>, Option<libc::gid_t>, sys::Error),
+
+    /// A file descriptor registry action failed
+    #[error("File descriptor registry failure: {0}")]
+    FdRegistryFailure(#[from] FdRegistryError),
+
+    /// A failure was encountered when polling the server's file descriptors
+    #[error("Failed to poll server file descriptors: {0}")]
+    Poll(sys::Error),
+
+    /// A failure was encountered when creating the server's process group
+    #[error("Process group creation failure: {0}")]
+    ProcessGroupFailure(sys::Error),
+
+    /// A failure was encountered when interacting with the server socket
+    #[error(transparent)]
+    ServerSocketFailure(#[from] ServerSocketError),
+
+    /// A failure was encountered while setting signal handlers or reading from
+    /// the signalfd.
+    #[error(transparent)]
+    SignalHandlerFailure(#[from] SignalHandlerError),
+}
+
+type ServerResult<T> = Result<T, ServerError>;
 
 #[derive(Debug)]
 enum ServerControl<T> {
@@ -135,31 +308,17 @@ impl<T> ServerControl<T> {
     }
 }
 
-#[derive(Debug, Error)]
-enum ClientLoopError {
-    #[error("Failed to send IdentityQuery response: {0}")]
-    IdentityQueryResponseFailure(sys::Error),
+type ServerControlResult<T> = ServerResult<ServerControl<T>>;
 
-    #[error("Failed to create new process: {0}")]
-    ProcessCreationFailure(sys::Error),
-
-    #[error("Failed to send Spawn response: {0}")]
-    SpawnResponseFailure(sys::Error),
-
-    #[error("Failed to read procfs stats file: {0}")]
-    StatReadError(procfs::ProcFsError),
-
-    #[error("Failed to send Stat response: {0}")]
-    StatResponseFailure(sys::Error),
-}
-
-enum ClientLoopControl<T> {
+#[derive(Debug)]
+enum ClientControl<T> {
     Child(T),
     Break,
     NextSocket,
-    Error(RawFd, ClientLoopError),
     Shutdown,
 }
+
+type ClientControlResult<T> = ClientResult<ClientControl<T>>;
 
 /// The main data structure for the Zygote process server.
 #[derive(Debug)]
@@ -188,35 +347,29 @@ impl Server {
     ///
     /// Add a destructor to clean up the socket if we create it.
     #[tracing::instrument(level = "trace", skip_all)]
-    pub fn new(config: &config::Server) -> Self {
-        let mut registry = FileDescriptorRegistry::new(config.species)
-            .expect("Failed to create file descriptor registry");
+    pub fn new(config: &config::Server) -> ServerResult<Self> {
+        let mut registry = FileDescriptorRegistry::new(config.species)?;
 
         let socket_path_or_fd = config.socket();
-        let (server_socket, server_socket_path) =
-            Self::get_server_socket(socket_path_or_fd).expect("Failed to create server socket");
-        registry
-            .register(server_socket, file_descriptors::Action::Close)
-            .expect("Failed to register server socket");
+        let (server_socket, server_socket_path) = Self::get_server_socket(socket_path_or_fd)?;
+        registry.register(server_socket, file_descriptors::Action::Close)?;
 
         let sigset =
-            sys::build_sigset(Self::blocked_signals()).expect("Failed to build signal set");
+            sys::build_sigset(Self::blocked_signals()).map_err(SignalHandlerError::SigSet)?;
         // These masks are unblocked in Server::drop.
-        sys::sigprocmask(libc::SIG_BLOCK, &sigset).expect("Failed to set signal mask");
+        sys::sigprocmask(libc::SIG_BLOCK, &sigset).map_err(SignalHandlerError::SetMask)?;
         let signal_fd =
-            sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).expect("Failed to create signalfd");
+            sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).map_err(SignalHandlerError::SignalFd)?;
         // The signal fd is reused after forking the subspecies process.
         // Per `man signalfd`:
         //     "After a fork(2), the child inherits a copy of the signalfd file
         //     descriptor.  A read(2) from the file descriptor in the child will
         //     return information about signals queued to the child."
-        registry
-            .register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)
-            .expect("Failed to register signalfd");
+        registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)?;
 
         // Register any unregistered file descriptors such as those used for logging.
-        registry.register_new().expect("Failed to register new file descriptors");
-        registry.audit().expect("File descriptor audit failed");
+        registry.register_new()?;
+        registry.audit().map_err(|error| ServerError::FdRegistryFailure(error.into()))?;
 
         let server = Self {
             name: config.name.clone(),
@@ -247,31 +400,25 @@ impl Server {
         //  * EPERM: Not applicable; we're creating a new process group, not
         //           moving between existing ones
         //  * EPERM: Not applicable; calling on self
-        if let Err(errno) = sys::setpgid(0, 0) {
-            error!("Failed to create process group for Zygote server: {errno}");
-            std::process::exit(1);
-        }
+        sys::setpgid(0, 0).map_err(ServerError::ProcessGroupFailure)?;
 
-        server.preload(&config.preload_libraries);
+        server.preload(&config.preload_libraries)?;
 
         #[cfg(target_os = "android")]
         if let Err(errno) = sys::mallopt(libc::M_PURGE_ALL, 0) {
             error!("Failed to mallopt(M_PURGE_ALL): {errno}");
         }
 
-        server
+        Ok(server)
     }
 
     /// Tailor the Server instance for the subspecies.
     #[tracing::instrument(level = "trace", skip(self))]
-    fn re_initialize_as_subspecies(&mut self, child_socket_path: String) {
-        self.registry.reset_for_subspecies().expect("Failed to reset file descriptor registry");
+    fn re_initialize_as_subspecies(&mut self, child_socket_path: String) -> ServerResult<()> {
+        self.registry.reset_for_subspecies()?;
 
-        let (child_socket_fd, child_socket_path) = Self::get_server_socket(child_socket_path)
-            .expect("Failed to create server socket for subspecies");
-        self.registry
-            .register(child_socket_fd, file_descriptors::Action::Close)
-            .expect("Failed to register server socket for subspecies");
+        let (child_socket_fd, child_socket_path) = Self::get_server_socket(child_socket_path)?;
+        self.registry.register(child_socket_fd, file_descriptors::Action::Close)?;
 
         // All the RawFds of client sockets are closed in the
         // `reset_for_subspecies()` call above and they are stateless, thus
@@ -283,6 +430,8 @@ impl Server {
         self.server_socket_path = child_socket_path;
 
         self.pid = sys::getpid();
+
+        Ok(())
     }
 
     const fn blocked_signals() -> &'static [libc::c_int] {
@@ -293,25 +442,25 @@ impl Server {
     ///   * Using the provided integer as a file descriptor
     ///   * Opening a new socket and binding it to the provided path
     ///   * Opening a new socket and binding it to a default path
-    fn get_server_socket(
-        socket_path_or_fd: String,
-    ) -> Result<(RawFd, Option<String>), ServerSocketError> {
+    fn get_server_socket(socket_path_or_fd: String) -> ServerSocketResult<(RawFd, Option<String>)> {
         if let Ok(fd) = socket_path_or_fd.parse::<RawFd>() {
             if !get_proc_fd_path(fd).exists() {
                 return Err(ServerSocketError::ProvidedFdNotOpenFile(fd));
             }
 
-            let stat = sys::fstat(fd).map_err(ServerSocketError::FstatFailure)?;
+            let stat = sys::fstat(fd).map_err(ServerSocketError::Fstat)?;
             if sys::get_file_type(stat) != libc::S_IFSOCK {
                 return Err(ServerSocketError::ProvidedFdNotSocket(fd));
             }
 
-            if sys::get_socket_type(fd)? != libc::SOCK_SEQPACKET {
+            if sys::get_socket_type(fd).map_err(ServerSocketError::Metadata)?
+                != libc::SOCK_SEQPACKET
+            {
                 return Err(ServerSocketError::ProvidedFdNotSeqPacket(fd));
             }
 
-            sys::fcntl_setfl(fd, libc::O_NONBLOCK)?;
-            sys::listen(fd, SERVER_SOCKET_BACKLOG)?;
+            sys::fcntl_setfl(fd, libc::O_NONBLOCK).map_err(ServerSocketError::Metadata)?;
+            sys::listen(fd, SERVER_SOCKET_BACKLOG).map_err(ServerSocketError::Listen)?;
 
             Ok((fd, None))
         } else {
@@ -319,22 +468,28 @@ impl Server {
 
             let (socket_fd, server_socket_path) =
                 if let Some(abs_socket_addr) = socket_path_or_fd.strip_prefix("@") {
-                    (sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)?, None)
+                    (
+                        sys::create_abstract_socket(abs_socket_addr, libc::SOCK_SEQPACKET)
+                            .map_err(ServerSocketError::Creation)?,
+                        None,
+                    )
                 } else {
                     if arg_path.exists() {
                         return Err(ServerSocketError::PathExists(socket_path_or_fd.clone()));
                     }
-                    std::fs::create_dir_all(
-                        arg_path.parent().ok_or(ServerSocketError::PathHasNoParent)?,
-                    )
-                    .map_err(ServerSocketError::DirectoryCreationError)?;
+                    std::fs::create_dir_all(arg_path.parent().ok_or_else(|| {
+                        ServerSocketError::PathHasNoParent(arg_path.to_string_lossy().to_string())
+                    })?)
+                    .map_err(ServerSocketError::DirectoryCreation)?;
+
                     (
-                        sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)?,
+                        sys::create_bound_socket(&socket_path_or_fd, libc::SOCK_SEQPACKET)
+                            .map_err(ServerSocketError::Creation)?,
                         Some(socket_path_or_fd.clone()),
                     )
                 };
-            sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK)?;
-            sys::listen(socket_fd, SERVER_SOCKET_BACKLOG)?;
+            sys::fcntl_setfl(socket_fd, libc::O_NONBLOCK).map_err(ServerSocketError::Metadata)?;
+            sys::listen(socket_fd, SERVER_SOCKET_BACKLOG).map_err(ServerSocketError::Listen)?;
 
             Ok((socket_fd, server_socket_path))
         }
@@ -349,12 +504,12 @@ impl Server {
     fn check_poll_events(
         &mut self,
         partition: PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
-        if self.check_signalfd_events(&partition).is_exit() {
-            return ServerControl::Shutdown;
+    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
+        if self.check_signalfd_events(&partition)?.is_exit() {
+            return Ok(ServerControl::Shutdown);
         }
 
-        self.check_server_socket_events(&partition);
+        self.check_server_socket_events(&partition)?;
         self.check_client_sockets_events(&partition)
     }
 
@@ -362,136 +517,132 @@ impl Server {
     fn check_client_sockets_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() -> Infallible + use<>> {
+    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
         for client_pollfd in partition.clients {
-            // POLLERR and POLLNVAL should never occur for a client socket.
-            let checked_pollfd =
-                client_pollfd.check().unwrap_or_else(|err| panic!("Client socket: {err}"));
+            let checked_pollfd = client_pollfd.check().map_err(ClientError::Poll)?;
 
-            let pollin_result = checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
-                sys::call_until_would_block(
-                    || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
-                    &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
-                        if readlen == 0 {
-                            return Break(ClientLoopControl::NextSocket);
-                        }
-
-                        match Message::try_from_parcel(&message_buffer) {
-                            Ok(_) => self.dispatch_message_handler(fd, message_buffer),
-                            Err(err) => {
-                                // TODO: Respond with an error
-                                warn!(
-                                    "Invalid message received from client (PID {}): {}",
-                                    sys::get_socket_creds(fd)
-                                        .expect("Failed to get socket credentials")
-                                        .pid,
-                                    err
-                                );
-                                Break(ClientLoopControl::NextSocket)
+            let pollin_result: Option<Result<LoopExit<ClientControl<_>>, ClientError>> =
+                checked_pollfd.try_handle_event(libc::POLLIN, &mut |fd| {
+                    sys::try_until_would_block(
+                        || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
+                        &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
+                            if readlen == 0 {
+                                return Ok(Break(ClientControl::NextSocket));
                             }
-                        }
-                    },
-                )
-                // TODO: Add more extensive error handling.
-                .expect("Unexpected error in recvmsg loop")
-            });
+
+                            match Message::try_from_parcel(&message_buffer) {
+                                Ok(_) => match self.dispatch_message_handler(fd, message_buffer) {
+                                    Continue => Ok(Continue),
+                                    Break(value) => Ok(Break(value?)),
+                                },
+                                Err(err) => {
+                                    // TODO: Respond with an error
+                                    warn!(
+                                        "Invalid message received from client ({:?}): {}",
+                                        sys::get_socket_creds(fd),
+                                        err
+                                    );
+                                    Ok(Break(ClientControl::NextSocket))
+                                }
+                            }
+                        },
+                    )
+                });
 
             match pollin_result {
                 None => {
                     // No event was registered for this file descriptor
                 }
-                Some(LoopExit::WouldBlock) => {
+                Some(Ok(LoopExit::WouldBlock)) => {
                     // All available messages were read from the socket
                 }
-                Some(LoopExit::Early(control)) => {
+                Some(Ok(LoopExit::Early(control))) => {
                     match control {
-                        ClientLoopControl::Child(thunk) => {
+                        ClientControl::Child(thunk) => {
                             // We are in the child process and should exit the
                             // server with the thunk.
-                            return ServerControl::Trampoline(thunk);
+                            return Ok(ServerControl::Trampoline(thunk));
                         }
-                        ClientLoopControl::Break => {
+                        ClientControl::Break => {
                             // We have just reset the server instance for App
                             // Zygote thus the pollfds are invalidated. Move
                             // back to the top of the server loop.
-                            return ServerControl::Continue;
+                            return Ok(ServerControl::Continue);
                         }
-                        ClientLoopControl::NextSocket => {
+                        ClientControl::NextSocket => {
                             // Zero-length read from socket, continue and wait for SIGHUP
                         }
-                        ClientLoopControl::Error(fd, err) => {
-                            error!(
-                                "Error encountered while responding to client socket {fd}: {err}"
-                            );
-
-                            self.remove_client_socket(fd);
-                            continue;
-                        }
-                        ClientLoopControl::Shutdown => return ServerControl::Shutdown,
+                        ClientControl::Shutdown => return Ok(ServerControl::Shutdown),
                     }
+                }
+                Some(Err(error)) => {
+                    error!(
+                        "Error encountered while responding to client socket {}: {error:?}",
+                        checked_pollfd.fd()
+                    );
+
+                    self.remove_client_socket(checked_pollfd.fd())?;
                 }
             }
 
-            let _ = checked_pollfd.handle_event(libc::POLLHUP, |fd| {
-                info!("client socket disconnected: {fd}");
-                self.remove_client_socket(fd);
-            });
+            if let Some(result) = checked_pollfd.try_handle_event(libc::POLLHUP, |fd| {
+                info!("Client socket disconnected: {fd}");
+                self.remove_client_socket(fd)
+            }) {
+                result?;
+            }
         }
 
         // Continue the server loop
-        ServerControl::Continue
+        Ok(ServerControl::Continue)
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    fn check_server_socket_events(&mut self, partition: &PollPartition<'_>) {
-        // POLLERR and POLLNVAL should never occur for the server socket.
-        let checked_pollfd = partition.server.check().unwrap_or_else(|err| {
-            panic!("Server socket: {err}");
-        });
+    fn check_server_socket_events(
+        &mut self,
+        partition: &PollPartition<'_>,
+    ) -> ServerSocketResult<()> {
+        let checked_pollfd = partition.server.check().map_err(ServerSocketError::Poll)?;
 
-        checked_pollfd.handle_event(libc::POLLIN, &mut |fd| {
-            sys::call_until_would_block(|| sys::accept(fd), &mut |new_client_fd| {
-                info!(
-                    "Accepted new client socket connection from PID {}",
-                    sys::get_socket_creds(new_client_fd)
-                        .expect("Failed to get socket credentials")
-                        .pid
-                );
+        let event_result: Option<ServerSocketResult<LoopExit<()>>> = checked_pollfd
+            .try_handle_event(libc::POLLIN, &mut |fd| {
+                sys::try_until_would_block(|| sys::accept(fd), &mut |new_client_fd| {
+                    info!(
+                        "Accepted new client socket connection from {:?}",
+                        sys::get_socket_creds(new_client_fd)
+                    );
 
-                sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK).expect("fcntl_setfl failed");
+                    sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK)
+                        .map_err(ServerSocketError::Metadata)?;
 
-                self.client_sockets.push(new_client_fd);
-                self.registry
-                    .register(new_client_fd, file_descriptors::Action::Close)
-                    .expect("Failed to register client socket");
+                    self.client_sockets.push(new_client_fd);
+                    self.registry
+                        .register(new_client_fd, file_descriptors::Action::Close)
+                        .map_err(ServerSocketError::ClientRegistration)?;
 
-                // Continue reading
-                LoopControl::<()>::Continue
-            })
-            // TODO: Add more extensive error handling.
-            .expect("Unexpected error in accept loop");
-        });
+                    // Continue reading
+                    Ok(LoopControl::<()>::Continue)
+                })
+            });
 
-        // We don't need to check to see if a POLLIN event was handled as not
-        // receiving any new connections is valid.
-
-        // No need to check for POLLHUP as it should never occur for a
-        // listen socket.
+        // Receiving no new connections is valid and POLLHUP should never occur
+        // for a listen socket, so we only need to check for errors.
+        match event_result {
+            Some(Err(error)) => Err(error),
+            _ => Ok(()),
+        }
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
     fn check_signalfd_events(
         &mut self,
         partition: &PollPartition<'_>,
-    ) -> ServerControl<impl FnOnce() -> Infallible> {
-        // POLLERR and POLLNVAL should never occur for a signalfd.
-        let checked_pollfd = partition.signal.check().unwrap_or_else(|err| {
-            panic!("Signalfd: {err}");
-        });
+    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
+        let checked_pollfd = partition.signal.check().map_err(SignalHandlerError::Poll)?;
 
-        checked_pollfd
-            .handle_event(libc::POLLIN, &mut |fd| {
-                sys::call_until_would_block(
+        let event_result: Option<SignalHandlerResult<LoopExit<i32>>> = checked_pollfd
+            .try_handle_event(libc::POLLIN, &mut |fd| {
+                sys::try_until_would_block(
                     || sys::read_exact::<libc::signalfd_siginfo>(fd),
                     &mut |siginfo: libc::signalfd_siginfo| {
                         match siginfo.ssi_signo as i32 {
@@ -501,97 +652,129 @@ impl Server {
                                     "Received SIGCHLD from PID {} with status {}",
                                     pid, siginfo.ssi_status
                                 );
+
                                 match sys::waitpid(Some(pid), libc::WNOHANG) {
-                                    Ok(Some((ret_pid, status))) if ret_pid == pid => {
+                                    Ok(Some((ret_pid, status))) => {
+                                        // We provide an exact PID so we should
+                                        // always receive the same PID as the
+                                        // result.
+                                        debug_assert_eq!(ret_pid, pid);
+
                                         self.species.handle_sigchld(
                                             pid,
                                             siginfo.ssi_uid,
                                             siginfo.ssi_status,
                                         );
                                         info!(
-                                            "Reaped child process {} terminated with {:?}",
+                                            "Child process {} terminated with status {:?}",
                                             pid, status
                                         );
+                                        Ok(Continue)
                                     }
-                                    _ => error!("Failed to reap child process {}", pid),
-                                };
-
-                                // Continue reading
-                                Continue
+                                    Ok(None) => Ok(Continue),
+                                    Err(error) => Err(SignalHandlerError::ProcessAccounting(error)),
+                                }
                             }
                             libc::SIGINT => {
                                 info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
 
                                 // Terminate early
-                                Break(libc::SIGINT)
+                                Ok(Break(libc::SIGINT))
                             }
                             libc::SIGTERM => {
                                 info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
 
                                 // Terminate early
-                                Break(libc::SIGTERM)
+                                Ok(Break(libc::SIGTERM))
                             }
                             signo => {
                                 // This should never happen as only SIGCHLD,
                                 // SIGINT, and SIGTERM are added to the signalfd's
                                 // mask.
-                                panic!("Unhandled signal received: {signo}");
+                                unreachable!("Unhandled signal received: {signo}");
                             }
                         }
                     },
                 )
-                // TODO: Add more extensive error handling.
-                .expect("Unexpected error in signalfd read loop")
-            })
-            // The server should exit early iff the handler exited
-            // early due to receiving a SIGINT or SIGTERM.
-            .map_or(
-                ServerControl::<fn() -> Infallible>::Continue,
-                |loop_control| match loop_control {
-                    LoopExit::Early(_) => ServerControl::Shutdown,
-                    LoopExit::WouldBlock => ServerControl::Continue,
-                },
-            )
+            });
+
+        Ok(match event_result {
+            Some(Ok(LoopExit::Early(_))) => ServerControl::<fn() -> Infallible>::Shutdown,
+            Some(Ok(LoopExit::WouldBlock)) => ServerControl::Continue,
+            Some(Err(error)) => {
+                error!(
+                    "Unexpected error interacting with the signalfd ({}): {error}",
+                    checked_pollfd.fd()
+                );
+                ServerControl::Shutdown
+            }
+            None => ServerControl::Continue,
+        })
     }
 
     fn dispatch_message_handler(
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
+    ) -> LoopControl<ClientControlResult<impl FnOnce() -> Infallible + use<>>> {
         match Message::try_from_parcel(&message_buffer) {
-            Ok(Message::Exit) => self.handle_message_exit(fd),
-            Ok(Message::IdentityQuery) => self.handle_message_identity_query(fd),
-            Ok(Message::Spawn { payload, .. }) | Ok(Message::SpawnSubspecies { payload, .. })
-                if !self.species.is_spawn_payload_type(&payload) =>
-            {
-                // TODO: Respond with an error
-                error!(
-                    "Incorrect spawn payload for this species {}: {:?}",
-                    self.species.name(),
-                    payload
-                );
+            Ok(message) => {
+                if cfg!(debug_assertions) {
+                    info!(
+                        "Received message from client ({:?}): {:?}",
+                        sys::get_socket_creds(fd),
+                        message
+                    );
+                } else {
+                    info!(
+                        "Received message from PID {:?}: {}",
+                        sys::get_socket_creds(fd),
+                        message.variant_name()
+                    );
+                }
 
-                // Continue the `recvmsg` loop
-                Continue
-            }
-            Ok(Message::Spawn { .. }) => self.handle_message_spawn(fd, message_buffer),
-            Ok(Message::SpawnSubspecies { socket_path, .. }) => {
-                self.handle_message_spawn_subspecies(fd, socket_path.to_string(), message_buffer)
-            }
-            Ok(Message::Stat) => self.handle_message_stat(fd),
-            Ok(msg) => {
-                warn!("Server received unhandled message: {msg:?}");
+                match message {
+                    Message::Exit => self.handle_message_exit(fd),
+                    Message::IdentityQuery => self.handle_message_identity_query(fd),
+                    Message::Spawn { payload, .. } | Message::SpawnSubspecies { payload, .. }
+                        if !self.species.is_spawn_payload_type(&payload) =>
+                    {
+                        // TODO: Respond with an error
+                        error!(
+                            "Incorrect spawn payload for this species {}: {:?}",
+                            self.species.name(),
+                            payload
+                        );
 
-                // Continue the `recvmsg` loop
-                Continue
+                        // Continue the `recvmsg` loop
+                        Continue
+                    }
+                    Message::Spawn { .. } => self.handle_message_spawn(fd, message_buffer),
+                    Message::SpawnSubspecies { socket_path, .. } => self
+                        .handle_message_spawn_subspecies(
+                            fd,
+                            socket_path.to_string(),
+                            message_buffer,
+                        ),
+                    Message::Stat => self.handle_message_stat(fd),
+                    msg => {
+                        warn!(
+                            "Invalid message type received from client ({:?}): {}",
+                            sys::get_socket_creds(fd),
+                            msg.variant_name()
+                        );
+
+                        Continue
+                    }
+                }
             }
             Err(err) => {
-                warn!(
-                    "Invalid message received from client (PID {}): {}",
-                    sys::get_socket_creds(fd).expect("Failed to get socket credentials").pid,
-                    err
-                );
+                if let Ok(socket_creds) = sys::get_socket_creds(fd) {
+                    warn!("Invalid message received from client PID {}: {err}", socket_creds.pid);
+                } else {
+                    warn!("Invalid message received from client: {err}");
+                }
+
                 Continue
             }
         }
@@ -600,45 +783,30 @@ impl Server {
     fn handle_message_exit<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
-    ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!(
-            "Received message: (Exit {})",
-            sys::get_socket_creds(fd).expect("Failed to get socket credentials").pid
-        );
-
-        if let Err(errno) =
-            Self::send_response(fd, Message::AckResponse.to_parcel().finished_data())
-        {
+    ) -> LoopControl<ClientControlResult<Thunk>> {
+        if let Err(errno) = sys::sendmsg(fd, Message::AckResponse.to_parcel().finished_data()) {
             warn!("Failed to acknowledge Exit message: {errno}")
         }
 
-        Break(ClientLoopControl::Shutdown)
+        Break(Ok(ClientControl::Shutdown))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_identity_query<Thunk: FnOnce() -> Infallible>(
         &self,
         fd: RawFd,
-    ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!(
-            "Received message: (IdentityQuery {})",
-            sys::get_socket_creds(fd).expect("Failed to get socket credentials").pid
-        );
-
+    ) -> LoopControl<ClientControlResult<Thunk>> {
         let response = Message::IdentityQueryResponse {
             name: &self.name,
             species: self.species.name(),
             arch: std::env::consts::ARCH,
         };
 
-        match Self::send_response(fd, response.to_parcel().finished_data()) {
+        match sys::sendmsg(fd, response.to_parcel().finished_data()) {
             Ok(_) => Continue,
             Err(error) => {
                 error!("Failed to send IdentityQuery response: {error}");
-                Break(ClientLoopControl::Error(
-                    fd,
-                    ClientLoopError::IdentityQueryResponseFailure(error),
-                ))
+                Break(Err(ClientError::IdentityQueryResponse(fd, error)))
             }
         }
     }
@@ -648,8 +816,8 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-        child_continuation: impl FnOnce(&mut Self, SpawnParamsCommon) -> ClientLoopControl<Thunk>,
-    ) -> LoopControl<ClientLoopControl<Thunk>> {
+        child_continuation: impl FnOnce(&mut Self, SpawnParamsCommon) -> ClientControlResult<Thunk>,
+    ) -> LoopControl<ClientControlResult<Thunk>> {
         // The server does not spawn any threads.  Preloaded library
         // initializers should not start any threads.  Any threads created by
         // species-specific code during initialization must be terminated when
@@ -657,13 +825,16 @@ impl Server {
         debug_assert_single_threaded();
         debug_assert_ok!(self.registry.audit());
 
-        let message = Message::try_from_parcel(&message_buffer).expect("Invalid message");
-        info!("Received message: ({message:?})");
+        let message =
+            Message::try_from_parcel(&message_buffer).expect("Verified message is now invalid");
 
         // TODO: Implement logic to lock some or all of the common spawn
         //       parameters, preventing them from being set by a spawn message.
-        let spawn_params =
-            message.get_spawn_params().expect("Missing spawn params").or(&self.spawn_params);
+        let Some(spawn_params) =
+            message.get_spawn_params().map(|params| params.or(&self.spawn_params))
+        else {
+            return Break(Err(ClientError::MissingSpawnParams));
+        };
 
         // let clone_args = sys::clone_args::new();
 
@@ -696,14 +867,11 @@ impl Server {
                 // Server process
                 info!("Spawned process {new_pid}");
                 let response = Message::SpawnResponse { pid: new_pid };
-                match Self::send_response(fd, response.to_parcel().finished_data()) {
+                match sys::sendmsg(fd, response.to_parcel().finished_data()) {
                     Ok(_) => Continue,
                     Err(error) => {
                         error!("Failed to send Spawn response: {error}");
-                        Break(ClientLoopControl::Error(
-                            fd,
-                            ClientLoopError::SpawnResponseFailure(error),
-                        ))
+                        Break(Err(ClientError::SpawnResponse(fd, error)))
                     }
                 }
             }
@@ -740,10 +908,7 @@ impl Server {
                     error!("Unexpected error code returned by call to `clone3()`: {errno}");
                 }
 
-                Break(ClientLoopControl::Error(
-                    fd,
-                    ClientLoopError::ProcessCreationFailure(errno.into()),
-                ))
+                Break(Err(ClientError::ProcessCreationFailure(fd, errno.into())))
             }
             Err(_) => {
                 unreachable!("The fork and clone3 calls can only return sys::Error::Libc variants")
@@ -757,7 +922,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<impl FnOnce() -> Infallible + use<>>> {
+    ) -> LoopControl<ClientControlResult<impl FnOnce() -> Infallible + use<>>> {
         // Creating local copies avoids capturing additional references.
         let species: SpeciesRef = self.species;
         let re_init_data = species.gather_reinitialization_data();
@@ -774,7 +939,7 @@ impl Server {
             //         are taken before control is passed to the species code.
             let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
 
-            ClientLoopControl::Child(move || {
+            Ok(ClientControl::Child(move || {
                 debug_assert_single_threaded();
 
                 // This function call must occur here, at the top of the child
@@ -783,8 +948,13 @@ impl Server {
                 // caller's frame.
                 child_process::maybe_reset_stack_guards(move || {
                     // Unpack the message in the child process
-                    let message =
-                        Message::try_from_parcel(spawn_message.as_ref()).expect("Invalid message");
+                    let message = Message::try_from_parcel(spawn_message.as_ref())
+                        .expect("Verified message is now invalid");
+
+                    // Due to the architecture of the Zygote, this lambda is
+                    // executed in the child process and can not return.  For
+                    // this reason we call `expect()` here.  At this point any
+                    // error is fatal.
                     let spawn_payload = message.get_spawn_payload().expect("Missing spawn payload");
 
                     child_process::re_initialize(
@@ -796,7 +966,7 @@ impl Server {
 
                     species.gestate(&spawn_params, spawn_payload)
                 })
-            })
+            }))
         })
     }
 
@@ -806,19 +976,24 @@ impl Server {
         fd: RawFd,
         socket_path: String,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientLoopControl<Thunk>> {
+    ) -> LoopControl<ClientControlResult<Thunk>> {
         let re_init_data = self.species.gather_reinitialization_data();
         // Creating local copies avoids capturing additional references.
         let species: SpeciesRef = self.species;
 
         self.handle_spawn(fd, message_buffer, move |server, spawn_params| {
-            let message = Message::try_from_parcel(&message_buffer).expect("Invalid message");
-            let spawn_payload = message.get_spawn_payload().expect("Missing spawn payload");
+            let message =
+                Message::try_from_parcel(&message_buffer).expect("Verified message is now invalid");
+            let spawn_payload =
+                message.get_spawn_payload().ok_or(ClientError::MissingSpawnPayload)?;
             child_process::re_initialize(species, re_init_data, &spawn_params, spawn_payload);
-            server.re_initialize_as_subspecies(socket_path);
+
+            server
+                .re_initialize_as_subspecies(socket_path)
+                .map_err(|_| ClientError::Reinitialization)?;
 
             species.speciate(spawn_payload);
-            ClientLoopControl::Break
+            Ok(ClientControl::Break)
         })
     }
 
@@ -826,13 +1001,12 @@ impl Server {
     fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
-    ) -> LoopControl<ClientLoopControl<Thunk>> {
-        info!("Received message: (Stat)");
+    ) -> LoopControl<ClientControlResult<Thunk>> {
         let proc = match ProcStat::get() {
             Ok(proc) => proc,
             Err(err) => {
                 error!("Failed to get ProcStat: {err:?}");
-                return Break(ClientLoopControl::Error(fd, ClientLoopError::StatReadError(err)));
+                return Break(Err(ClientError::StatRead(fd, err)));
             }
         };
         let response = Message::StatResponse {
@@ -849,31 +1023,27 @@ impl Server {
             rss: proc.rss,
         };
 
-        match Self::send_response(fd, response.to_parcel().finished_data()) {
+        match sys::sendmsg(fd, response.to_parcel().finished_data()) {
             Ok(_) => {
                 // Continue the `recvmsg` loop
                 Continue
             }
             Err(error) => {
                 error!("Failed to send Stat response: {error}");
-                Break(ClientLoopControl::Error(fd, ClientLoopError::StatResponseFailure(error)))
+                Break(Err(ClientError::StatResponse(fd, error)))
             }
         }
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    fn preload<T>(&self, libraries: &Vec<T>)
+    fn preload<T>(&self, libraries: &Vec<T>) -> ServerResult<()>
     where
         T: AsRef<OsStr> + std::fmt::Debug + tracing::Value,
     {
         let _eid_context = sys::EffectiveIdContext::enter(self.preload_uid, self.preload_gid)
-            .unwrap_or_else(|errno| {
-                error!(
-                    "Failed to set effective UID/GID ({:?}/{:?}): {}",
-                    self.preload_uid, self.preload_gid, errno
-                );
-                std::process::exit(1);
-            });
+            .map_err(|error| {
+                ServerError::EffectivePermissionsFailure(self.preload_uid, self.preload_gid, error)
+            })?;
 
         for library_path in libraries {
             span_scope!("dlopen", path = library_path);
@@ -903,85 +1073,45 @@ impl Server {
         }
 
         // TODO: Add a callback to the species to allow it to preload libraries
+
+        Ok(())
     }
 
-    fn remove_client_socket(&mut self, fd: RawFd) {
-        self.registry.remove(fd).expect("Client socket is not registered");
+    fn remove_client_socket(&mut self, fd: RawFd) -> ClientResult<()> {
+        self.registry.remove(fd)?;
         self.client_sockets.remove(
             self.client_sockets
                 .iter()
                 .position(|&search_fd| search_fd == fd)
-                .expect("fd not in client_sockets"),
+                .ok_or_else(|| ClientError::InvalidClientSocketFd(fd))?,
         );
-        // Silently ignore EBADF and EIO.
-        let _ = sys::close(fd);
-    }
 
-    /// Send the provided response through the socket and panic on errors that
-    /// indicate an irrecoverable bug.
-    ///
-    /// The following errors indicate a critical logic error.  In these cases
-    /// the server will panic to prevent any unintended behavior:
-    /// * [`libc::EACCES`]
-    /// * [`libc::EALREADY`]
-    /// * [`libc::EBADF`]
-    /// * [`libc::EDESTADDRREQ`]
-    /// * [`libc::EFAULT`]
-    /// * [`libc::EINVAL`]
-    /// * [`libc::EISCONN`]
-    /// * [`libc::EMSGSIZE`]
-    /// * [`libc::ENOTCONN`]
-    /// * [`libc::ENOTSOCK`]
-    /// * [`libc::EOPNOTSUPP`]
-    /// * [`libc::EPIPE`]
-    ///
-    /// The following errors indicate the system is in a very unhealthy state.
-    /// The server will panic and allow the system to recover:
-    /// * [`libc::ENOBUFS`]
-    /// * [`libc::ENOMEM`]
-    ///
-    /// The following errors will be returned to the caller:
-    /// * [`libc::EAGAIN`]
-    /// * [`libc::EWOULDBLOCK`]
-    /// * [`libc::ECONNRESET`]
-    fn send_response(fd: RawFd, buffer: &[u8]) -> Result<(), sys::Error> {
-        match sys::sendmsg(fd, buffer) {
-            Ok(_) => Ok(()),
-            Err(sys::Error::Libc(errno))
-                if errno.matches(&[libc::EAGAIN | libc::EWOULDBLOCK | libc::ECONNRESET]) =>
-            {
-                Err(errno.into())
-            }
-            Err(sys::Error::Libc(errno)) if errno.matches(&[libc::ENOBUFS | libc::ENOMEM]) => {
-                panic!("System is in a critical low-memory state: {errno}. Exiting.")
-            }
-            Err(errno) => panic!("Unexpected error when sending response on fd {fd}: {errno}"),
-        }
+        sys::close(fd).map(|_| ()).map_err(|err| ClientError::Close(fd, err))
     }
 
     /// Execute the main server loop until the server receives a SIGTERM or
-    /// [`crate::messages::Exit`] message.
+    /// [`zygote_messages::Exit`] message.
     ///
     /// The child process thunk is returned to allow the caller to drop the
     /// server before control flow is transferred to the species-specific
     /// code.  This allows resources to be cleaned up and possibly sensitive
     /// data to be deallocated.
-    pub fn serve(&mut self) -> Option<impl FnOnce() -> Infallible + use<>> {
+    pub fn serve(&mut self) -> ServerResult<Option<impl FnOnce() -> Infallible + use<>>> {
         self.species.on_server_ready();
 
         loop {
             let mut poll_array = PollBuffer::from(&*self);
 
             // Discard the number of ready file descriptors for now.
-            sys::poll(&mut poll_array, -1).expect("poll failed");
+            sys::poll(&mut poll_array, -1).map_err(ServerError::Poll)?;
 
-            match self.check_poll_events(poll_array.partition()) {
+            match self.check_poll_events(poll_array.partition())? {
                 ServerControl::Continue => {}
                 ServerControl::Shutdown => {
-                    return None;
+                    return Ok(None);
                 }
                 ServerControl::Trampoline(thunk) => {
-                    return Some(thunk);
+                    return Ok(Some(thunk));
                 }
             }
         }
@@ -1004,13 +1134,17 @@ impl Drop for Server {
                 error!("Failed to remove server socket file: {}", error);
             }
         } else {
-            // Clean up the server code in the child process
+            // Clean up the server's resources in the child process.  As we do
+            // not want code executing in an unknown context we will treat all
+            // errors as fatal.
+
             self.registry
                 .execute_actions(ForkType::Application)
-                .expect("Failed to file descriptor registry actions");
-        }
+                .expect("Failed to execute file descriptor registry actions");
 
-        let sigset = sys::build_sigset(Self::blocked_signals()).unwrap();
-        sys::sigprocmask(libc::SIG_UNBLOCK, &sigset).expect("Failed to unset signal mask");
+            let sigset =
+                sys::build_sigset(Self::blocked_signals()).expect("Failed to build signal set");
+            sys::sigprocmask(libc::SIG_UNBLOCK, &sigset).expect("Failed to unset signal mask");
+        }
     }
 }

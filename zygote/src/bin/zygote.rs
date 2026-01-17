@@ -28,7 +28,7 @@ use zygote_sys as sys;
 
 #[allow(unreachable_code)]
 fn main() -> Result<()> {
-    if let Some(thunk) = run_server() {
+    if let Some(thunk) = run_server()? {
         thunk();
     }
 
@@ -40,14 +40,28 @@ fn main() -> Result<()> {
 /// The server is constructed in, and the child-side thunk returned from, this
 /// frame to ensure that the configuration and server resources are dropped
 /// before the thunk is evaluated.
-fn run_server() -> Option<impl FnOnce() -> Infallible> {
+fn run_server(
+) -> std::result::Result<Option<impl FnOnce() -> Infallible>, zygote::server::ServerError> {
     let config = zygote::config::Server::parse();
     let _trace_guard =
         zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
     config.species.on_start();
 
-    log::info!("Starting Zygote server ({}) with PID {}", config.name, sys::getpid());
+    log::info!("Native Zygote: Starting server ({}) with PID {}", config.name, sys::getpid());
 
-    let mut server = server::Server::new(&config);
-    server.serve()
+    let mut server = server::Server::new(&config).map_err(|error| {
+        log::error!("Native Zygote: Error constructing server: {error}");
+        error
+    })?;
+
+    let serve_result = server.serve().map_err(|error| {
+        log::error!("Native Zygote: Error encountered while running server: {error}");
+        error
+    });
+
+    log::info!("Native Zygote: Exiting server");
+
+    log::logger().flush();
+
+    serve_result
 }

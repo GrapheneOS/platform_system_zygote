@@ -293,6 +293,11 @@ impl PollFd {
 pub struct PollFdChecked<'a>(&'a libc::pollfd);
 
 impl PollFdChecked<'_> {
+    /// Return the associated file descriptor
+    pub fn fd(&self) -> RawFd {
+        self.0.fd
+    }
+
     /// If the specified event occurred the result of calling the handler will
     /// be returned; otherwise, None.
     pub fn handle_event<T>(
@@ -300,6 +305,20 @@ impl PollFdChecked<'_> {
         event: c_short,
         mut handler: impl FnMut(RawFd) -> T,
     ) -> Option<T> {
+        if self.0.revents & event == event {
+            Some(handler(self.0.fd))
+        } else {
+            None
+        }
+    }
+
+    /// If the specified event occurred the result of calling the handler will
+    /// be returned; otherwise, None.
+    pub fn try_handle_event<T, E>(
+        &self,
+        event: c_short,
+        mut handler: impl FnMut(RawFd) -> std::result::Result<T, E>,
+    ) -> Option<std::result::Result<T, E>> {
         if self.0.revents & event == event {
             Some(handler(self.0.fd))
         } else {
@@ -553,12 +572,12 @@ impl<T> LoopExit<T> {
 }
 
 /// This function calls the `task()` thunk and checks the Result.  If the
-/// thunk exited with either `EAGAIN` or `EWOULDBLOCK` the function will
+/// task exited with either `EAGAIN` or `EWOULDBLOCK` the function will
 /// immediately return a [`LoopExit::WouldBlock`] value.  If any other error
-/// was returned by the thunk it will be returned by this function.  If the
-/// thunk completed successfully the handler will be called and, based on the
+/// was returned by the task it will be returned by this function.  If the
+/// task completed successfully the handler will be called and, based on the
 /// return value, the function will either return or continue.  If the function
-/// returns early the [`LoopStatus::Break`] value will be forwarded in a
+/// returns early the [`LoopControl::Break`] value will be forwarded in a
 /// [`LoopExit::Early`] variant.
 pub fn call_until_would_block<T, U>(
     task: impl Fn() -> Result<T>,
@@ -576,6 +595,43 @@ pub fn call_until_would_block<T, U>(
             }
             Err(errno) => {
                 return Err(errno);
+            }
+        }
+    }
+}
+
+/// Trait to convert system errors into task-specific errors when using
+/// [`try_until_would_block`].
+pub trait TaskFailure {
+    /// Convert a system error into the implementing type.
+    fn task_failure(error: Error) -> Self;
+}
+
+/// This function calls the `task()` thunk and checks the Result.  If the
+/// task exited with either `EAGAIN` or `EWOULDBLOCK` the function will
+/// immediately return a [`LoopExit::WouldBlock`] value.  If any other error
+/// was returned by the task it will be returned by this function.  If the
+/// task completed successfully the handler will be called and, based on the
+/// return value, the function will either return or continue.  If the function
+/// returns early the [`LoopControl::Break`] value will be forwarded in a
+/// [`LoopExit::Early`] variant, while errors are propagated.
+pub fn try_until_would_block<T, U, E: TaskFailure>(
+    task: impl Fn() -> Result<T>,
+    mut handler: impl FnMut(T) -> std::result::Result<LoopControl<U>, E>,
+) -> std::result::Result<LoopExit<U>, E> {
+    loop {
+        match task() {
+            Ok(result) => match handler(result) {
+                Ok(LoopControl::Continue) => continue,
+                Ok(LoopControl::Break(val)) => return Ok(LoopExit::Early(val)),
+                Err(error) => return Err(error),
+            },
+            Err(Error::Libc(errno)) if errno.is(libc::EAGAIN) || errno.is(libc::EWOULDBLOCK) => {
+                // Task would block
+                return Ok(LoopExit::WouldBlock);
+            }
+            Err(error) => {
+                return Err(E::task_failure(error));
             }
         }
     }
