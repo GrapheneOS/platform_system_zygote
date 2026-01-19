@@ -26,11 +26,13 @@ use thiserror::Error;
 use tracing::{error, info, warn};
 
 use crate::{
-    assert_ok, child_process, config, debug_assert_ok,
+    child_process, config,
     file_descriptors::{self, FileDescriptorRegistry, ForkType},
     introspection::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     species::SpeciesRef,
 };
+#[allow(unused_imports)]
+use crate::debug_assert_ok;
 use zygote_messages::{
     self as messages, FromParcel, Message, MessageBuffer, SpawnParamsCommon, ToParcel,
     MESSAGE_BUFFER_SIZE,
