@@ -28,8 +28,6 @@ use std::{
 use arrayvec::ArrayVec;
 use thiserror::Error;
 
-use zygote_sys as sys;
-
 /// Prefix to the /proc/ directory containing information about open file
 /// descriptors.
 ///
@@ -37,7 +35,6 @@ use zygote_sys as sys;
 const PROC_SELF_FD_DIR_STR: &str = "/proc/self/fd";
 const PROC_SELF_FD_DIR_CSTR: &std::ffi::CStr = c"/proc/self/fd";
 
-#[cfg(test)]
 const PROC_SELF_EXE: &str = "/proc/self/exe";
 
 /// Panic if there is more than one thread in the current process.
@@ -53,21 +50,18 @@ pub fn debug_assert_single_threaded() {
 }
 
 /// Panic if a given file descriptor *IS NOT* open
-#[cfg(feature = "test")]
 #[track_caller]
 pub fn assert_fd_open(fd: RawFd) {
     assert!(get_proc_fd_path(fd).exists());
 }
 
 /// Panic if a given file descriptor *IS* open
-#[cfg(feature = "test")]
 #[track_caller]
 pub fn assert_fd_closed(fd: RawFd) {
     assert!(!get_proc_fd_path(fd).exists());
 }
 
 /// Query procfs for the path of the current executable
-#[cfg(test)]
 pub fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
     std::fs::read_link(PROC_SELF_EXE)
 }
@@ -77,7 +71,7 @@ pub fn get_executable_path() -> std::io::Result<std::path::PathBuf> {
 pub enum ProcFsError {
     /// The /proc/self/fd directory is not iterable
     #[error("The /proc/self/fd directory is inaccessible: {0}")]
-    InaccessibleFdDir(sys::Error),
+    InaccessibleFdDir(crate::Error),
 
     /// The /proc/self/stat file is inaccessible
     #[error("The /proc/self/stat file is inaccessible: {0}")]
@@ -93,7 +87,7 @@ pub enum ProcFsError {
 
     /// The /proc/self/fd directory contains an invalid symlink
     #[error("Invalid /proc/self/fd symlink: {0}")]
-    InvalidProcSymlink(sys::Error),
+    InvalidProcSymlink(crate::Error),
 
     /// The contents of /proc/self/stat do not follow the expected format
     #[error("Contents of /proc/self/stat do not follow the expected format: {0}")]
@@ -115,7 +109,7 @@ type ProcFsResult<T> = Result<T, ProcFsError>;
 /// Read the contents of the /proc/self/fd directory to get a list of open
 /// file descriptors.
 pub struct ProcFdIterator {
-    dir: sys::LibcDir,
+    dir: crate::LibcDir,
     dir_fd: RawFd,
 }
 
@@ -128,8 +122,8 @@ impl ProcFdIterator {
         // called and there is no way to gain access to their values.  Manually
         // opening and iterating over the directory allows us to avoid adding
         // transient file descriptor to the registry.
-        let dir = sys::opendir(PROC_SELF_FD_DIR_CSTR).map_err(ProcFsError::InaccessibleFdDir)?;
-        let dir_fd = sys::dirfd(&dir).map_err(ProcFsError::InaccessibleFdDir)?;
+        let dir = crate::opendir(PROC_SELF_FD_DIR_CSTR).map_err(ProcFsError::InaccessibleFdDir)?;
+        let dir_fd = crate::dirfd(&dir).map_err(ProcFsError::InaccessibleFdDir)?;
         Ok(Self { dir, dir_fd })
     }
 
@@ -147,7 +141,7 @@ impl Iterator for ProcFdIterator {
     type Item = ProcFsResult<RawFd>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(dir_entry) = sys::readdir(&self.dir) {
+        while let Some(dir_entry) = crate::readdir(&self.dir) {
             // TODO: Provide a safe abstraction via the sys module
             // SAFETY: Libc guarantees that the dir_entry->d_name member contains a valid C string.
             let dir_entry = unsafe { CStr::from_ptr((*dir_entry.as_ptr()).d_name.as_ptr()) };
@@ -160,15 +154,15 @@ impl Iterator for ProcFdIterator {
 }
 
 /// Read file descriptor information from procfs into a CStringBuffer.
-pub fn get_proc_fd_link_info(fd: RawFd) -> ProcFsResult<sys::CStringBuffer> {
-    let mut path_cstr_buff = ArrayVec::<u8, { sys::BUFFER_SIZE_STRINGS }>::new();
+pub fn get_proc_fd_link_info(fd: RawFd) -> ProcFsResult<crate::CStringBuffer> {
+    let mut path_cstr_buff = ArrayVec::<u8, { crate::BUFFER_SIZE_STRINGS }>::new();
 
     // The buffer size (512) can store more decimal digits than can be
     // represented in the file descriptor storage type.
     write!(path_cstr_buff, "{PROC_SELF_FD_DIR_STR}/{fd}\0").expect("Proc path exceeds buffer size");
     let path_cstr = CStr::from_bytes_until_nul(path_cstr_buff.as_slice())?;
 
-    sys::readlink(path_cstr).map_err(ProcFsError::InvalidProcSymlink)
+    crate::readlink(path_cstr).map_err(ProcFsError::InvalidProcSymlink)
 }
 
 /// Construct PathBuf pointing to an entry in /proc/self/fd.  The entry may or
@@ -212,7 +206,6 @@ impl ProcStat {
 
     /// Query procfs for statistics on the current process.
     #[rustfmt::skip]
-    #[tracing::instrument(level = "trace")]
     pub fn get() -> ProcFsResult<Self> {
         let mut proc_file = File::open(Self::PROC_STAT_PATH_STR).map_err(ProcFsError::InaccessibleProcStat)?;
         let mut proc_buf: [u8; Self::PROC_STAT_BUFFER_SIZE] = [0; Self::PROC_STAT_BUFFER_SIZE];

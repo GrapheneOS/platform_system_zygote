@@ -22,12 +22,14 @@ use std::{fs::File, os::fd::AsRawFd};
 
 use rustix::fd::IntoRawFd;
 
-use zygote_sys as sys;
+use zygote_sys::{
+    self as sys,
+    procfs::{assert_fd_closed, assert_single_threaded},
+};
 
 use zygote::{
     assert_ok,
     file_descriptors::{self, assert_fd_open_to, Action, FileDescriptorRegistry, ForkType},
-    introspection::{assert_fd_closed, assert_single_threaded},
     test,
 };
 
