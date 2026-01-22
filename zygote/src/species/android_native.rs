@@ -29,11 +29,10 @@ use rustutils::android;
 
 use crate::{
     file_descriptors::Action as FDAction,
-    introspection::debug_assert_single_threaded,
     species::{AllowListEntry, Species, SpeciesTag},
 };
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
-use zygote_sys::{self as sys, AsCStr};
+use zygote_sys::{self as sys, procfs::debug_assert_single_threaded, AsCStr};
 
 const AID_APP_START: i32 = 10000;
 
