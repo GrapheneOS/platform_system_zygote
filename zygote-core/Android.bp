@@ -44,6 +44,13 @@ rust_defaults {
             ],
         },
     },
+    product_variables: {
+        eng: {
+            flags: [
+                "-C debug-assertions",
+            ],
+        },
+    },
 }
 
 rust_library {
