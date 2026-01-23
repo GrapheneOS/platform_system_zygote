@@ -18,9 +18,8 @@ package {
     default_team: "trendy_team_system_performance",
 }
 
-rust_library {
-    name: "libzygote_core",
-    crate_name: "zygote_core",
+rust_defaults {
+    name: "libzygote_core_defaults",
     defaults: ["zygote_defaults"],
     srcs: [
         "src/lib.rs",
@@ -45,4 +44,28 @@ rust_library {
             ],
         },
     },
+}
+
+rust_library {
+    name: "libzygote_core",
+    crate_name: "zygote_core",
+    defaults: ["libzygote_core_defaults"],
+}
+
+rust_library {
+    name: "libzygote_core_test",
+    crate_name: "zygote_core",
+    defaults: ["libzygote_core_defaults"],
+}
+
+//
+// Tests
+//
+
+rust_test_host {
+    name: "zygote_core_unit_tests",
+    defaults: ["libzygote_core_defaults"],
+    rustlibs: [
+        "libzygote_core_test",
+    ],
 }

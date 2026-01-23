@@ -32,6 +32,7 @@ phony {
         "libzygote_sys",
         "libzygote_messages",
         "libzygote_test",
+        "zygote_core_unit_tests",
         "zygote_cli",
         "zygote_launch",
         "zygote_messages_unit_tests",
