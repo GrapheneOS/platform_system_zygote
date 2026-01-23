@@ -29,6 +29,9 @@ use cap::{CapabilityFlags, RawCap};
 use zygote_proc_macros::{MarshalParcel, UnmarshalParcel};
 use zygote_sys as sys;
 
+#[cfg(test)]
+mod test;
+
 /// Default size for GID vectors
 pub const GID_VECTOR_SIZE: usize = 32;
 /// Default size for rlimit vectors
@@ -112,10 +115,10 @@ where
 pub struct RLimitData {
     /// Resource ID
     pub resource: sys::rlimit_resource_t,
-    /// The current resource limit
-    pub soft: libc::rlim_t,
     /// The maximum resource limit
     pub hard: libc::rlim_t,
+    /// The current resource limit
+    pub soft: libc::rlim_t,
 }
 
 fn marshal_capability_flags(
@@ -157,8 +160,8 @@ fn unmarshal_rlimits(
         .iter()
         .map(|rlimit| RLimitData {
             resource: rlimit.resource() as _,
-            soft: rlimit.soft() as _,
             hard: rlimit.hard() as _,
+            soft: rlimit.soft() as _,
         })
         .collect()
 }
@@ -773,8 +776,8 @@ impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<RLimitData, N> {
         let packed_rlimit_data = self.iter().map(|rlimit_data| {
             inner::RLimitData::new(
                 rlimit_data.resource as _,
-                rlimit_data.soft as _,
                 rlimit_data.hard as _,
+                rlimit_data.soft as _,
             )
         });
         builder.create_vector_from_iter(packed_rlimit_data)

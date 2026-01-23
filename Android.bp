@@ -34,6 +34,7 @@ phony {
         "libzygote_test",
         "zygote_cli",
         "zygote_launch",
+        "zygote_messages_unit_tests",
         "zygote_next",
         "zygote_next_unit_tests",
         "zygote_next_integration_test_fd_no_panic",

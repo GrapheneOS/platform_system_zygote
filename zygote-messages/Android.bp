@@ -13,6 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_team: "trendy_team_system_performance",
+}
+
 genrule {
     name: "libzygote_messages_schemas-rust",
     tools: ["flatc"],
@@ -97,5 +102,18 @@ rust_library {
     features: [
         "mock",
         "test",
+    ],
+}
+
+//
+// Tests
+//
+
+rust_test_host {
+    name: "zygote_messages_unit_tests",
+    team: "trendy_team_system_performance",
+    defaults: ["libzygote_messages_defaults"],
+    rustlibs: [
+        "libzygote_messages_test",
     ],
 }
