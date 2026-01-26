@@ -48,6 +48,7 @@ pub struct Server {
     pub trace_level: tracing::level_filters::LevelFilter,
 
     /// Process name for the Zygote
+    // TODO: Add logic for computing a better default name
     #[arg(long, short, default_value("zygote"))]
     pub name: String,
 

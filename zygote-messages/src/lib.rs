@@ -534,6 +534,7 @@ pub struct SpawnCommonParser {
     #[arg(long)]
     gid: Option<i32>,
     /// Name of the new process
+    #[arg(long)]
     process_name: Option<String>,
     /// Initial scheduling priority for child processes immediately after
     /// forking
@@ -547,6 +548,7 @@ pub struct SpawnCommonParser {
     #[arg(long)]
     secondary_groups: Vec<libc::gid_t>,
     /// SELinux context to switch to
+    #[arg(long)]
     se_info: Option<String>,
 }
 

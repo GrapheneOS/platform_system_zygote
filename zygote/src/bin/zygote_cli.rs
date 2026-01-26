@@ -67,22 +67,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_client_socket(path_str: &String) -> Result<RawFd> {
-    let socket_path = std::path::Path::new(path_str);
-    if socket_path.exists() {
-        let client_socket = sys::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0)?;
-        let socket_addr = if let Some(abs_socket_addr) = path_str.strip_prefix("@") {
-            sys::abstract_socket_address(abs_socket_addr, libc::AF_UNIX as libc::sa_family_t)?
-        } else {
-            sys::bound_socket_address(path_str, libc::AF_UNIX as libc::sa_family_t)?
-        };
-
-        sys::connect(client_socket, &socket_addr)?;
-
-        Ok(client_socket)
+fn get_client_socket(socket_str: &String) -> Result<RawFd> {
+    let socket_addr = if let Some(abs_socket_addr) = socket_str.strip_prefix("@") {
+        sys::abstract_socket_address(abs_socket_addr, libc::AF_UNIX as libc::sa_family_t)?
     } else {
-        bail!("Zygote server socket path does not exist")
-    }
+        let socket_path = std::path::Path::new(socket_str);
+        if socket_path.exists() {
+            sys::bound_socket_address(socket_str, libc::AF_UNIX as libc::sa_family_t)?
+        } else {
+            bail!("Zygote server socket path does not exist");
+        }
+    };
+
+    let client_socket = sys::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0)?;
+    sys::connect(client_socket, &socket_addr)?;
+    Ok(client_socket)
 }
 
 fn handle_command_transaction(builder: FlatBufferBuilder, client_socket: RawFd) -> Result<()> {

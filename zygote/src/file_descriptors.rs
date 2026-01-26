@@ -44,7 +44,7 @@ use zygote_sys::{
 };
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
-const REGISTRY_SIZE: usize = 512;
+pub(crate) const REGISTRY_SIZE: usize = 512;
 
 /// Path to the null character device for Unix-like systems
 pub const DEV_NULL_PATH: &str = "/dev/null";
@@ -53,6 +53,9 @@ pub const DEV_NULL_PATH: &str = "/dev/null";
 pub const DEV_NULL_PATH_C: &CStr = c"/dev/null";
 /// Path to the urandom character device for Unix-like systems
 pub const DEV_URANDOM_PATH: &str = "/dev/urandom";
+
+/// Metadata string reported via Proc for EpollFDs
+const PROC_METADATA_EPOLLFD: &CStr = c"anon_inode:[eventpoll]";
 
 /// Metadata string reported via Proc for SignalFDs
 const PROC_METADATA_SIGNALFD: &CStr = c"anon_inode:[signalfd]";
@@ -140,6 +143,7 @@ type FileDescriptorInfoResult<T> = Result<T, FileDescriptorInfoError>;
 enum FileDescriptorInfo {
     BoundSocket(SocketAddress),
     ConnectedSocket(SocketAddress),
+    EPollFd,
     Fifo,
     File {
         dev: u64,
@@ -160,6 +164,7 @@ impl fmt::Display for FileDescriptorInfo {
         match self {
             Self::BoundSocket(address) => write!(f, "Bound Socket ({address})"),
             Self::ConnectedSocket(address) => write!(f, "Connected Socket ({address})"),
+            Self::EPollFd => write!(f, "EPollFD"),
             Self::Fifo => write!(f, "FIFO"),
             Self::File { path, .. } => write!(f, "File ({:?})", path.as_cstr()),
             Self::SignalFd => write!(f, "SignalFD"),
@@ -199,7 +204,11 @@ impl TryFrom<RawFd> for FileDescriptorInfo {
 
                 if proc_metadata_cstr == PROC_METADATA_SIGNALFD {
                     Ok(FileDescriptorInfo::SignalFd)
+                } else if proc_metadata_cstr == PROC_METADATA_EPOLLFD {
+                    Ok(FileDescriptorInfo::EPollFd)
                 } else {
+                    log::error!("Unknown file type: {proc_metadata_cstr:?}");
+
                     // The conversion of the `file_type` value is only
                     // necessary on some systems, but it is easier to leave
                     // the call in and suppress the warnings than it is to
@@ -314,6 +323,7 @@ impl FileDescriptorInfo {
         match self {
             Self::BoundSocket(_) => "Bound Socket",
             Self::ConnectedSocket(_) => "Connected Socket",
+            Self::EPollFd => "EPollFD",
             Self::Fifo => "FIFO",
             Self::File { .. } => "File",
             Self::SignalFd => "SignalFD",
@@ -787,11 +797,11 @@ impl FileDescriptorRegistry {
     pub fn reset_for_subspecies(&mut self) -> FdRegistryResult<()> {
         self.execute_actions(ForkType::Subspecies)?;
 
-        self.species.sync_fd_state();
         // This line needs to come after calling [`sys::android::log_close`],
-        // which is done in [`sync_fd_state`], so that it will open new file
+        // which is done in [`execute_actions`], so that it will open new file
         // descriptors for logging.
         info!("Resetting FileDescriptorRegistry for subspecies");
+
         // Register FDs opened by the app's preload routine.
         self.register_new()?;
         self.audit().map_err(FdRegistryError::AuditFailure)
@@ -1030,6 +1040,9 @@ impl FileDescriptorRegistry {
                         fd,
                         address: address.to_string(),
                     });
+                }
+                FileDescriptorInfo::EPollFd => {
+                    return Err(FdRegistryError::UnregisteredFd(fd));
                 }
                 FileDescriptorInfo::Fifo => {
                     return Err(FdRegistryError::UnregisteredFifoFd { fd });
