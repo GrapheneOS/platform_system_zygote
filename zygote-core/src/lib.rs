@@ -101,3 +101,57 @@ pub fn init_reporting_for_testing() {
         logger::init(logger::Config::default().with_tag_on_device("zygote_next_test"));
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_log_level_parser() {
+        assert_eq!(log_level_parser("off").unwrap(), log::LevelFilter::Off);
+        assert_eq!(log_level_parser("error").unwrap(), log::LevelFilter::Error);
+        assert_eq!(log_level_parser("warn").unwrap(), log::LevelFilter::Warn);
+        assert_eq!(log_level_parser("info").unwrap(), log::LevelFilter::Info);
+        assert_eq!(log_level_parser("debug").unwrap(), log::LevelFilter::Debug);
+        assert_eq!(log_level_parser("trace").unwrap(), log::LevelFilter::Trace);
+
+        assert_eq!(log_level_parser("0").unwrap(), log::LevelFilter::Off);
+        assert_eq!(log_level_parser("1").unwrap(), log::LevelFilter::Error);
+        assert_eq!(log_level_parser("2").unwrap(), log::LevelFilter::Warn);
+        assert_eq!(log_level_parser("3").unwrap(), log::LevelFilter::Info);
+        assert_eq!(log_level_parser("4").unwrap(), log::LevelFilter::Debug);
+        assert_eq!(log_level_parser("5").unwrap(), log::LevelFilter::Trace);
+
+        assert!(log_level_parser("invalid").is_err());
+        assert!(log_level_parser("6").is_err());
+    }
+
+    #[test]
+    fn test_trace_level_parser() {
+        assert_eq!(trace_level_parser("off").unwrap(), tracing::level_filters::LevelFilter::OFF);
+        assert_eq!(
+            trace_level_parser("error").unwrap(),
+            tracing::level_filters::LevelFilter::ERROR
+        );
+        assert_eq!(trace_level_parser("warn").unwrap(), tracing::level_filters::LevelFilter::WARN);
+        assert_eq!(trace_level_parser("info").unwrap(), tracing::level_filters::LevelFilter::INFO);
+        assert_eq!(
+            trace_level_parser("debug").unwrap(),
+            tracing::level_filters::LevelFilter::DEBUG
+        );
+        assert_eq!(
+            trace_level_parser("trace").unwrap(),
+            tracing::level_filters::LevelFilter::TRACE
+        );
+
+        assert_eq!(trace_level_parser("0").unwrap(), tracing::level_filters::LevelFilter::OFF);
+        assert_eq!(trace_level_parser("1").unwrap(), tracing::level_filters::LevelFilter::ERROR);
+        assert_eq!(trace_level_parser("2").unwrap(), tracing::level_filters::LevelFilter::WARN);
+        assert_eq!(trace_level_parser("3").unwrap(), tracing::level_filters::LevelFilter::INFO);
+        assert_eq!(trace_level_parser("4").unwrap(), tracing::level_filters::LevelFilter::DEBUG);
+        assert_eq!(trace_level_parser("5").unwrap(), tracing::level_filters::LevelFilter::TRACE);
+
+        assert!(trace_level_parser("invalid").is_err());
+        assert!(trace_level_parser("6").is_err());
+    }
+}

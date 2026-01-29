@@ -13,9 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-rust_library {
-    name: "libzygote_core",
-    crate_name: "zygote_core",
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_team: "trendy_team_system_performance",
+}
+
+rust_defaults {
+    name: "libzygote_core_defaults",
     defaults: ["zygote_defaults"],
     srcs: [
         "src/lib.rs",
@@ -40,4 +44,35 @@ rust_library {
             ],
         },
     },
+    product_variables: {
+        eng: {
+            flags: [
+                "-C debug-assertions",
+            ],
+        },
+    },
+}
+
+rust_library {
+    name: "libzygote_core",
+    crate_name: "zygote_core",
+    defaults: ["libzygote_core_defaults"],
+}
+
+rust_library {
+    name: "libzygote_core_test",
+    crate_name: "zygote_core",
+    defaults: ["libzygote_core_defaults"],
+}
+
+//
+// Tests
+//
+
+rust_test_host {
+    name: "zygote_core_unit_tests",
+    defaults: ["libzygote_core_defaults"],
+    rustlibs: [
+        "libzygote_core_test",
+    ],
 }
