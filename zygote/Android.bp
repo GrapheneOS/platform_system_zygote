@@ -105,6 +105,13 @@ rust_defaults {
         "libtracing",
         "libzygote_core",
     ],
+    // Enable ASYNC MTE in the zygote, in order to allow apps to use MTE. We use
+    // ASYNC because we don't expect the pre-fork zygote to have substantial
+    // memory corruption bugs, and we don't want to waste memory recording
+    // malloc/free stack traces (which happens in SYNC mode).
+    sanitize: {
+        memtag_heap: true,
+    },
 }
 
 rust_binary {
