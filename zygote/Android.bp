@@ -173,6 +173,9 @@ rust_test_host {
         "mock",
         "test",
     ],
+    test_options: {
+        unit_test: false,
+    },
 }
 
 rust_test_host {
