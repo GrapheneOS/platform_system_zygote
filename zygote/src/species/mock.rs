@@ -27,17 +27,17 @@ use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
 
 #[rustfmt::skip]
 static ALLOWED_FILE_PATHS: &[AllowListEntry<CStr>] = &[
-    AllowListEntry::new(crate::test::MOCK_FILE_PATH_1, FDAction::Ignore, "Test the allowed-paths functionality", "testname", "2025-02-19"),
+    AllowListEntry::new(crate::test::MOCK_FILE_PATH_1, FDAction::Ignore, "Test the allowed-paths functionality", "testname", "2026-02-19"),
 ];
 
 #[rustfmt::skip]
 static ALLOWED_SOCKET_NAMES: &[AllowListEntry<str>] = &[
-    AllowListEntry::new(crate::test::SOCKET_NAME_1, FDAction::Ignore, "Test the allowed-socket-names functionality","testname", "2025-02-19"),
+    AllowListEntry::new(crate::test::SOCKET_NAME_1, FDAction::Ignore, "Test the allowed-socket-names functionality","testname", "2026-02-19"),
 ];
 
 #[rustfmt::skip]
 static ALLOWED_SOCKET_PATHS: &[AllowListEntry<str>] = &[
-    AllowListEntry::new(crate::test::SOCKET_PATH_1, FDAction::Ignore, "Test the allowed-socket-paths functionality","testname", "2025-02-19"),
+    AllowListEntry::new(crate::test::SOCKET_PATH_1, FDAction::Ignore, "Test the allowed-socket-paths functionality","testname", "2026-02-19"),
 ];
 
 /// Behaviors for testing the Zygote process server.
