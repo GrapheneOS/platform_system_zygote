@@ -23,7 +23,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     mem::MaybeUninit,
     os::fd::RawFd,
-    ptr::NonNull,
+    ptr::{self, NonNull},
 };
 
 use arrayvec::ArrayVec;
@@ -221,7 +221,7 @@ pub enum Error {
 
     /// A file descriptor passed to `poll` produced an error
     #[error("Poll event error on FD {0}: {1}")]
-    PollEventError(RawFd, c_short),
+    PollEvent(RawFd, c_short),
 
     /// A provided string is too long to fit into a buffer
     #[error("Input string of length {0} exceeds buffer size {1}")]
@@ -280,7 +280,7 @@ impl PollFd {
     pub fn check(&self) -> Result<PollFdChecked<'_>> {
         const ERROR_MASK: c_short = libc::POLLERR | libc::POLLNVAL;
         if self.0.revents & ERROR_MASK != 0 {
-            Err(Error::PollEventError(self.0.fd, self.0.revents & ERROR_MASK))
+            Err(Error::PollEvent(self.0.fd, self.0.revents & ERROR_MASK))
         } else {
             Ok(PollFdChecked(&self.0))
         }
@@ -321,6 +321,144 @@ impl PollFdChecked<'_> {
     ) -> Option<std::result::Result<T, E>> {
         if self.0.revents & event == event {
             Some(handler(self.0.fd))
+        } else {
+            None
+        }
+    }
+}
+
+/// A wrapper class for an epoll file descriptor
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct EpollHandle {
+    fd: RawFd,
+}
+
+impl EpollHandle {
+    /// Create a new epoll instance
+    pub fn new() -> Result<Self> {
+        Ok(EpollHandle { fd: epoll_create1(0)? })
+    }
+
+    /// Add a file descriptor to the epoll instance
+    pub fn add(&self, fd: RawFd, events: c_uint, data: u64) -> Result<()> {
+        let mut event = libc::epoll_event { events, u64: data };
+        epoll_ctl(self.fd, libc::EPOLL_CTL_ADD, fd, Some(&mut event))
+    }
+
+    /// Fetch the underlying file descriptor
+    ///
+    /// # Safety
+    /// The caller must ensure the file descriptor isn't closed during the
+    /// lifetime of this handle.
+    pub unsafe fn fd(&self) -> RawFd {
+        self.fd
+    }
+
+    /// Remove a file descriptor from the epoll instance
+    pub fn remove(&self, fd: RawFd) -> Result<()> {
+        epoll_ctl(self.fd, libc::EPOLL_CTL_DEL, fd, None)
+    }
+
+    /// Wait for the events
+    pub fn wait(&self, event_buf: &mut [EpollEvent], timeout: i32) -> Result<usize> {
+        // The unwrap inside the map is safe because we know an Ok result
+        // contains a positive c_int value.
+        epoll_wait(self.fd, event_buf, timeout).map(|n| n.try_into().unwrap())
+    }
+}
+
+impl From<EpollHandle> for RawFd {
+    fn from(value: EpollHandle) -> Self {
+        value.fd
+    }
+}
+
+/// A mask for the EPOLLERR and EPOLLPRI events.  Only these events are
+/// considered errors and all other events, including EPOLLHUP and
+/// EPOLLRDHUP must be checked and handled by the caller.
+const EPOLL_ERROR_MASK: u32 = (libc::EPOLLERR | libc::EPOLLPRI) as u32;
+
+/// Error conditions for [`EpollEvent`]
+#[derive(Debug, Error)]
+#[error("Epoll event error: {0:?}")]
+pub struct EpollEventError(libc::epoll_event);
+
+impl EpollEventError {
+    fn new(errors: u32, data: u64) -> Self {
+        debug_assert!(errors & EPOLL_ERROR_MASK != 0);
+        Self(libc::epoll_event { events: errors & EPOLL_ERROR_MASK, u64: data })
+    }
+
+    /// Fetch the error flags associated with an epoll event
+    pub fn flags(&self) -> u32 {
+        self.0.events
+    }
+
+    /// Fetch the data associated with an epoll event
+    pub fn data(&self) -> u64 {
+        self.0.u64
+    }
+}
+
+/// A safety wrapper around [`libc::epoll_event`].
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct EpollEvent(libc::epoll_event);
+
+impl EpollEvent {
+    /// Initialize a new [`libc::epoll_event`] wrapper struct with the provided
+    /// events and data.
+    pub const fn new(events: c_uint, data: u64) -> Self {
+        Self(libc::epoll_event { events, u64: data })
+    }
+
+    /// Returns `Err` in the presence of errors, else `Some(EpollEventChecked)`.
+    pub fn check(&self) -> std::result::Result<EpollEventChecked<'_>, EpollEventError> {
+        let error_flags = self.0.events & EPOLL_ERROR_MASK;
+        if error_flags != 0 {
+            Err(EpollEventError::new(error_flags, self.0.u64))
+        } else {
+            Ok(EpollEventChecked(&self.0))
+        }
+    }
+}
+
+/// A struct used to wrap a [`libc::epoll_event`] struct that has been checked
+/// for errors.
+#[repr(transparent)]
+pub struct EpollEventChecked<'a>(&'a libc::epoll_event);
+
+impl EpollEventChecked<'_> {
+    /// Return the associated data
+    pub fn data(&self) -> u64 {
+        self.0.u64
+    }
+
+    /// If the specified event occurred the result of calling the handler will
+    /// be returned; otherwise, None.
+    pub fn handle_event<T>(&self, event: u32, mut handler: impl FnMut(u64) -> T) -> Option<T> {
+        if self.0.events & event == event {
+            Some(handler(self.0.u64))
+        } else {
+            None
+        }
+    }
+
+    /// Checks to see if the specified event was observed during [`epoll_wait`].
+    pub fn has_event(&self, event: c_uint) -> bool {
+        (self.0.events & event) == event
+    }
+
+    /// If the specified event occurred the result of calling the handler will
+    /// be returned; otherwise, None.
+    pub fn try_handle_event<T, E>(
+        &self,
+        event: u32,
+        mut handler: impl FnMut(u64) -> std::result::Result<T, E>,
+    ) -> Option<std::result::Result<T, E>> {
+        if (self.0.events & event) == event {
+            Some(handler(self.0.u64))
         } else {
             None
         }
@@ -807,7 +945,7 @@ pub fn have_write_permissions(path: &std::path::Path) -> Result<bool> {
 pub fn accept(fd: RawFd) -> Result<RawFd> {
     // SAFETY: If the file descriptor is invalid `accept()` will return -1 and
     //         we will extract errno and wrap it in a Result.
-    check_failure(unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) })
+    check_failure(unsafe { libc::accept(fd, ptr::null_mut(), ptr::null_mut()) })
 }
 
 /// A safe wrapper around [`libc::bind`].
@@ -909,6 +1047,46 @@ pub fn dup3(old_fd: RawFd, new_fd: RawFd, flags: c_int) -> Result<()> {
     return retry_eintr!(check_failure_with_void(unsafe {
         libc_fill::dup3(old_fd, new_fd, flags)
     }));
+}
+
+/// A safe wrapper around [`libc::epoll_create1`]
+///
+/// See: `man epoll_create1`
+pub fn epoll_create1(flags: c_int) -> Result<RawFd> {
+    // SAFETY: The function takes no pointer arguments and is thread safe.
+    check_failure(unsafe { libc::epoll_create1(flags) })
+}
+
+/// A safe wrapper around [`libc:epoll_ctl`]
+///
+/// See: `man epoll_ctl`
+pub fn epoll_ctl(
+    epfd: RawFd,
+    op: c_int,
+    fd: RawFd,
+    event: Option<&mut libc::epoll_event>,
+) -> Result<()> {
+    // Safety: The pointer argument is calculated from a valid reference.
+    check_failure_with_void(unsafe {
+        libc::epoll_ctl(epfd, op, fd, event.map(ptr::from_mut).unwrap_or(ptr::null_mut()))
+    })
+}
+
+/// A safe wrapper around [`libc::epoll_wait`]
+///
+/// See: `man epoll_wait`
+pub fn epoll_wait(epfd: RawFd, events: &mut [EpollEvent], timeout: c_int) -> Result<c_int> {
+    // SAFETY: The pointer argument and length are calculated from a valid
+    //         slice reference.  EpollEvent is a transparent wrapper for
+    //         `epoll_event`.
+    retry_eintr!(check_failure(unsafe {
+        libc::epoll_wait(
+            epfd,
+            events.as_mut_ptr() as *mut libc::epoll_event,
+            events.len() as c_int,
+            timeout,
+        )
+    }))
 }
 
 /// A safe wrapper around [`libc::strerror_r`].
