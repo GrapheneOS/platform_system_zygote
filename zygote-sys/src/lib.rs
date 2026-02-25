@@ -215,13 +215,17 @@ pub enum Error {
     #[error("Libc error: {0}")]
     Libc(#[from] Errno),
 
+    /// An error occurred while using epoll
+    #[error(transparent)]
+    EpollFailure(#[from] EpollEventError),
+
     /// An OS-provided string is not a valid UTF-8 encoded string
     #[error("OS string is not a valid UTF-8 encoded string")]
     OsString(std::ffi::OsString),
 
-    /// A file descriptor passed to `poll` produced an error
-    #[error("Poll event error on FD {0}: {1}")]
-    PollEvent(RawFd, c_short),
+    /// An error occurred while using poll
+    #[error(transparent)]
+    PollFailure(#[from] PollEventError),
 
     /// A provided string is too long to fit into a buffer
     #[error("Input string of length {0} exceeds buffer size {1}")]
@@ -263,6 +267,11 @@ impl<T> From<Error> for Result<T> {
     }
 }
 
+/// Error conditions for [`PollFd`]
+#[derive(Clone, Copy, Debug, Error)]
+#[error("Poll event error for FD {0}: {1:?}")]
+pub struct PollEventError(RawFd, i16);
+
 /// A wrapper struct for [`libc::pollfd`] that ensures error codes are checked
 /// before events are handled.
 #[derive(Debug)]
@@ -277,10 +286,10 @@ impl PollFd {
     }
 
     /// Returns `Err` in the presence of errors, else `Some(PollFdChecked)`.
-    pub fn check(&self) -> Result<PollFdChecked<'_>> {
+    pub fn check(&self) -> std::result::Result<PollFdChecked<'_>, PollEventError> {
         const ERROR_MASK: c_short = libc::POLLERR | libc::POLLNVAL;
         if self.0.revents & ERROR_MASK != 0 {
-            Err(Error::PollEvent(self.0.fd, self.0.revents & ERROR_MASK))
+            Err(PollEventError(self.0.fd, self.0.revents & ERROR_MASK))
         } else {
             Ok(PollFdChecked(&self.0))
         }
@@ -380,7 +389,7 @@ impl From<EpollHandle> for RawFd {
 const EPOLL_ERROR_MASK: u32 = (libc::EPOLLERR | libc::EPOLLPRI) as u32;
 
 /// Error conditions for [`EpollEvent`]
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 #[error("Epoll event error: {0:?}")]
 pub struct EpollEventError(libc::epoll_event);
 
