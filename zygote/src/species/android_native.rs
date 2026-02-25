@@ -20,7 +20,9 @@ use std::os::unix::net::UnixDatagram;
 
 use itertools::Itertools;
 
-use native_activity_thread::{app_process_init, preload_lib, run_native_activity_thread};
+use native_activity_thread::{
+    app_process_init, get_or_init_debuggable, preload_lib, run_native_activity_thread,
+};
 use processgroup::{
     processgroup::{cgroup, drop_task_profiles_resource_caching},
     sched::{cpusets_enabled, SchedPolicy},
@@ -178,7 +180,6 @@ impl Species for App {
         // We need to call `__android_log_close` to close the logger FDs to sync the internal state
         // of LogdSocket.
         // c.f. https://cs.android.com/android/platform/superproject/main/+/main:system/logging/liblog/logd_writer.cpp;l=57
-        #[cfg(target_os = "android")]
         sys::android::log_close();
     }
 
@@ -342,6 +343,10 @@ impl Species for App {
         if let Err(err) = atom.stats_write() {
             log::error!("Error logging the NativeZygoteStarted Atom: {err}");
         }
+
+        // Read the `ro.debuggable` property and cache it while the process is still allowed to read
+        // the value.
+        get_or_init_debuggable();
     }
 
     fn on_server_ready(&self) {
