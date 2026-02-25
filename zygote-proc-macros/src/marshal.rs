@@ -224,12 +224,12 @@ pub(crate) fn gen_flatten_marshal_parcel(ast: &DeriveInput) -> TokenStream {
                     name.span(),
                     "FlattenParcel can only be derived for structs with named fields.",
                 )
-                .to_compile_error()
+                .to_compile_error();
             }
         },
         _ => {
             return Error::new(name.span(), "FlattenParcel can only be derived for structs.")
-                .to_compile_error()
+                .to_compile_error();
         }
     };
 
