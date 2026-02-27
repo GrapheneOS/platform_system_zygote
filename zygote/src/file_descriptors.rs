@@ -44,7 +44,7 @@ use zygote_sys::{
 };
 
 const DYNAMIC_ALLOW_LIST_SIZE: usize = 64;
-pub(crate) const REGISTRY_SIZE: usize = 512;
+const REGISTRY_SIZE: usize = 128;
 
 /// Path to the null character device for Unix-like systems
 pub const DEV_NULL_PATH: &str = "/dev/null";

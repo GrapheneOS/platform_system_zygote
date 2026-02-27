@@ -45,6 +45,7 @@ use zygote_sys::{
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
+const BUFFER_SIZE_EPOLL_EVENTS: usize = 32;
 const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
 
 #[repr(i8)]
@@ -1151,7 +1152,7 @@ impl Server {
     pub fn serve(&mut self) -> ServerResult<Option<impl FnOnce() -> Infallible + use<>>> {
         self.species.on_server_ready();
 
-        let mut event_buf = [EpollEvent::new(0, u64::MAX); file_descriptors::REGISTRY_SIZE];
+        let mut event_buf = [EpollEvent::new(0, u64::MAX); BUFFER_SIZE_EPOLL_EVENTS];
 
         loop {
             let num_ready =
