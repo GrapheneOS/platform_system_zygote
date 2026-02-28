@@ -1068,7 +1068,7 @@ pub fn epoll_ctl(
 ) -> Result<()> {
     // Safety: The pointer argument is calculated from a valid reference.
     check_failure_with_void(unsafe {
-        libc::epoll_ctl(epfd, op, fd, event.map(ptr::from_mut).unwrap_or(ptr::null_mut()))
+        libc::epoll_ctl(epfd, op, fd, event.map(ptr::from_mut).unwrap_or_default())
     })
 }
 
