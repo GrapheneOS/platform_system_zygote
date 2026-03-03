@@ -39,49 +39,70 @@ use zygote_messages::{
 use zygote_sys::{
     self as sys,
     procfs::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
+    EpollEvent, EpollHandle,
     LoopControl::{self, *},
-    LoopExit, PollFd, TaskFailure,
+    LoopExit, TaskFailure,
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
-const BUFFER_SIZE_POLL: usize = 64;
+const BUFFER_SIZE_EPOLL_EVENTS: usize = 32;
 const SERVER_SOCKET_BACKLOG: core::ffi::c_int = 10;
 
-type PollBuffer = ArrayVec<PollFd, BUFFER_SIZE_POLL>;
-
-impl std::convert::From<&Server> for PollBuffer {
-    fn from(server: &Server) -> PollBuffer {
-        let mut poll_buffer = PollBuffer::new();
-
-        poll_buffer.push(PollFd::new(server.signal_fd, libc::POLLIN));
-        poll_buffer.push(PollFd::new(server.server_socket, libc::POLLIN));
-
-        for client_socket in &server.client_sockets {
-            poll_buffer.push(PollFd::new(*client_socket, libc::POLLIN));
-        }
-
-        poll_buffer
-    }
+#[repr(i8)]
+#[derive(Debug, PartialEq, Eq)]
+enum EpollTag {
+    Client = 0,
+    Server = 1,
+    Signal = 2,
 }
 
 #[derive(Debug)]
-struct PollPartition<'a> {
-    pub signal: &'a PollFd,
-    pub server: &'a PollFd,
-    pub clients: &'a [PollFd],
+struct EpollData {
+    fd: RawFd,
+    class: EpollTag,
 }
 
-trait Partition<'a> {
-    fn partition(&'a self) -> PollPartition<'a>;
+/// Wrapper type for errors
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct OpaqueEpollData(EpollData);
+
+impl From<EpollData> for OpaqueEpollData {
+    fn from(value: EpollData) -> Self {
+        OpaqueEpollData(value)
+    }
 }
 
-impl<'a> Partition<'a> for PollBuffer {
-    fn partition(&'a self) -> PollPartition<'a> {
-        PollPartition::<'a> {
-            signal: &self[0],
-            server: &self[1],
-            clients: if self.len() > 2 { &self[2..] } else { &[] },
-        }
+impl EpollData {
+    fn new(fd: RawFd, class: EpollTag) -> Self {
+        EpollData { fd, class }
+    }
+}
+
+static_assertions::const_assert_eq!(size_of::<RawFd>(), size_of::<u32>());
+
+impl From<EpollData> for u64 {
+    fn from(value: EpollData) -> Self {
+        // The extra cast to `u32` is to ensure that the cast to `u64` causes
+        // the value to be zero-extended.
+        value.fd as u32 as u64 | (value.class as u64) << 32
+    }
+}
+
+impl TryFrom<u64> for EpollData {
+    type Error = ServerError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(EpollData {
+            fd: value as RawFd,
+            // SAFETY: This value was written by the `From<EPollData>` implementation
+            class: match (value >> 32) as i8 {
+                0 => EpollTag::Client,
+                1 => EpollTag::Server,
+                2 => EpollTag::Signal,
+                _ => return Err(ServerError::InvalidEpollData(value)),
+            },
+        })
     }
 }
 
@@ -118,8 +139,6 @@ impl TaskFailure for SignalHandlerError {
         SignalHandlerError::Read(error)
     }
 }
-
-type SignalHandlerResult<T> = Result<T, SignalHandlerError>;
 
 /// Errors that may be encountered when interacting with the server socket
 #[derive(Debug, Error)]
@@ -175,6 +194,11 @@ pub enum ServerSocketError {
     /// Provided file descriptor does not refer to a valid socket
     #[error("Provided file descriptor does not refer to a valid socket: {0}")]
     ProvidedFdNotSocket(RawFd),
+
+    /// Too many clients have connected and the server is out of space to store
+    /// their sockets.
+    #[error("Too many clients attempted to connect. Dropped connection from {0:?}")]
+    TooManyClients(Option<libc::ucred>),
 }
 
 impl TaskFailure for ServerSocketError {
@@ -254,16 +278,24 @@ type ClientResult<T> = Result<T, ClientError>;
 pub enum ServerError {
     /// A failure was encountered when interacting with a client
     #[error(transparent)]
-    ClientSocketFailure(#[from] ClientError),
+    ClientFailure(#[from] ClientError),
 
     /// A failure was encountered while setting effective permissions for the
     /// process
     #[error("Failed to set effective permissions: ({0:?}, {1:?}): {2}")]
     EffectivePermissionsFailure(Option<libc::uid_t>, Option<libc::gid_t>, sys::Error),
 
+    /// Failed to epoll a client socket
+    #[error("Failed to epoll file descriptor {0:?}: {1}")]
+    Epoll(OpaqueEpollData, u32),
+
     /// A file descriptor registry action failed
     #[error("File descriptor registry failure: {0}")]
     FdRegistryFailure(#[from] FdRegistryError),
+
+    /// Epoll data is invalid
+    #[error("Invalid epoll data: {0}")]
+    InvalidEpollData(u64),
 
     /// A failure was encountered when polling the server's file descriptors
     #[error("Failed to poll server file descriptors: {0}")]
@@ -283,42 +315,18 @@ pub enum ServerError {
     SignalHandlerFailure(#[from] SignalHandlerError),
 }
 
-type ServerResult<T> = Result<T, ServerError>;
+/// Result type for [`Server`]
+pub type ServerResult<T> = Result<T, ServerError>;
 
 #[derive(Debug)]
 enum ServerControl<T> {
-    Continue,
+    PollBreak,
+    PollContinue,
     Shutdown,
     Trampoline(T),
 }
 
-impl<T> ServerControl<T> {
-    #[allow(dead_code)]
-    pub fn is_continue(&self) -> bool {
-        matches!(self, ServerControl::Continue)
-    }
-
-    pub fn is_exit(&self) -> bool {
-        matches!(self, ServerControl::Shutdown)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_trampoline(&self) -> bool {
-        matches!(self, ServerControl::Trampoline(_))
-    }
-}
-
-type ServerControlResult<T> = ServerResult<ServerControl<T>>;
-
-#[derive(Debug)]
-enum ClientControl<T> {
-    Child(T),
-    Break,
-    NextSocket,
-    Shutdown,
-}
-
-type ClientControlResult<T> = ClientResult<ClientControl<T>>;
+type ServerControlResult<T, E> = std::result::Result<ServerControl<T>, E>;
 
 /// The main data structure for the Zygote process server.
 #[derive(Debug)]
@@ -329,6 +337,7 @@ pub struct Server {
 
     registry: FileDescriptorRegistry,
 
+    epoll_handle: EpollHandle,
     signal_fd: RawFd,
     server_socket: RawFd,
     client_sockets: ArrayVec<RawFd, BUFFER_SIZE_CLIENT_SOCKETS>,
@@ -342,17 +351,37 @@ pub struct Server {
 }
 
 impl Server {
-    /// Create a new Zygote process server from a [`crate::config::Config`]
+    /// Create a new Zygote process server from a [`crate::config::Server`]
     /// reference.
     ///
     /// Add a destructor to clean up the socket if we create it.
     #[tracing::instrument(level = "trace", skip_all)]
     pub fn new(config: &config::Server) -> ServerResult<Self> {
+        info!("Constructing server");
+
         let mut registry = FileDescriptorRegistry::new(config.species)?;
+
+        let epoll_handle = EpollHandle::new().map_err(ServerError::Poll)?;
+        // SAFETY: The epoll fd will be closed in two circumstances:
+        //           1. The server is shutting down
+        //           2. The server is reinitializing
+        //
+        //         The first case occurs in the drop implementation, closing
+        //         file descriptor after any possible use.  In the second case
+        //         the handler is immediately overwritten in
+        //         [`Server::re_initialize_as_subspecies`].
+        registry.register(unsafe { epoll_handle.fd() }, file_descriptors::Action::Close)?;
 
         let socket_path_or_fd = config.socket();
         let (server_socket, server_socket_path) = Self::get_server_socket(socket_path_or_fd)?;
         registry.register(server_socket, file_descriptors::Action::Close)?;
+        epoll_handle
+            .add(
+                server_socket,
+                libc::EPOLLIN as u32,
+                EpollData::new(server_socket, EpollTag::Server).into(),
+            )
+            .map_err(ServerError::Poll)?;
 
         let sigset =
             sys::build_sigset(Self::blocked_signals()).map_err(SignalHandlerError::SigSet)?;
@@ -366,6 +395,13 @@ impl Server {
         //     descriptor.  A read(2) from the file descriptor in the child will
         //     return information about signals queued to the child."
         registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)?;
+        epoll_handle
+            .add(
+                signal_fd,
+                libc::EPOLLIN as u32,
+                EpollData::new(signal_fd, EpollTag::Signal).into(),
+            )
+            .map_err(ServerError::Poll)?;
 
         // Register any unregistered file descriptors such as those used for logging.
         registry.register_new()?;
@@ -378,6 +414,7 @@ impl Server {
 
             registry,
 
+            epoll_handle,
             signal_fd,
             server_socket,
             client_sockets: ArrayVec::new(),
@@ -413,6 +450,7 @@ impl Server {
     }
 
     /// Tailor the Server instance for the subspecies.
+    // TODO: Set the process name.
     #[tracing::instrument(level = "trace", skip(self))]
     fn re_initialize_as_subspecies(&mut self, child_socket_path: String) -> ServerResult<()> {
         self.registry.reset_for_subspecies()?;
@@ -428,6 +466,34 @@ impl Server {
         // `reset_for_subspecies()`, so replace with a new one.
         self.server_socket = child_socket_fd;
         self.server_socket_path = child_socket_path;
+
+        self.epoll_handle = EpollHandle::new().map_err(ServerError::Poll)?;
+        self.registry
+            // SAFETY: The epoll fd will be closed in two circumstances:
+            //           1. The server is shutting down
+            //           2. The server is reinitializing
+            //
+            //         The first case occurs in the drop implementation,
+            //         closing file descriptor after any possible use.  The
+            //         second case occurs in the call to
+            //         [`FileDescriptorRegistry::reset_for_subspecies`] in this
+            //         function.  We have just overwritten the previous handler
+            //         with this new one.
+            .register(unsafe { self.epoll_handle.fd() }, file_descriptors::Action::Close)?;
+        self.epoll_handle
+            .add(
+                self.server_socket,
+                libc::EPOLLIN as u32,
+                EpollData::new(self.server_socket, EpollTag::Server).into(),
+            )
+            .map_err(ServerError::Poll)?;
+        self.epoll_handle
+            .add(
+                self.signal_fd,
+                libc::EPOLLIN as u32,
+                EpollData::new(self.signal_fd, EpollTag::Signal).into(),
+            )
+            .map_err(ServerError::Poll)?;
 
         self.pid = sys::getpid();
 
@@ -495,220 +561,204 @@ impl Server {
         }
     }
 
-    /// Check each of the polled file descriptors to check if we should read
-    /// from them.
-    ///
-    /// The function's return value indicates if the server should terminate
-    /// after this call.
-    #[tracing::instrument(level = "trace", skip_all)]
-    fn check_poll_events(
+    fn check_epoll_events(
         &mut self,
-        partition: PollPartition<'_>,
-    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
-        if self.check_signalfd_events(&partition)?.is_exit() {
-            return Ok(ServerControl::Shutdown);
-        }
+        events: &[EpollEvent],
+    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>, ServerError> {
+        for event in events {
+            let checked_event =
+                event.check().map_err(|epoll_err| match EpollData::try_from(epoll_err.data()) {
+                    Ok(epoll_data) => ServerError::Epoll(epoll_data.into(), epoll_err.flags()),
+                    Err(err) => err,
+                })?;
 
-        self.check_server_socket_events(&partition)?;
-        self.check_client_sockets_events(&partition)
-    }
+            let event_data: EpollData = checked_event.data().try_into()?;
 
-    #[tracing::instrument(level = "trace", skip_all)]
-    fn check_client_sockets_events(
-        &mut self,
-        partition: &PollPartition<'_>,
-    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
-        for client_pollfd in partition.clients {
-            let checked_pollfd = client_pollfd.check().map_err(ClientError::Poll)?;
+            let epollin_retval =
+                checked_event.try_handle_event(
+                    libc::EPOLLIN as u32,
+                    &mut |_| match event_data.class {
+                        EpollTag::Client => Ok(self.handle_client_events(event_data.fd)?),
+                        EpollTag::Server => Ok(self.handle_server_events(event_data.fd)?),
+                        EpollTag::Signal => Ok(self.handle_signalfd_events(event_data.fd)?),
+                    },
+                );
 
-            let pollin_result: Option<Result<LoopExit<ClientControl<_>>, ClientError>> =
-                checked_pollfd.try_handle_event(libc::POLLIN, &mut |fd| {
-                    sys::try_until_would_block(
-                        || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(fd),
-                        &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
-                            if readlen == 0 {
-                                return Ok(Break(ClientControl::NextSocket));
-                            }
-
-                            match Message::try_from_parcel(&message_buffer) {
-                                Ok(_) => match self.dispatch_message_handler(fd, message_buffer) {
-                                    Continue => Ok(Continue),
-                                    Break(value) => Ok(Break(value?)),
-                                },
-                                Err(err) => {
-                                    // TODO: Respond with an error
-                                    warn!(
-                                        "Invalid message received from client ({:?}): {}",
-                                        sys::get_socket_creds(fd),
-                                        err
-                                    );
-                                    Ok(Break(ClientControl::NextSocket))
-                                }
+            match epollin_retval {
+                None | Some(Ok(ServerControl::PollContinue)) => {
+                    let hup_result = checked_event.try_handle_event::<(), ServerError>(
+                        libc::EPOLLHUP as u32,
+                        |_| {
+                            if event_data.class == EpollTag::Client {
+                                info!("Client socket disconnected: {}", event_data.fd);
+                                Ok(self.remove_client_socket(event_data.fd)?)
+                            } else {
+                                // The only FDs in the epoll set are: a listen
+                                // socket, a signalfd, and zero or more unix-domain
+                                // sockets.
+                                unreachable!("Listen sockets and signalfds can't hangup.")
                             }
                         },
-                    )
-                });
+                    );
 
-            match pollin_result {
-                None => {
-                    // No event was registered for this file descriptor
-                }
-                Some(Ok(LoopExit::WouldBlock)) => {
-                    // All available messages were read from the socket
-                }
-                Some(Ok(LoopExit::Early(control))) => {
-                    match control {
-                        ClientControl::Child(thunk) => {
-                            // We are in the child process and should exit the
-                            // server with the thunk.
-                            return Ok(ServerControl::Trampoline(thunk));
-                        }
-                        ClientControl::Break => {
-                            // We have just reset the server instance for App
-                            // Zygote thus the pollfds are invalidated. Move
-                            // back to the top of the server loop.
-                            return Ok(ServerControl::Continue);
-                        }
-                        ClientControl::NextSocket => {
-                            // Zero-length read from socket, continue and wait for SIGHUP
-                        }
-                        ClientControl::Shutdown => return Ok(ServerControl::Shutdown),
+                    if let Some(Err(err)) = hup_result {
+                        return Err(err);
                     }
                 }
-                Some(Err(error)) => {
+                Some(Err(ServerError::ClientFailure(error))) => {
                     error!(
                         "Error encountered while responding to client socket {}: {error:?}",
-                        checked_pollfd.fd()
+                        event_data.fd
                     );
 
-                    self.remove_client_socket(checked_pollfd.fd())?;
+                    self.remove_client_socket(event_data.fd).map_err(ServerError::ClientFailure)?;
+                }
+                Some(Err(ServerError::ServerSocketFailure(
+                    err @ ServerSocketError::TooManyClients(_),
+                ))) => {
+                    warn!("{err:?}");
+                }
+                Some(result) => {
+                    return result;
                 }
             }
-
-            if let Some(result) = checked_pollfd.try_handle_event(libc::POLLHUP, |fd| {
-                info!("Client socket disconnected: {fd}");
-                self.remove_client_socket(fd)
-            }) {
-                result?;
-            }
         }
 
-        // Continue the server loop
-        Ok(ServerControl::Continue)
+        Ok(ServerControl::PollBreak)
     }
 
-    #[tracing::instrument(level = "trace", skip_all)]
-    fn check_server_socket_events(
+    fn handle_client_events(
         &mut self,
-        partition: &PollPartition<'_>,
-    ) -> ServerSocketResult<()> {
-        let checked_pollfd = partition.server.check().map_err(ServerSocketError::Poll)?;
+        client_fd: RawFd,
+    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>, ClientError> {
+        let client_event_status = sys::try_until_would_block(
+            || sys::recvmsg::<MESSAGE_BUFFER_SIZE>(client_fd),
+            &mut |(readlen, message_buffer): (isize, MessageBuffer)| {
+                if readlen == 0 {
+                    return Ok::<_, ClientError>(Break(ServerControl::PollContinue));
+                }
 
-        let event_result: Option<ServerSocketResult<LoopExit<()>>> = checked_pollfd
-            .try_handle_event(libc::POLLIN, &mut |fd| {
-                sys::try_until_would_block(|| sys::accept(fd), &mut |new_client_fd| {
-                    info!(
-                        "Accepted new client socket connection from {:?}",
-                        sys::get_socket_creds(new_client_fd)
-                    );
-
-                    sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK)
-                        .map_err(ServerSocketError::Metadata)?;
-
-                    self.client_sockets.push(new_client_fd);
-                    self.registry
-                        .register(new_client_fd, file_descriptors::Action::Close)
-                        .map_err(ServerSocketError::ClientRegistration)?;
-
-                    // Continue reading
-                    Ok(LoopControl::<()>::Continue)
-                })
-            });
-
-        // Receiving no new connections is valid and POLLHUP should never occur
-        // for a listen socket, so we only need to check for errors.
-        match event_result {
-            Some(Err(error)) => Err(error),
-            _ => Ok(()),
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    fn check_signalfd_events(
-        &mut self,
-        partition: &PollPartition<'_>,
-    ) -> ServerControlResult<impl FnOnce() -> Infallible + use<>> {
-        let checked_pollfd = partition.signal.check().map_err(SignalHandlerError::Poll)?;
-
-        let event_result: Option<SignalHandlerResult<LoopExit<i32>>> = checked_pollfd
-            .try_handle_event(libc::POLLIN, &mut |fd| {
-                sys::try_until_would_block(
-                    || sys::read_exact::<libc::signalfd_siginfo>(fd),
-                    &mut |siginfo: libc::signalfd_siginfo| {
-                        match siginfo.ssi_signo as i32 {
-                            libc::SIGCHLD => {
-                                let pid = siginfo.ssi_pid as libc::pid_t;
-                                info!(
-                                    "Received SIGCHLD from PID {} with status {}",
-                                    pid, siginfo.ssi_status
-                                );
-
-                                match sys::waitpid(Some(pid), libc::WNOHANG) {
-                                    Ok(Some((ret_pid, status))) => {
-                                        // We provide an exact PID so we should
-                                        // always receive the same PID as the
-                                        // result.
-                                        debug_assert_eq!(ret_pid, pid);
-
-                                        self.species.handle_sigchld(
-                                            pid,
-                                            siginfo.ssi_uid,
-                                            siginfo.ssi_status,
-                                        );
-                                        info!(
-                                            "Child process {} terminated with status {:?}",
-                                            pid, status
-                                        );
-                                        Ok(Continue)
-                                    }
-                                    Ok(None) => Ok(Continue),
-                                    Err(error) => Err(SignalHandlerError::ProcessAccounting(error)),
-                                }
-                            }
-                            libc::SIGINT => {
-                                info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
-
-                                // Terminate early
-                                Ok(Break(libc::SIGINT))
-                            }
-                            libc::SIGTERM => {
-                                info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
-
-                                // Terminate early
-                                Ok(Break(libc::SIGTERM))
-                            }
-                            signo => {
-                                // This should never happen as only SIGCHLD,
-                                // SIGINT, and SIGTERM are added to the signalfd's
-                                // mask.
-                                unreachable!("Unhandled signal received: {signo}");
-                            }
-                        }
+                match Message::try_from_parcel(&message_buffer) {
+                    Ok(_) => match self.dispatch_message_handler(client_fd, message_buffer) {
+                        Continue => Ok(Continue),
+                        Break(value) => Ok(Break(value?)),
                     },
-                )
-            });
+                    Err(err) => {
+                        // TODO: Respond with an error
+                        warn!(
+                            "Invalid message received from client ({:?}): {}",
+                            sys::get_socket_creds(client_fd),
+                            err
+                        );
+                        Ok(Break(ServerControl::PollContinue))
+                    }
+                }
+            },
+        )?;
 
-        Ok(match event_result {
-            Some(Ok(LoopExit::Early(_))) => ServerControl::<fn() -> Infallible>::Shutdown,
-            Some(Ok(LoopExit::WouldBlock)) => ServerControl::Continue,
-            Some(Err(error)) => {
-                error!(
-                    "Unexpected error interacting with the signalfd ({}): {error}",
-                    checked_pollfd.fd()
-                );
-                ServerControl::Shutdown
+        Ok(match client_event_status {
+            // All available messages were read from the socket
+            LoopExit::WouldBlock => ServerControl::PollContinue,
+            LoopExit::Early(control) => control,
+        })
+    }
+
+    fn handle_server_events<Thunk: FnOnce() -> Infallible>(
+        &mut self,
+        server_fd: RawFd,
+    ) -> ServerControlResult<Thunk, ServerSocketError> {
+        sys::try_until_would_block(|| sys::accept(server_fd), &mut |new_client_fd| {
+            info!(
+                "Accepted new client socket connection from {:?}",
+                sys::get_socket_creds(new_client_fd)
+            );
+
+            sys::fcntl_setfl(new_client_fd, libc::O_NONBLOCK)
+                .map_err(ServerSocketError::Metadata)?;
+
+            if self.client_sockets.len() == BUFFER_SIZE_CLIENT_SOCKETS {
+                let client_creds = sys::get_socket_creds(new_client_fd);
+                let _ = sys::close(new_client_fd);
+                return Err(ServerSocketError::TooManyClients(client_creds.ok()));
             }
-            None => ServerControl::Continue,
+
+            self.client_sockets.push(new_client_fd);
+            self.registry
+                .register(new_client_fd, file_descriptors::Action::Close)
+                .map_err(ServerSocketError::ClientRegistration)?;
+            self.epoll_handle
+                .add(
+                    new_client_fd,
+                    libc::EPOLLIN as u32,
+                    EpollData::new(new_client_fd, EpollTag::Client).into(),
+                )
+                .map_err(ServerSocketError::Poll)?;
+
+            // Continue reading
+            Ok::<_, ServerSocketError>(LoopControl::<()>::Continue)
+        })
+        .map(|_| ServerControl::<Thunk>::PollContinue)
+    }
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    fn handle_signalfd_events<Thunk: FnOnce() -> Infallible>(
+        &mut self,
+        signalfd: RawFd,
+    ) -> ServerControlResult<Thunk, SignalHandlerError> {
+        sys::try_until_would_block(
+            || sys::read_exact::<libc::signalfd_siginfo>(signalfd),
+            &mut |siginfo: libc::signalfd_siginfo| {
+                match siginfo.ssi_signo as i32 {
+                    libc::SIGCHLD => {
+                        let pid = siginfo.ssi_pid as libc::pid_t;
+                        info!(
+                            "Received SIGCHLD from PID {} with status {}",
+                            pid, siginfo.ssi_status
+                        );
+
+                        match sys::waitpid(Some(pid), libc::WNOHANG) {
+                            Ok(Some((ret_pid, status))) => {
+                                // We provide an exact PID so we should
+                                // always receive the same PID as the
+                                // result.
+                                debug_assert_eq!(ret_pid, pid);
+
+                                self.species.handle_sigchld(
+                                    pid,
+                                    siginfo.ssi_uid,
+                                    siginfo.ssi_status,
+                                );
+                                info!("Child process {} terminated with status {:?}", pid, status);
+                                Ok(Continue)
+                            }
+                            Ok(None) => Ok(Continue),
+                            Err(error) => Err(SignalHandlerError::ProcessAccounting(error)),
+                        }
+                    }
+                    libc::SIGINT => {
+                        info!("Received SIGINT FROM PID {}", siginfo.ssi_pid);
+
+                        // Terminate early
+                        Ok(Break(libc::SIGINT))
+                    }
+                    libc::SIGTERM => {
+                        info!("Received SIGTERM FROM PID {}", siginfo.ssi_pid);
+
+                        // Terminate early
+                        Ok(Break(libc::SIGTERM))
+                    }
+                    signo => {
+                        // This should never happen as only SIGCHLD,
+                        // SIGINT, and SIGTERM are added to the signalfd's
+                        // mask.
+                        unreachable!("Unhandled signal received: {signo}");
+                    }
+                }
+            },
+        )
+        .map(|event_result| match event_result {
+            LoopExit::Early(_) => ServerControl::<Thunk>::Shutdown,
+            LoopExit::WouldBlock => ServerControl::PollContinue,
         })
     }
 
@@ -716,7 +766,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientControlResult<impl FnOnce() -> Infallible + use<>>> {
+    ) -> LoopControl<ServerControlResult<impl FnOnce() -> Infallible + use<>, ClientError>> {
         match Message::try_from_parcel(&message_buffer) {
             Ok(message) => {
                 if cfg!(debug_assertions) {
@@ -746,7 +796,6 @@ impl Server {
                             payload
                         );
 
-                        // Continue the `recvmsg` loop
                         Continue
                     }
                     Message::Spawn { .. } => self.handle_message_spawn(fd, message_buffer),
@@ -783,19 +832,19 @@ impl Server {
     fn handle_message_exit<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
-    ) -> LoopControl<ClientControlResult<Thunk>> {
+    ) -> LoopControl<ServerControlResult<Thunk, ClientError>> {
         if let Err(errno) = sys::sendmsg(fd, Message::AckResponse.to_parcel().finished_data()) {
             warn!("Failed to acknowledge Exit message: {errno}")
         }
 
-        Break(Ok(ClientControl::Shutdown))
+        LoopControl::Break(Ok(ServerControl::Shutdown))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_identity_query<Thunk: FnOnce() -> Infallible>(
         &self,
         fd: RawFd,
-    ) -> LoopControl<ClientControlResult<Thunk>> {
+    ) -> LoopControl<ServerControlResult<Thunk, ClientError>> {
         let response = Message::IdentityQueryResponse {
             name: &self.name,
             species: self.species.name(),
@@ -803,10 +852,10 @@ impl Server {
         };
 
         match sys::sendmsg(fd, response.to_parcel().finished_data()) {
-            Ok(_) => Continue,
+            Ok(_) => LoopControl::Continue,
             Err(error) => {
                 error!("Failed to send IdentityQuery response: {error}");
-                Break(Err(ClientError::IdentityQueryResponse(fd, error)))
+                LoopControl::Break(Err(ClientError::IdentityQueryResponse(fd, error)))
             }
         }
     }
@@ -816,8 +865,11 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-        child_continuation: impl FnOnce(&mut Self, SpawnParamsCommon) -> ClientControlResult<Thunk>,
-    ) -> LoopControl<ClientControlResult<Thunk>> {
+        child_continuation: impl FnOnce(
+            &mut Self,
+            SpawnParamsCommon,
+        ) -> ServerControlResult<Thunk, ClientError>,
+    ) -> LoopControl<ServerControlResult<Thunk, ClientError>> {
         // The server does not spawn any threads.  Preloaded library
         // initializers should not start any threads.  Any threads created by
         // species-specific code during initialization must be terminated when
@@ -922,7 +974,7 @@ impl Server {
         &mut self,
         fd: RawFd,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientControlResult<impl FnOnce() -> Infallible + use<>>> {
+    ) -> LoopControl<ServerControlResult<impl FnOnce() -> Infallible + use<>, ClientError>> {
         // Creating local copies avoids capturing additional references.
         let species: SpeciesRef = self.species;
         let re_init_data = species.gather_reinitialization_data();
@@ -939,7 +991,7 @@ impl Server {
             //         are taken before control is passed to the species code.
             let spawn_message = unsafe { messages::SpawnMessage::new(message_buffer) };
 
-            Ok(ClientControl::Child(move || {
+            Ok(ServerControl::Trampoline(move || {
                 debug_assert_single_threaded();
 
                 // This function call must occur here, at the top of the child
@@ -976,7 +1028,7 @@ impl Server {
         fd: RawFd,
         socket_path: String,
         message_buffer: MessageBuffer,
-    ) -> LoopControl<ClientControlResult<Thunk>> {
+    ) -> LoopControl<ServerControlResult<Thunk, ClientError>> {
         let re_init_data = self.species.gather_reinitialization_data();
         // Creating local copies avoids capturing additional references.
         let species: SpeciesRef = self.species;
@@ -993,7 +1045,7 @@ impl Server {
                 .map_err(|_| ClientError::Reinitialization)?;
 
             species.speciate(spawn_payload);
-            Ok(ClientControl::Break)
+            Ok(ServerControl::PollBreak)
         })
     }
 
@@ -1001,7 +1053,7 @@ impl Server {
     fn handle_message_stat<Thunk: FnOnce() -> Infallible>(
         &mut self,
         fd: RawFd,
-    ) -> LoopControl<ClientControlResult<Thunk>> {
+    ) -> LoopControl<ServerControlResult<Thunk, ClientError>> {
         let proc = match ProcStat::get() {
             Ok(proc) => proc,
             Err(err) => {
@@ -1026,11 +1078,11 @@ impl Server {
         match sys::sendmsg(fd, response.to_parcel().finished_data()) {
             Ok(_) => {
                 // Continue the `recvmsg` loop
-                Continue
+                LoopControl::Continue
             }
             Err(error) => {
                 error!("Failed to send Stat response: {error}");
-                Break(Err(ClientError::StatResponse(fd, error)))
+                LoopControl::Break(Err(ClientError::StatResponse(fd, error)))
             }
         }
     }
@@ -1079,6 +1131,7 @@ impl Server {
 
     fn remove_client_socket(&mut self, fd: RawFd) -> ClientResult<()> {
         self.registry.remove(fd)?;
+        self.epoll_handle.remove(fd).map_err(ClientError::Poll)?;
         self.client_sockets.remove(
             self.client_sockets
                 .iter()
@@ -1099,14 +1152,15 @@ impl Server {
     pub fn serve(&mut self) -> ServerResult<Option<impl FnOnce() -> Infallible + use<>>> {
         self.species.on_server_ready();
 
+        let mut event_buf = [EpollEvent::new(0, u64::MAX); BUFFER_SIZE_EPOLL_EVENTS];
+
         loop {
-            let mut poll_array = PollBuffer::from(&*self);
+            let num_ready =
+                self.epoll_handle.wait(&mut event_buf, -1).map_err(ServerError::Poll)?;
 
-            // Discard the number of ready file descriptors for now.
-            sys::poll(&mut poll_array, -1).map_err(ServerError::Poll)?;
-
-            match self.check_poll_events(poll_array.partition())? {
-                ServerControl::Continue => {}
+            // TODO: Dump the file descriptor table before returning an Err.
+            match self.check_epoll_events(&event_buf[..num_ready])? {
+                ServerControl::PollContinue | ServerControl::PollBreak => {}
                 ServerControl::Shutdown => {
                     return Ok(None);
                 }
