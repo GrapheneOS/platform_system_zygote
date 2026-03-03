@@ -147,7 +147,11 @@ pub(crate) fn re_initialize(
 
 /// Rename the process.
 pub(crate) fn set_new_process_name(new_name: &CStr) {
-    sys::prctl_set_name(new_name.to_bytes());
+    // Use the last 15 characters as the thread name to match the behavior of
+    // AndroidRuntime::setArgv0. Some vendors may rely on it.
+    let name_bytes = new_name.to_bytes();
+    let start_idx = name_bytes.len().saturating_sub(sys::TASK_COMM_LEN - 1);
+    sys::prctl_set_name(&name_bytes[start_idx..]);
 
     let arg = ARG.lock().unwrap();
     if let Some(arg) = arg.as_ref() {

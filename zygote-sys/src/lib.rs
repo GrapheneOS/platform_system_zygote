@@ -1464,11 +1464,14 @@ pub fn poll(pollfds: &mut [PollFd], timeout: c_int) -> Result<c_int> {
     })
 }
 
+/// The length of the command name defined in include/linux/sched.h.
+pub const TASK_COMM_LEN: usize = 16;
+
 /// A safe wrapper around the [`libc::prctl`] `PR_SET_NAME` operation.
 ///
 /// See: `man PR_SET_NAME`
 pub fn prctl_set_name<S: AsRef<[u8]> + ?Sized>(name: &S) {
-    let mut name_buffer = [0u8; 16];
+    let mut name_buffer = [0u8; TASK_COMM_LEN];
     let copy_len = std::cmp::min(name.as_ref().len(), name_buffer.len() - 1);
     name_buffer[..copy_len].copy_from_slice(&name.as_ref()[..copy_len]);
 
