@@ -85,12 +85,12 @@ fn gen_unmarshal_struct(ast: &DeriveInput) -> TokenStream {
                     name.span(),
                     "Unmarshalable can only be derived for structs with named fields.",
                 )
-                .to_compile_error()
+                .to_compile_error();
             }
         },
         _ => {
             return syn::Error::new(name.span(), "Unmarshalable can only be derived for structs.")
-                .to_compile_error()
+                .to_compile_error();
         }
     };
     let field_values = fields_named.iter().map(|field| gen_field_value(field, &quote! { source }));
@@ -116,7 +116,7 @@ fn gen_from_parcel(ast: &DeriveInput) -> TokenStream {
         Data::Enum(data) => &data.variants,
         _ => {
             return syn::Error::new(name.span(), "Parcelable can only be derived for enums")
-                .to_compile_error()
+                .to_compile_error();
         }
     };
     let unmarshal_arms = variants
@@ -173,7 +173,7 @@ fn gen_unmarshal_from(ast: &DeriveInput, source_type: &Type, field_name: &Ident)
         Data::Enum(data) => &data.variants,
         _ => {
             return syn::Error::new(name.span(), "Parcelable can only be derived for enums")
-                .to_compile_error()
+                .to_compile_error();
         }
     };
     let unmarshal_arms =
@@ -275,12 +275,12 @@ pub(crate) fn gen_flatten_unmarshal_parcel(ast: &DeriveInput) -> TokenStream {
                     name.span(),
                     "FlattenParcel can only be derived for structs with named fields.",
                 )
-                .to_compile_error()
+                .to_compile_error();
             }
         },
         _ => {
             return syn::Error::new(name.span(), "FlattenParcel can only be derived for structs.")
-                .to_compile_error()
+                .to_compile_error();
         }
     };
     let field_values =
