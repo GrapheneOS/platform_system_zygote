@@ -1040,11 +1040,10 @@ impl Server {
                 message.get_spawn_payload().ok_or(ClientError::MissingSpawnPayload)?;
             child_process::re_initialize(species, re_init_data, &spawn_params, spawn_payload);
 
+            species.speciate(spawn_payload);
             server
                 .re_initialize_as_subspecies(socket_path)
                 .map_err(|_| ClientError::Reinitialization)?;
-
-            species.speciate(spawn_payload);
             Ok(ServerControl::PollBreak)
         })
     }
