@@ -134,6 +134,7 @@ pub trait Species: std::fmt::Debug {
     fn re_initialize_prologue(
         &self,
         spawn_params: &SpawnParamsCommon,
+        spawn_payload: &SpawnPayload,
         re_init_data: &ReInitWrapper,
     );
 

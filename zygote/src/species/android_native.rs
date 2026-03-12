@@ -154,7 +154,6 @@ impl Species for App {
     fn gather_reinitialization_data(&self) -> super::ReInitWrapper {
         debug_assert_single_threaded();
 
-        // TODO: Add TopApp information
         super::ReInitWrapper::AndroidNative(ReInitData {
             // SAFETY: This is called in a single-threaded context
             fds_error_level: unsafe { android::process::fdsan_get_error_level() },
@@ -274,6 +273,7 @@ impl Species for App {
     fn re_initialize_prologue(
         &self,
         spawn_params: &SpawnParamsCommon,
+        spawn_payload: &SpawnPayload,
         re_init_data: &super::ReInitWrapper,
     ) {
         debug_assert_single_threaded();
@@ -305,16 +305,24 @@ impl Species for App {
             .expect("Unable to create cgroup for process");
         }
 
+        let policy = if let SpawnPayload::AndroidNative { top_app, .. } = spawn_payload {
+            if *top_app {
+                SchedPolicy::TopApp
+            } else {
+                SchedPolicy::Default
+            }
+        } else {
+            SchedPolicy::Default
+        };
+
         // Set the cpuset policy and panic on failure
         if cpusets_enabled() {
-            sys::android::set_cpuset_policy(0, SchedPolicy::Default)
-                .expect("Failed to set cpuset policy");
+            sys::android::set_cpuset_policy(0, policy).expect("Failed to set cpuset policy");
         }
 
         // Set the scheduling policy and panic on failure.  Must be called
         // before losing the permission to set scheduler policy.
-        sys::android::set_sched_policy(0, SchedPolicy::Default)
-            .expect("Failed to set scheduler policy");
+        sys::android::set_sched_policy(0, policy).expect("Failed to set scheduler policy");
 
         // We are going to lose the permission to set scheduler policy during
         // the specialization, so make sure that we don't cache the fd of
