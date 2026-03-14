@@ -469,6 +469,8 @@ pub enum SpawnPayload<'a> {
         target_sdk_version: i32,
         /// Additional flags for the runtime.
         runtime_flags: u32,
+        /// Whether or not to run the process as top-app.
+        top_app: bool,
     },
     /// Spawn data for the subspecies Zygote
     #[inner_type_name = "SpawnSubspeciesAndroidNative"]
@@ -591,6 +593,9 @@ pub enum SpawnPayloadParser {
         /// Additional flags for the runtime.
         #[arg(required(true))]
         runtime_flags: u32,
+        /// Whether or not to run the process as top-app.
+        #[arg(required(true))]
+        top_app: bool,
     },
     /// Request the creation of a subspecies Zygote process
     #[cfg(all(target_os = "android", feature = "android-native"))]
@@ -658,11 +663,13 @@ impl SpawnPayloadParser {
                 start_seq,
                 target_sdk_version,
                 runtime_flags,
+                top_app,
             } => Ok(SpawnPayload::AndroidNative {
                 package: package.as_str(),
                 start_seq: *start_seq,
                 target_sdk_version: *target_sdk_version,
                 runtime_flags: *runtime_flags,
+                top_app: *top_app,
             }),
             #[cfg(all(target_os = "android", feature = "android-native"))]
             SpawnPayloadParser::AndroidNativeSubspecies {
