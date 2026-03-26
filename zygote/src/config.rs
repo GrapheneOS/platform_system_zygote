@@ -102,6 +102,10 @@ pub struct Server {
     /// Secondary group IDs for the new process
     #[arg(long)]
     pub secondary_groups: Vec<libc::gid_t>,
+
+    /// Non-meaningful argument to expand the argument buffer
+    #[arg(long)]
+    pub arg_buf_padding: Option<String>,
 }
 
 impl Server {
