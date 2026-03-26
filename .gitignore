@@ -3,3 +3,6 @@
 
 /Cargo.lock
 /rustfmt.toml
+
+/.gemini/.env
+/.gemini/thoughts
