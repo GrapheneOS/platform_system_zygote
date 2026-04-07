@@ -41,7 +41,7 @@ use zygote_sys::{
     procfs::{self, debug_assert_single_threaded, get_proc_fd_path, ProcStat},
     EpollEvent, EpollHandle,
     LoopControl::{self, *},
-    LoopExit, TaskFailure,
+    LoopExit, TaskFailure, WaitId,
 };
 
 const BUFFER_SIZE_CLIENT_SOCKETS: usize = 16;
@@ -710,29 +710,34 @@ impl Server {
             &mut |siginfo: libc::signalfd_siginfo| {
                 match siginfo.ssi_signo as i32 {
                     libc::SIGCHLD => {
-                        let pid = siginfo.ssi_pid as libc::pid_t;
-                        info!(
-                            "Received SIGCHLD from PID {} with status {}",
-                            pid, siginfo.ssi_status
-                        );
+                        loop {
+                            match sys::waitid(WaitId::All, libc::WEXITED | libc::WNOHANG) {
+                                Ok(Some(siginfo)) => {
+                                    // SAFETY: We know this is a `SIGCHLD` info struct
+                                    //         with PID, status, and UID fields.
+                                    let (pid, status, uid) = unsafe {
+                                        (siginfo.si_pid(), siginfo.si_status(), siginfo.si_uid())
+                                    };
 
-                        match sys::waitpid(Some(pid), libc::WNOHANG) {
-                            Ok(Some((ret_pid, status))) => {
-                                // We provide an exact PID so we should
-                                // always receive the same PID as the
-                                // result.
-                                debug_assert_eq!(ret_pid, pid);
-
-                                self.species.handle_sigchld(
-                                    pid,
-                                    siginfo.ssi_uid,
-                                    siginfo.ssi_status,
-                                );
-                                info!("Child process {} terminated with status {:?}", pid, status);
-                                Ok(Continue)
+                                    self.species.handle_sigchld(
+                                        pid,
+                                        uid,
+                                        sys::raw_status_from_siginfo(siginfo)
+                                            .map_err(SignalHandlerError::ProcessAccounting)?,
+                                    );
+                                    info!(
+                                        "Child process {} terminated with status {:?}",
+                                        pid, status
+                                    );
+                                }
+                                Ok(None) => return Ok(Continue),
+                                Err(sys::Error::Libc(errno)) if errno.is(libc::ECHILD) => {
+                                    // This happens when we there are no
+                                    // children to wait for during the loop.
+                                    return Ok(Continue);
+                                }
+                                Err(err) => Err(SignalHandlerError::ProcessAccounting(err))?,
                             }
-                            Ok(None) => Ok(Continue),
-                            Err(error) => Err(SignalHandlerError::ProcessAccounting(error)),
                         }
                     }
                     libc::SIGINT => {
