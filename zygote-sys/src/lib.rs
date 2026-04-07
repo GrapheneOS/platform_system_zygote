@@ -17,11 +17,10 @@
 
 use core::{
     ffi::{c_char, c_int, c_short, c_uint, c_void, CStr, FromBytesUntilNulError},
-    mem::{self, offset_of},
+    mem::{self, MaybeUninit},
 };
 use std::{
     fmt::{self, Debug, Display, Formatter},
-    mem::MaybeUninit,
     os::fd::RawFd,
     ptr::{self, NonNull},
 };
@@ -67,7 +66,7 @@ pub type which_t = c_int;
 pub const BUFFER_SIZE_STRINGS: usize = 512;
 const_assert!(
     BUFFER_SIZE_STRINGS
-        >= std::mem::size_of::<libc::sockaddr_un>() - offset_of!(libc::sockaddr_un, sun_path)
+        >= mem::size_of::<libc::sockaddr_un>() - mem::offset_of!(libc::sockaddr_un, sun_path)
 );
 
 // TODO: Consider making this an ArrayVec
@@ -206,6 +205,15 @@ pub enum Error {
     /// C-style string was not nul-terminated
     #[error("Invalid C string")]
     InvalidCString(#[from] FromBytesUntilNulError),
+
+    /// An invalid [`libc::siginfo_t`] struct was passed to a function.
+    #[error("Invalid siginfo; received struct for signal {0:?} but expected signal {1:?}")]
+    InvalidSiginfo(c_int, c_int),
+
+    /// A [`libc::siginfo_t`] struct for a [`libc::SIGCHLD`] event contained an
+    /// invalid `si_code` value.
+    #[error("Invalid siginfo code: {0}")]
+    InvalidSiginfoCode(c_int),
 
     /// An invalid wait state was provided by the caller
     #[error("Invalid wait status: {0}")]
@@ -640,7 +648,7 @@ pub fn abstract_socket_address(
     socket_addr.sun_path[1..name_view.len() + 1]
         .copy_from_slice(<[c_char]>::ref_from_bytes(name_view)?);
 
-    let socklen = offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
+    let socklen = mem::offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
 
     Ok(SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t })
 }
@@ -657,7 +665,7 @@ pub fn bound_socket_address(
     socket_addr.sun_path[0..name_view.len()]
         .copy_from_slice(<[c_char]>::ref_from_bytes(name_view)?);
 
-    let socklen = offset_of!(libc::sockaddr_un, sun_path) + path.len();
+    let socklen = mem::offset_of!(libc::sockaddr_un, sun_path) + path.len();
 
     Ok(SocketAddr { address: socket_addr, socklen: socklen as libc::socklen_t })
 }
@@ -825,7 +833,7 @@ pub fn get_socket_creds(fd: RawFd) -> Result<libc::ucred> {
 /// returned with the `code` set to 0.
 pub fn read_exact<T: LibcFromBytes>(fd: RawFd) -> Result<T> {
     read::<T>(fd).and_then(|(read_len, result)| {
-        if read_len == std::mem::size_of::<T>() as isize {
+        if read_len == mem::size_of::<T>() as isize {
             Ok(result)
         } else {
             Err(Error::Libc(Errno { code: 0 }))
@@ -1282,7 +1290,7 @@ pub fn getrlimit(resource: rlimit_resource_t) -> Result<libc::rlimit> {
 /// See: `man getsockopt`
 pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> Result<T> {
     let mut optval = MaybeUninit::<T>::zeroed();
-    let mut optlen = std::mem::size_of::<T>() as libc::socklen_t;
+    let mut optlen = mem::size_of::<T>() as libc::socklen_t;
 
     check_failure_with_payload(
         // SAFETY: The `optval` and `optlen` arguments are valid pointers to
@@ -1308,8 +1316,8 @@ pub fn getsockopt<T: LibcFromBytes>(fd: RawFd, level: c_int, optname: c_int) -> 
 ///
 /// See: `man getsockname`
 pub fn getsockname(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
-    let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
-    let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    let mut addr = mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
+    let mut addr_len = mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
     // SAFETY: The address buffer pointer is guaranteed to reference valid
     //         memory that has been zeroed out.  This ensures that the any
@@ -1318,9 +1326,9 @@ pub fn getsockname(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
     //         Result.
     check_failure(unsafe { libc::getsockname(fd, addr.as_mut_ptr().cast(), &mut addr_len) })?;
 
-    debug_assert!(addr_len <= std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
+    debug_assert!(addr_len <= mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
 
-    if addr_len as usize == std::mem::size_of::<libc::sa_family_t>() {
+    if addr_len as usize == mem::size_of::<libc::sa_family_t>() {
         return Ok(None);
     }
 
@@ -1333,7 +1341,7 @@ pub fn getsockname(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
         return Ok(None);
     }
 
-    let path_len = addr_len as usize - offset_of!(libc::sockaddr_un, sun_path);
+    let path_len = addr_len as usize - mem::offset_of!(libc::sockaddr_un, sun_path);
 
     Ok(Some((addr, path_len)))
 }
@@ -1344,8 +1352,8 @@ pub fn getsockname(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
 ///
 /// See: `man getpeername`
 pub fn getpeername(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
-    let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
-    let mut addr_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    let mut addr = mem::MaybeUninit::<libc::sockaddr_un>::zeroed();
+    let mut addr_len = mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
 
     // SAFETY: The address buffer pointer is guaranteed to reference valid
     //         memory that has been zeroed out.  This ensures that the any
@@ -1359,9 +1367,9 @@ pub fn getpeername(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
     //         strings.
     let addr = unsafe { addr.assume_init() };
 
-    debug_assert!(addr_len <= std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
+    debug_assert!(addr_len <= mem::size_of::<libc::sockaddr_un>() as libc::socklen_t);
 
-    if addr_len as usize == std::mem::size_of::<libc::sa_family_t>() {
+    if addr_len as usize == mem::size_of::<libc::sa_family_t>() {
         return Ok(None);
     }
 
@@ -1369,7 +1377,7 @@ pub fn getpeername(fd: RawFd) -> Result<Option<(libc::sockaddr_un, usize)>> {
         return Ok(None);
     }
 
-    let path_len = addr_len as usize - offset_of!(libc::sockaddr_un, sun_path);
+    let path_len = addr_len as usize - mem::offset_of!(libc::sockaddr_un, sun_path);
 
     Ok(Some((addr, path_len)))
 }
@@ -1534,7 +1542,7 @@ pub fn read<T: LibcFromBytes>(fd: RawFd) -> Result<(isize, T)> {
     //         calculated using `size_of()`.  The return value is checked and
     //         wrapped in a Result.
     retry_eintr!(check_failure(unsafe {
-        libc::read(fd, buffer.as_mut_ptr() as *mut c_void, std::mem::size_of::<T>())
+        libc::read(fd, buffer.as_mut_ptr() as *mut c_void, mem::size_of::<T>())
     }))
     // SAFETY: The buffer was zero-initialized when it was allocated.  The call
     //         to `libc::read` will have rewritten the first `retval` bytes of
@@ -1570,7 +1578,7 @@ pub fn readlink(path_name: &CStr) -> Result<CStringBuffer> {
             libc::readlink(
                 path_name.as_ptr(),
                 link_buffer.as_mut_ptr().cast(),
-                std::mem::size_of::<CStringBuffer>(),
+                mem::size_of::<CStringBuffer>(),
             )
         },
         |_| link_buffer,
@@ -1786,65 +1794,196 @@ pub fn unlink(path: &CStr) -> Result<()> {
 
 /// The status of a waited-for child process.
 #[derive(Debug, Eq, PartialEq)]
-pub enum WaitStatus {
-    /// The child exited normally with the given exit code.
-    Exited(c_int),
-    /// The child was terminated by the given signal.
-    Signaled(c_int),
-    /// The child was stopped by the given signal.
-    Stopped(c_int),
+pub enum WaitRecord {
     /// The child was continued.
     Continued,
-    /// The child is a job control stop and has been traced.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    PtraceEvent(c_int),
-    /// The child is a job control stop and has been traced.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    PtraceSyscall,
+    /// The child exited normally.
+    Exited {
+        /// The exit status
+        status: c_int,
+    },
+    /// The child was terminated by a signal.
+    Signaled {
+        /// The signal number
+        signal: c_int,
+    },
+    /// The child was stopped.
+    Stopped {
+        /// The signal number
+        signal: c_int,
+        /// The event status
+        status: c_int,
+    },
 }
 
-impl WaitStatus {
-    fn from_status(status: c_int) -> Result<Self> {
+impl WaitRecord {
+    /// Build a record from a `siginfo` struct.
+    pub fn try_from_siginfo(siginfo: libc::siginfo_t) -> Result<Self> {
+        if siginfo.si_signo != libc::SIGCHLD {
+            return Err(Error::InvalidSiginfo(siginfo.si_signo, libc::SIGCHLD));
+        }
+
+        match siginfo.si_code {
+            libc::CLD_EXITED => {
+                // SAFETY: `si_status` is a valid field for exited processes.
+                Ok(Self::Exited { status: unsafe { siginfo.si_status() } })
+            }
+            libc::CLD_KILLED | libc::CLD_DUMPED => {
+                // SAFETY: `si_status` contains the signal for killed or dumped
+                //         processes.
+                Ok(Self::Signaled { signal: unsafe { siginfo.si_status() } })
+            }
+            libc::CLD_STOPPED | libc::CLD_TRAPPED => {
+                // SAFETY: `si_status` is a valid field for stopped or trapped
+                //         processes.
+                let status = unsafe { siginfo.si_status() };
+
+                Ok(Self::Stopped { signal: status & 0xff, status: status >> 8 })
+            }
+            libc::CLD_CONTINUED => Ok(Self::Continued),
+            _ => Err(Error::InvalidSiginfoCode(siginfo.si_code)),
+        }
+    }
+
+    /// Build a record from the status number returned from `waitpid`.
+    pub fn try_from_status(status: c_int) -> Result<Self> {
         if libc::WIFEXITED(status) {
-            Ok(WaitStatus::Exited(libc::WEXITSTATUS(status)))
+            Ok(Self::Exited { status: libc::WEXITSTATUS(status) })
         } else if libc::WIFSIGNALED(status) {
-            Ok(WaitStatus::Signaled(libc::WTERMSIG(status)))
+            Ok(Self::Signaled { signal: libc::WTERMSIG(status) })
         } else if libc::WIFSTOPPED(status) {
-            Ok(Self::from_stop_signal(status))
+            Ok(Self::Stopped { signal: libc::WSTOPSIG(status), status: status >> 16 })
         } else if libc::WIFCONTINUED(status) {
-            Ok(WaitStatus::Continued)
+            Ok(Self::Continued)
         } else {
             Err(Error::InvalidWaitStatus(status))
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn from_stop_signal(status: c_int) -> Self {
-        let stop_signal = libc::WSTOPSIG(status);
-        if stop_signal == libc::SIGTRAP | 0x80 {
-            // According to `man 2 ptrace`, setting PTRACE_O_TRACESYSGOOD
-            // deliveres SIGTRAP | 0x80 as the signal number for syscall stop,
-            // making it easy for the tracer to distinguish normal SIGTRAPs from
-            // those caused by a system call.
-            WaitStatus::PtraceSyscall
-        } else if stop_signal == libc::SIGTRAP && status >> 16 != 0 {
-            // As per `man 2 ptrace`:
-            //   PTRACE_EVENT stops are observed by the tracer as waitpid(2)
-            //   returning with WIFSTOPPED(status), and WSTOPSIG(status) returns
-            //   SIGTRAP (or for PTRACE_EVENT_STOP, returns the stopping signal
-            //   if tracee is in a group-stop).  An additional bit is set in the
-            //   higher byte of the status word: the value status>>8 will be
-            //   ((PTRACE_EVENT_foo<<8) | SIGTRAP).
-            WaitStatus::PtraceEvent(status >> 16)
-        } else {
-            WaitStatus::Stopped(stop_signal)
+    /// Checks the record to determine if it represents a ptrace syscall.
+    //
+    // According to `man 2 ptrace`, setting PTRACE_O_TRACESYSGOOD
+    // deliveres SIGTRAP | 0x80 as the signal number for syscall stop,
+    // making it easy for the tracer to distinguish normal SIGTRAPs from
+    // those caused by a system call.
+    pub fn is_ptrace_syscall(&self) -> bool {
+        match self {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            Self::Stopped { signal, .. } => *signal == libc::SIGTRAP | 0x80,
+            _ => false,
         }
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "linux")))]
-    fn from_stop_signal(status: c_int) -> Self {
-        let stop_signal = libc::WSTOPSIG(status);
-        WaitStatus::Stopped(stop_signal)
+    /// Checks the record to determine if it represents a ptrace event.
+    //
+    // As per `man 2 ptrace`:
+    //   PTRACE_EVENT stops are observed by the tracer as waitpid(2)
+    //   returning with WIFSTOPPED(status), and WSTOPSIG(status) returns
+    //   SIGTRAP (or for PTRACE_EVENT_STOP, returns the stopping signal
+    //   if tracee is in a group-stop).  An additional bit is set in the
+    //   higher byte of the status word: the value status>>8 will be
+    //   ((PTRACE_EVENT_foo<<8) | SIGTRAP).
+    pub fn is_ptrace_event(&self) -> Option<c_int> {
+        match self {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            Self::Stopped { signal, status } => {
+                if *signal == libc::SIGTRAP && *status != 0 {
+                    Some(*status)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Build a status integer from a [`libc::siginfo_t`] struct.
+pub fn raw_status_from_siginfo(siginfo: libc::siginfo_t) -> Result<c_int> {
+    if siginfo.si_signo != libc::SIGCHLD {
+        return Err(Error::InvalidSiginfo(siginfo.si_signo, libc::SIGCHLD));
+    }
+
+    match siginfo.si_code {
+        libc::CLD_EXITED => {
+            // Normal exit: return code goes in the upper byte, 0 for signal
+            // SAFETY: `si_status` is a valid field for exited processes.
+            Ok(libc::W_EXITCODE(unsafe { siginfo.si_status() }, 0))
+        }
+        libc::CLD_KILLED => {
+            // Killed by signal: 0 for return code, signal number in the lower 7 bits
+            // SAFETY: `si_status` contains the signal for killed processes.
+            Ok(libc::W_EXITCODE(0, unsafe { siginfo.si_status() } & 0x7f))
+        }
+        libc::CLD_DUMPED => {
+            // Killed with core dump: signal number in lower 7 bits, 8th bit (0x80) set
+            // SAFETY: `si_status` contains the signal for dumped processes.
+            Ok(libc::W_EXITCODE(0, (unsafe { siginfo.si_status() } & 0x7f) | 0x80))
+        }
+        libc::CLD_STOPPED | libc::CLD_TRAPPED => {
+            // Stopped: W_STOPCODE handles shifting the signal to the upper byte
+            // and placing 0x7f in the lower byte automatically
+            // SAFETY: `si_status` contains the signal for stopped processes.
+            Ok(libc::W_STOPCODE(unsafe { siginfo.si_status() }))
+        }
+        libc::CLD_CONTINUED => {
+            // Continued: Special 0xffff value
+            Ok(0xffff)
+        }
+        _ => Err(Error::InvalidSiginfoCode(siginfo.si_code)),
+    }
+}
+
+/// A proxy ID type for use with [`waitid`].
+pub enum WaitId {
+    /// Wait for any process
+    All,
+    /// Wait for a process specified by PID
+    Pid(libc::pid_t),
+    /// Wait for a process specified by a PIDFD
+    PidFd(RawFd),
+    /// Wait for any process in the specified process group
+    Pgid(libc::pid_t),
+}
+
+impl WaitId {
+    fn to_args(&self) -> (libc::idtype_t, libc::id_t) {
+        match self {
+            WaitId::All => (libc::P_ALL, 0),
+            WaitId::Pid(pid) => (libc::P_PID, *pid as u32),
+            WaitId::PidFd(pid_fd) => (libc::P_PIDFD, *pid_fd as u32),
+            WaitId::Pgid(pgid) => (libc::P_PGID, *pgid as u32),
+        }
+    }
+}
+
+/// A safe wrapper around [`libc::waitid`].
+///
+/// The [`libc::EINTR`] signal is handled internally using the [`retry_eintr!`]
+/// macro.
+///
+/// See: `man waitid`
+pub fn waitid(id: WaitId, options: c_int) -> Result<Option<libc::siginfo_t>> {
+    // SAFETY: This is an output struct and the system call will only write to
+    //         it, meaning that any input bit pattern is valid.  Zeroing it is
+    //         best practices and the struct's private fields means that this
+    //         is the only valid way to do that.
+    let mut status: libc::siginfo_t = unsafe { mem::zeroed() };
+    let (id_type, id) = id.to_args();
+
+    retry_eintr!(check_failure(
+        // SAFETY: `&mut status` is a valid mutable pointer to a
+        //         stack-allocated `libc::siginfo_t`.  The return value is
+        //         immediately checked for errors.
+        unsafe { libc::waitid(id_type, id, &mut status, options) }
+    ))?;
+
+    // SAFETY: `waitid` always returns a `SIGCHLD` `siginfo_t` value.
+    if unsafe { status.si_pid() } == 0 {
+        // This occurs when WNOHANG is specified and no child has changed state.
+        Ok(None)
+    } else {
+        Ok(Some(status))
     }
 }
 
@@ -1857,7 +1996,7 @@ impl WaitStatus {
 pub fn waitpid(
     pid: Option<libc::pid_t>,
     options: c_int,
-) -> Result<Option<(libc::pid_t, WaitStatus)>> {
+) -> Result<Option<(libc::pid_t, WaitRecord)>> {
     let mut status = 0;
     let pid_arg = pid.unwrap_or(-1);
     let result = retry_eintr!(check_failure(
@@ -1868,8 +2007,8 @@ pub fn waitpid(
 
     if result == 0 {
         // This occurs when WNOHANG is specified and no child has changed state.
-        return Ok(None);
+        Ok(None)
+    } else {
+        Ok(Some((result, WaitRecord::try_from_status(status)?)))
     }
-
-    Ok(Some((result, WaitStatus::from_status(status)?)))
 }
