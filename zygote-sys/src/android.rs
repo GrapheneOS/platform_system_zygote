@@ -59,14 +59,16 @@ pub fn set_selinux_context(
     is_system_server: bool,
     se_info: &CStr,
     name: &CStr,
+    selinux_flags: u64,
 ) -> Result<()> {
     // SAFETY: Both `seinfo` and `name` are valid, null-terminated, C-strings
     check_failure_with_void(unsafe {
-        selinux_bindgen::selinux_android_setcontext(
+        selinux_bindgen::selinux_android_setcontext2(
             uid,
             is_system_server,
             se_info.as_ptr(),
             name.as_ptr(),
+            selinux_flags,
         )
     })
 }
