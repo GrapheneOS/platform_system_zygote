@@ -180,6 +180,10 @@ fn unmarshal_string(s: &Option<&str>) -> Option<String> {
 #[derive(Debug, Clone, MarshalParcel, UnmarshalParcel)]
 #[inner_type_name = "SpawnCommon"]
 pub struct SpawnParamsCommon {
+    /// GrapheneOS SELinux flags, see frameworks/base/core/java/com/android/internal/os/SELinuxFlags.java
+    #[marshal(default = 0)]
+    #[unmarshal(valid_range = (0..))]
+    pub selinux_flags: Option<u64>,
     /// UID for the new process
     #[marshal(default = -1)]
     #[unmarshal(valid_range = (1..))]
@@ -236,6 +240,7 @@ impl SpawnParamsCommon {
     /// Take optional arguments from `other` if the are missing from `self`
     pub fn or(&self, other: &Self) -> SpawnParamsCommon {
         SpawnParamsCommon {
+            selinux_flags: self.selinux_flags.or(other.selinux_flags),
             uid: self.uid.or(other.uid),
             gid: self.gid.or(other.gid),
             process_name: self.process_name.clone().or(other.process_name.clone()),
@@ -529,6 +534,8 @@ pub enum SpawnPayload<'a> {
 #[derive(Debug, Args)]
 #[command(rename_all = "verbatim")]
 pub struct SpawnCommonParser {
+    #[arg(long)]
+    selinux_flags: Option<u64>,
     /// UID for the new process
     #[arg(long)]
     uid: Option<i32>,
@@ -558,6 +565,7 @@ impl SpawnCommonParser {
     /// Construct a [`SpawnCommon`] from this enum
     pub fn to_spawn_common(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
+            selinux_flags: self.selinux_flags,
             uid: self.uid,
             gid: self.gid,
             process_name: self.process_name.clone(),

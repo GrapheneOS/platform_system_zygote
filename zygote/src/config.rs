@@ -77,6 +77,9 @@ pub struct Server {
     /*
      * Common Spawn Parameters
      */
+    /// GrapheneOS SELinux flags, see frameworks/base/core/java/com/android/internal/os/SELinuxFlags.java 
+    #[arg(long)]
+    selinux_flags: Option<u64>,
     /// UID to switch to
     #[arg(long)]
     pub uid: Option<i32>,
@@ -134,6 +137,7 @@ impl Server {
     /// Generate spawn parameters from a Server configuration
     pub(crate) fn to_spawn_params(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
+            selinux_flags: self.selinux_flags,
             uid: self.uid,
             gid: self.gid,
             process_name: self.process_name.clone(),

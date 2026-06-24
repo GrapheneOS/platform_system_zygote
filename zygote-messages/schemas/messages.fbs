@@ -59,6 +59,7 @@ union SpawnPayload {
 }
 
 table SpawnCommon {
+    selinux_flags: uint64;
     uid: int32;
     gid: int32;
 

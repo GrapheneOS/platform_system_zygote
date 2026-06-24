@@ -266,6 +266,7 @@ impl Species for App {
             false,
             se_info_buffer.as_cstr().expect("se_info_buffer should be null-terminated"),
             process_name_buffer.as_cstr().expect("process_name_buffer should be null-terminated"),
+            spawn_params.selinux_flags.expect("no selinux_flags"),
         )
         .expect("Unable to transition SE Linux contexts");
     }
