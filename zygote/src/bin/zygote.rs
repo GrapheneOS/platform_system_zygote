@@ -19,6 +19,8 @@
 //! forking child processes.
 
 use std::convert::Infallible;
+use std::io::Read;
+use std::os::fd::FromRawFd;
 
 use anyhow::Result;
 use clap::Parser;
@@ -28,7 +30,31 @@ use zygote_sys as sys;
 
 #[allow(unreachable_code)]
 fn main() -> Result<()> {
-    if let Some(thunk) = run_server()? {
+    let config = zygote::config::Server::parse();
+    if let Some(cmd_fd_arg) = &config.command_fd {
+        server::set_exec_spawning();
+        log::info!("Beginning of exec spawning sequence");
+
+        let _trace_guard =
+            zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
+        config.species.on_start();
+
+        let mut msg_bytes = zygote_messages::MESSAGE_BUFFER_INIT;
+        {
+            let separator_idx = cmd_fd_arg.find('_').expect("cmd_fd_arg separator is missing");
+            let cmd_fd = cmd_fd_arg[..separator_idx].parse::<i32>()?;
+            // SAFETY: cmd_fd is passed by a trusted caller
+            let mut cmd_file = unsafe { std::fs::File::from_raw_fd(cmd_fd) };
+            let cmd_fd_len = cmd_fd_arg[separator_idx + 1..].parse::<usize>()?;
+            cmd_file.read_exact(&mut msg_bytes[0..cmd_fd_len])?;
+        }
+        let mut server = server::Server::new(&config).map_err(|error| {
+            log::error!("Error constructing server: {error}");
+            error
+        })?;
+
+        server.handle_message_exec_spawn(msg_bytes)?();
+    } else if let Some(thunk) = run_server(config)? {
         thunk();
     }
 
@@ -40,9 +66,8 @@ fn main() -> Result<()> {
 /// The server is constructed in, and the child-side thunk returned from, this
 /// frame to ensure that the configuration and server resources are dropped
 /// before the thunk is evaluated.
-fn run_server(
+fn run_server(config: zygote::config::Server
 ) -> std::result::Result<Option<impl FnOnce() -> Infallible>, zygote::server::ServerError> {
-    let config = zygote::config::Server::parse();
     let _trace_guard =
         zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
     config.species.on_start();

@@ -31,6 +31,7 @@ use rustutils::android;
 
 use crate::{
     file_descriptors::Action as FDAction,
+    server,
     species::{AllowListEntry, Species, SpeciesTag},
 };
 use zygote_messages::{self as messages, SpawnParamsCommon, SpawnPayload};
@@ -184,13 +185,31 @@ impl Species for App {
 
     fn gestate(&self, _spawn_params: &SpawnParamsCommon, spawn_payload: &SpawnPayload) -> ! {
         if let SpawnPayload::AndroidNative {
-            start_seq, target_sdk_version, runtime_flags, ..
+            preloading_cmd, start_seq, target_sdk_version, runtime_flags, ..
         } = spawn_payload
         {
             let scope_init =
                 tracing::span!(tracing::Level::TRACE, "AndroidNative::App::gestate").entered();
             app_process_init(*target_sdk_version, *runtime_flags);
             let _scope_init = scope_init.exit();
+
+            if server::is_exec_spawning() && let Some(cmd_bytes) = preloading_cmd {
+                let cmd = zygote_messages::parse_spawn_subspecies_android_native(cmd_bytes).unwrap();
+                log::info!("Exec spawning: calling preload_lib");
+                // SAFETY: see speciate() below
+                unsafe {
+                    preload_lib(
+                        cmd.library_path(),
+                        cmd.library_dirs(),
+                        cmd.permitted_library_paths(),
+                        cmd.target_sdk_version(),
+                        cmd.shared(),
+                        cmd.zip_path(),
+                        cmd.native_shared_lib_path(),
+                        cmd.preload_func(),
+                    );
+                };
+            }
 
             run_native_activity_thread(*start_seq);
         } else {
@@ -348,9 +367,11 @@ impl Species for App {
     }
 
     fn on_start(&self) {
-        let atom = statslog_native_zygote::native_zygote_started::NativeZygoteStarted {};
-        if let Err(err) = atom.stats_write() {
-            log::error!("Error logging the NativeZygoteStarted Atom: {err}");
+        if !server::is_exec_spawning() {
+            let atom = statslog_native_zygote::native_zygote_started::NativeZygoteStarted {};
+            if let Err(err) = atom.stats_write() {
+                log::error!("Error logging the NativeZygoteStarted Atom: {err}");
+            }
         }
 
         // Read the `ro.debuggable` property and cache it while the process is still allowed to read
