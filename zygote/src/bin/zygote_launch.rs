@@ -36,6 +36,10 @@ use zygote_messages::{
 /// Launch a new process using Zygote initialization logic
 #[derive(Debug, Parser)]
 pub struct Launch {
+    /// GrapheneOS SELinux flags, see frameworks/base/core/java/com/android/internal/os/SELinuxFlags.java
+    #[arg(long)]
+    pub selinux_flags: Option<u64>,
+
     /// Controls verbosity of logging; defaults to Warn; flag with no argument sets Debug
     #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
     pub log_level: log::LevelFilter,
@@ -92,6 +96,7 @@ impl Launch {
 
     fn to_spawn_params(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
+            selinux_flags: self.selinux_flags,
             uid: self.uid,
             gid: self.gid,
             process_name: self.process_name.clone(),
