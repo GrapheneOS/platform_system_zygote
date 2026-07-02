@@ -122,6 +122,7 @@ rust_binary {
     ],
     rustlibs: [
         "libzygote",
+        "libzygote_messages",
         "libzygote_sys",
     ],
     init_rc: [

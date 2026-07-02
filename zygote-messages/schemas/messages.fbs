@@ -21,6 +21,7 @@ table IdentityQueryResponse {
 }
 
 table SpawnAndroidNative {
+    preloading_cmd: [ubyte];
     package: string (required);
     start_seq: int64;
     target_sdk_version: int32;
@@ -57,6 +58,8 @@ union SpawnPayload {
     SpawnLibApp,
     SpawnMock,
 }
+
+root_type SpawnSubspeciesAndroidNative;
 
 table SpawnCommon {
     selinux_flags: uint64;

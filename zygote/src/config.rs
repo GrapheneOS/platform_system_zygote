@@ -39,6 +39,10 @@ const SOCKET_DIR_TMP: &str = "/tmp/socket";
 /// Zygote process server
 #[derive(Debug, Parser)]
 pub struct Server {
+    /// Exec spawning command
+    #[arg(long)]
+    pub command_fd: Option<String>,
+
     /// Controls verbosity of logging; defaults to Warn; flag with no argument sets Debug
     #[arg(long, alias("verbose"), short_alias('v'), num_args(0..=1), default_value("2"), default_missing_value("4"), value_parser(log_level_parser))]
     pub log_level: log::LevelFilter,

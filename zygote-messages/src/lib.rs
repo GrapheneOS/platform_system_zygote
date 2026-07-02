@@ -172,6 +172,16 @@ fn unmarshal_secondary_groups(
     groups.map(|group| group.iter().collect()).unwrap_or_default()
 }
 
+fn unmarshal_preloading_cmd<'a>(
+    cmd: &Option<flatbuffers::Vector<'a, u8>>,
+) -> Option<&'a [u8]> {
+    if let Some(vec) = cmd {
+        if vec.is_empty() { None } else { Some(vec.bytes()) }
+    } else {
+        None
+    }
+}
+
 fn unmarshal_string(s: &Option<&str>) -> Option<String> {
     s.map(|s| s.to_string())
 }
@@ -456,6 +466,11 @@ impl TryToParcel for MessageParser {
     }
 }
 
+/// Used by exec spawning to parse a zygote preloading command
+pub fn parse_spawn_subspecies_android_native(buffer: &[u8]) -> Result<inner::SpawnSubspeciesAndroidNative> {
+    Ok(flatbuffers::root::<inner::SpawnSubspeciesAndroidNative>(buffer)?)
+}
+
 /// Species-specific spawn data
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, MarshalParcel, UnmarshalParcel)]
@@ -465,6 +480,10 @@ pub enum SpawnPayload<'a> {
     /// Spawn data for [`species::android_native::App`]
     #[inner_type_name = "SpawnAndroidNative"]
     AndroidNative {
+        /// Zygote preloading command, used only by the exec spawning codepath
+        #[marshal(packed)]
+        #[unmarshal(map = unmarshal_preloading_cmd)]
+        preloading_cmd: Option<&'a [u8]>,
         /// Name of the package to start
         #[marshal(packed)]
         package: &'a str,
@@ -673,6 +692,7 @@ impl SpawnPayloadParser {
                 runtime_flags,
                 top_app,
             } => Ok(SpawnPayload::AndroidNative {
+                preloading_cmd: None,
                 package: package.as_str(),
                 start_seq: *start_seq,
                 target_sdk_version: *target_sdk_version,
@@ -766,6 +786,18 @@ impl<'builder, const N: usize> ToPacked<'builder> for ArrayVec<&str, N> {
     ) -> Self::PackedType {
         let packed_strings: Vec<_> = self.iter().map(|s| builder.create_string(s)).collect();
         builder.create_vector(&packed_strings)
+    }
+}
+
+// Needed for AndroidNative.preloading_cmd field
+impl<'builder> ToPacked<'builder> for Option<&[u8]> {
+    type PackedType = flatbuffers::WIPOffset<flatbuffers::Vector<'builder, u8>>;
+
+    fn to_packed(
+        &self,
+        builder: &mut flatbuffers::FlatBufferBuilder<'builder>,
+    ) -> Self::PackedType {
+        builder.create_vector(self.unwrap_or_default())
     }
 }
 

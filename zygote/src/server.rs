@@ -337,9 +337,10 @@ pub struct Server {
 
     registry: FileDescriptorRegistry,
 
-    epoll_handle: EpollHandle,
-    signal_fd: RawFd,
-    server_socket: RawFd,
+    // epoll_handle, server_socket and signal_fd are None only when exec spawning is used
+    epoll_handle: Option<EpollHandle>,
+    signal_fd: Option<RawFd>,
+    server_socket: Option<RawFd>,
     client_sockets: ArrayVec<RawFd, BUFFER_SIZE_CLIENT_SOCKETS>,
 
     server_socket_path: Option<String>,
@@ -361,47 +362,57 @@ impl Server {
 
         let mut registry = FileDescriptorRegistry::new(config.species)?;
 
-        let epoll_handle = EpollHandle::new().map_err(ServerError::Poll)?;
-        // SAFETY: The epoll fd will be closed in two circumstances:
-        //           1. The server is shutting down
-        //           2. The server is reinitializing
-        //
-        //         The first case occurs in the drop implementation, closing
-        //         file descriptor after any possible use.  In the second case
-        //         the handler is immediately overwritten in
-        //         [`Server::re_initialize_as_subspecies`].
-        registry.register(unsafe { epoll_handle.fd() }, file_descriptors::Action::Close)?;
+        let (epoll_handle, server_socket, server_socket_path, signal_fd) = if is_exec_spawning() {
+            // Keep in sync with the else branch
+            let sigset =
+                sys::build_sigset(Self::blocked_signals()).map_err(SignalHandlerError::SigSet)?;
+            // These masks are unblocked in Server::drop.
+            sys::sigprocmask(libc::SIG_BLOCK, &sigset).map_err(SignalHandlerError::SetMask)?;
+            (None, None, None, None)
+        } else {
+            let epoll_handle = EpollHandle::new().map_err(ServerError::Poll)?;
+            // SAFETY: The epoll fd will be closed in two circumstances:
+            //           1. The server is shutting down
+            //           2. The server is reinitializing
+            //
+            //         The first case occurs in the drop implementation, closing
+            //         file descriptor after any possible use.  In the second case
+            //         the handler is immediately overwritten in
+            //         [`Server::re_initialize_as_subspecies`].
+            registry.register(unsafe { epoll_handle.fd() }, file_descriptors::Action::Close)?;
 
-        let socket_path_or_fd = config.socket();
-        let (server_socket, server_socket_path) = Self::get_server_socket(socket_path_or_fd)?;
-        registry.register(server_socket, file_descriptors::Action::Close)?;
-        epoll_handle
-            .add(
-                server_socket,
-                libc::EPOLLIN as u32,
-                EpollData::new(server_socket, EpollTag::Server).into(),
-            )
-            .map_err(ServerError::Poll)?;
+            let socket_path_or_fd = config.socket();
+            let (server_socket, server_socket_path) = Self::get_server_socket(socket_path_or_fd)?;
+            registry.register(server_socket, file_descriptors::Action::Close)?;
+            epoll_handle
+                .add(
+                    server_socket,
+                    libc::EPOLLIN as u32,
+                    EpollData::new(server_socket, EpollTag::Server).into(),
+                )
+                .map_err(ServerError::Poll)?;
 
-        let sigset =
-            sys::build_sigset(Self::blocked_signals()).map_err(SignalHandlerError::SigSet)?;
-        // These masks are unblocked in Server::drop.
-        sys::sigprocmask(libc::SIG_BLOCK, &sigset).map_err(SignalHandlerError::SetMask)?;
-        let signal_fd =
-            sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).map_err(SignalHandlerError::SignalFd)?;
-        // The signal fd is reused after forking the subspecies process.
-        // Per `man signalfd`:
-        //     "After a fork(2), the child inherits a copy of the signalfd file
-        //     descriptor.  A read(2) from the file descriptor in the child will
-        //     return information about signals queued to the child."
-        registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)?;
-        epoll_handle
-            .add(
-                signal_fd,
-                libc::EPOLLIN as u32,
-                EpollData::new(signal_fd, EpollTag::Signal).into(),
-            )
-            .map_err(ServerError::Poll)?;
+            let sigset =
+                sys::build_sigset(Self::blocked_signals()).map_err(SignalHandlerError::SigSet)?;
+            // These masks are unblocked in Server::drop.
+            sys::sigprocmask(libc::SIG_BLOCK, &sigset).map_err(SignalHandlerError::SetMask)?;
+            let signal_fd =
+                sys::signalfd(-1, &sigset, libc::SFD_NONBLOCK).map_err(SignalHandlerError::SignalFd)?;
+            // The signal fd is reused after forking the subspecies process.
+            // Per `man signalfd`:
+            //     "After a fork(2), the child inherits a copy of the signalfd file
+            //     descriptor.  A read(2) from the file descriptor in the child will
+            //     return information about signals queued to the child."
+            registry.register(signal_fd, file_descriptors::Action::CloseUnlessSpawnSubspecies)?;
+            epoll_handle
+                .add(
+                    signal_fd,
+                    libc::EPOLLIN as u32,
+                    EpollData::new(signal_fd, EpollTag::Signal).into(),
+                )
+                .map_err(ServerError::Poll)?;
+            (Some(epoll_handle), Some(server_socket), server_socket_path, Some(signal_fd))
+        };
 
         // Register any unregistered file descriptors such as those used for logging.
         registry.register_new()?;
@@ -464,10 +475,12 @@ impl Server {
         self.client_sockets.clear();
         // The server RawFd is also already closed in
         // `reset_for_subspecies()`, so replace with a new one.
-        self.server_socket = child_socket_fd;
+        self.server_socket = Some(child_socket_fd);
         self.server_socket_path = child_socket_path;
 
-        self.epoll_handle = EpollHandle::new().map_err(ServerError::Poll)?;
+        self.epoll_handle = Some(EpollHandle::new().map_err(ServerError::Poll)?);
+        // epoll_handle, server_socket and signal_fd are None only when exec spawning is used, which
+        // never reaches this code
         self.registry
             // SAFETY: The epoll fd will be closed in two circumstances:
             //           1. The server is shutting down
@@ -479,19 +492,19 @@ impl Server {
             //         [`FileDescriptorRegistry::reset_for_subspecies`] in this
             //         function.  We have just overwritten the previous handler
             //         with this new one.
-            .register(unsafe { self.epoll_handle.fd() }, file_descriptors::Action::Close)?;
-        self.epoll_handle
+            .register(unsafe { self.epoll_handle.as_ref().unwrap().fd() }, file_descriptors::Action::Close)?;
+        self.epoll_handle.as_ref().unwrap()
             .add(
-                self.server_socket,
+                self.server_socket.unwrap(),
                 libc::EPOLLIN as u32,
-                EpollData::new(self.server_socket, EpollTag::Server).into(),
+                EpollData::new(self.server_socket.unwrap(), EpollTag::Server).into(),
             )
             .map_err(ServerError::Poll)?;
-        self.epoll_handle
+        self.epoll_handle.as_ref().unwrap()
             .add(
-                self.signal_fd,
+                self.signal_fd.unwrap(),
                 libc::EPOLLIN as u32,
-                EpollData::new(self.signal_fd, EpollTag::Signal).into(),
+                EpollData::new(self.signal_fd.unwrap(), EpollTag::Signal).into(),
             )
             .map_err(ServerError::Poll)?;
 
@@ -686,7 +699,8 @@ impl Server {
             self.registry
                 .register(new_client_fd, file_descriptors::Action::Close)
                 .map_err(ServerSocketError::ClientRegistration)?;
-            self.epoll_handle
+            // epoll_handle is None only when exec spawning is used, which never reaches this code
+            self.epoll_handle.as_ref().unwrap()
                 .add(
                     new_client_fd,
                     libc::EPOLLIN as u32,
@@ -803,7 +817,7 @@ impl Server {
 
                         Continue
                     }
-                    Message::Spawn { .. } => self.handle_message_spawn(fd, message_buffer),
+                    Message::Spawn { .. } => self.handle_message_spawn(Some(fd), message_buffer),
                     Message::SpawnSubspecies { socket_path, .. } => self
                         .handle_message_spawn_subspecies(
                             fd,
@@ -868,7 +882,7 @@ impl Server {
     #[tracing::instrument(level = "trace", skip_all)]
     fn handle_spawn<Thunk: FnOnce() -> Infallible>(
         &mut self,
-        fd: RawFd,
+        fd: Option<RawFd>,
         message_buffer: MessageBuffer,
         child_continuation: impl FnOnce(
             &mut Self,
@@ -895,19 +909,25 @@ impl Server {
 
         // let clone_args = sys::clone_args::new();
 
-        // SAFETY: This is called in a single-threaded context.
-        //
-        //         The `clone3()` function can produce the following errors:
-        //         EACCES, EAGAIN, EBUSY, EEXIST, EINVAL, ENOSPC, ENOMEM,
-        //         EOPNOTSUPP, EPERM, ERESTARTNOINTR, EUSERS.
-        //
-        //         The Zygote can not recover from EAGAIN or ENOMEM.
-        //         ERESTARTNOINTR will not trigger during normal operations as
-        //         signals are handled via a signalfd and not asynchronous
-        //         signal handlers.  Errors are logged below.
-        //
-        // TODO: Revert to using `clone3` after b/439747272 is resolved
-        match unsafe { sys::fork() } {
+        let fork_result = if is_exec_spawning() {
+            Ok(0)
+        } else {
+            // SAFETY: This is called in a single-threaded context.
+            //
+            //         The `clone3()` function can produce the following errors:
+            //         EACCES, EAGAIN, EBUSY, EEXIST, EINVAL, ENOSPC, ENOMEM,
+            //         EOPNOTSUPP, EPERM, ERESTARTNOINTR, EUSERS.
+            //
+            //         The Zygote can not recover from EAGAIN or ENOMEM.
+            //         ERESTARTNOINTR will not trigger during normal operations as
+            //         signals are handled via a signalfd and not asynchronous
+            //         signal handlers.  Errors are logged below.
+            //
+            // TODO: Revert to using `clone3` after b/439747272 is resolved
+            unsafe { sys::fork() }
+        };
+
+        match fork_result {
             Ok(0) => {
                 // Child process
 
@@ -924,11 +944,12 @@ impl Server {
                 // Server process
                 info!("Spawned process {new_pid}");
                 let response = Message::SpawnResponse { pid: new_pid };
-                match sys::sendmsg(fd, response.to_parcel().finished_data()) {
+                // fd is None only when exec spawning is used, which never reaches this code
+                match sys::sendmsg(fd.unwrap(), response.to_parcel().finished_data()) {
                     Ok(_) => Continue,
                     Err(error) => {
                         error!("Failed to send Spawn response: {error}");
-                        Break(Err(ClientError::SpawnResponse(fd, error)))
+                        Break(Err(ClientError::SpawnResponse(fd.unwrap(), error)))
                     }
                 }
             }
@@ -965,7 +986,8 @@ impl Server {
                     error!("Unexpected error code returned by call to `clone3()`: {errno}");
                 }
 
-                Break(Err(ClientError::ProcessCreationFailure(fd, errno.into())))
+                // fd is None only when exec spawning is used, which never reaches this code
+                Break(Err(ClientError::ProcessCreationFailure(fd.unwrap(), errno.into())))
             }
             Err(_) => {
                 unreachable!("The fork and clone3 calls can only return sys::Error::Libc variants")
@@ -973,11 +995,29 @@ impl Server {
         }
     }
 
+
+    /// Process exec spawning command
+    pub fn handle_message_exec_spawn(
+        &mut self,
+        message_buffer: MessageBuffer,
+    ) -> Result<impl FnOnce() -> Infallible + use<>, ClientError> {
+        match self.handle_message_spawn(None, message_buffer) {
+            Break(result) => match result {
+                Ok(server_control) => match server_control {
+                    ServerControl::Trampoline(thunk) => Ok(thunk),
+                    _ => panic!("server control result in not Trampoline"),
+                }
+                Err(err) => Err(err),
+            },
+            Continue => panic!("handle_message_spawn returned Continue")
+        }
+    }
+
     #[allow(unreachable_code)]
     #[tracing::instrument(level = "trace", skip_all)]
     fn handle_message_spawn(
         &mut self,
-        fd: RawFd,
+        fd: Option<RawFd>,
         message_buffer: MessageBuffer,
     ) -> LoopControl<ServerControlResult<impl FnOnce() -> Infallible + use<>, ClientError>> {
         // Creating local copies avoids capturing additional references.
@@ -1038,7 +1078,7 @@ impl Server {
         // Creating local copies avoids capturing additional references.
         let species: SpeciesRef = self.species;
 
-        self.handle_spawn(fd, message_buffer, move |server, spawn_params| {
+        self.handle_spawn(Some(fd), message_buffer, move |server, spawn_params| {
             let message =
                 Message::try_from_parcel(&message_buffer).expect("Verified message is now invalid");
             let spawn_payload =
@@ -1135,7 +1175,8 @@ impl Server {
 
     fn remove_client_socket(&mut self, fd: RawFd) -> ClientResult<()> {
         self.registry.remove(fd)?;
-        self.epoll_handle.remove(fd).map_err(ClientError::Poll)?;
+        // epoll_handle is None only when exec spawning is used, which never reaches this code
+        self.epoll_handle.as_ref().unwrap().remove(fd).map_err(ClientError::Poll)?;
         self.client_sockets.remove(
             self.client_sockets
                 .iter()
@@ -1160,7 +1201,8 @@ impl Server {
 
         loop {
             let num_ready =
-                self.epoll_handle.wait(&mut event_buf, -1).map_err(ServerError::Poll)?;
+                // epoll_handle is None only when exec spawning is used, which never reaches this code
+                self.epoll_handle.as_ref().unwrap().wait(&mut event_buf, -1).map_err(ServerError::Poll)?;
 
             // TODO: Dump the file descriptor table before returning an Err.
             match self.check_epoll_events(&event_buf[..num_ready])? {
@@ -1205,4 +1247,16 @@ impl Drop for Server {
             sys::sigprocmask(libc::SIG_UNBLOCK, &sigset).expect("Failed to unset signal mask");
         }
     }
+}
+
+static IS_EXEC_SPAWNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns whether the process is in exec spawning mode
+pub fn is_exec_spawning() -> bool {
+    IS_EXEC_SPAWNING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets the exec spawning mode flag
+pub fn set_exec_spawning() {
+    IS_EXEC_SPAWNING.store(true, std::sync::atomic::Ordering::Relaxed)
 }
