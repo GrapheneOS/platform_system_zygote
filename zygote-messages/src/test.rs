@@ -37,6 +37,7 @@ fn test_capability_flags_marshaling() {
 #[test]
 fn test_message_get_spawn_data() {
     let common = SpawnParamsCommon {
+        selinux_flags: Some(0xabcd_ef01_2345_6789),
         uid: Some(1000),
         gid: Some(1000),
         process_name: Some("test".to_string()),
@@ -56,6 +57,7 @@ fn test_message_get_spawn_data() {
     let spawn_msg = Message::Spawn { common: common.clone(), payload };
 
     assert!(spawn_msg.get_spawn_params().is_some());
+    assert_eq!(spawn_msg.get_spawn_params().unwrap().selinux_flags, Some(0xabcd_ef01_2345_6789));
     assert_eq!(spawn_msg.get_spawn_params().unwrap().uid, Some(1000));
     assert!(spawn_msg.get_spawn_payload().is_some());
     if let Some(SpawnPayload::Mock { name }) = spawn_msg.get_spawn_payload() {
@@ -80,6 +82,7 @@ fn test_message_parser_to_message() {
     assert!(matches!(msg, Message::Exit));
 
     let common_parser = SpawnCommonParser {
+        selinux_flags: Some(0xabcd_ef01_2345_6789),
         uid: Some(100),
         gid: Some(200),
         process_name: Some("name".to_string()),
@@ -93,6 +96,7 @@ fn test_message_parser_to_message() {
 
     let msg = parser.to_message().expect("Failed to convert Spawn parser");
     if let Message::Spawn { common, payload } = msg {
+        assert_eq!(common.selinux_flags, Some(0xabcd_ef01_2345_6789));
         assert_eq!(common.uid, Some(100));
         assert_eq!(common.gid, Some(200));
         assert_eq!(common.process_name, Some("name".to_string()));
@@ -143,6 +147,7 @@ fn test_message_roundtrip_identity_query_response() {
 #[test]
 fn test_message_roundtrip_spawn() {
     let common = SpawnParamsCommon {
+        selinux_flags: Some(0xabcd_ef01_2345_6789),
         uid: Some(1234),
         gid: Some(5678),
         process_name: Some("spawn_test".to_string()),
@@ -165,6 +170,7 @@ fn test_message_roundtrip_spawn() {
 
     let decoded = Message::try_from_parcel(bytes).expect("Failed to decode Spawn message");
     if let Message::Spawn { common: decoded_common, payload: decoded_payload } = decoded {
+        assert_eq!(decoded_common.selinux_flags, common.selinux_flags);
         assert_eq!(decoded_common.uid, common.uid);
         assert_eq!(decoded_common.gid, common.gid);
         assert_eq!(decoded_common.process_name, common.process_name);
@@ -237,6 +243,7 @@ fn test_message_roundtrip_stat_response() {
 #[test]
 fn test_message_roundtrip_spawn_subspecies() {
     let common = SpawnParamsCommon {
+        selinux_flags: Some(0xabcd_ef01_2345_6789),
         uid: Some(999),
         gid: Some(888),
         process_name: Some("subspecies_test".to_string()),
@@ -266,6 +273,7 @@ fn test_message_roundtrip_spawn_subspecies() {
         payload: decoded_payload,
     } = decoded
     {
+        assert_eq!(decoded_common.selinux_flags, common.selinux_flags);
         assert_eq!(decoded_common.uid, common.uid);
         assert_eq!(decoded_socket_path, "/tmp/sub.sock");
         if let SpawnPayload::Mock { name } = decoded_payload {
@@ -284,6 +292,7 @@ fn test_rlimits_roundtrip() {
     rlimits.push(RLimitData { resource: libc::RLIMIT_NOFILE as _, soft: 1024, hard: 2048 });
 
     let common = SpawnParamsCommon {
+        selinux_flags: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -316,6 +325,7 @@ fn test_rlimits_roundtrip() {
 #[test]
 fn test_spawn_params_common_or() {
     let params1 = SpawnParamsCommon {
+        selinux_flags: None,
         uid: Some(1000),
         gid: None,
         process_name: Some("process1".to_string()),
@@ -331,6 +341,7 @@ fn test_spawn_params_common_or() {
     };
 
     let params2 = SpawnParamsCommon {
+        selinux_flags: Some(0xabcd_ef01_2345_6789),
         uid: None,
         gid: Some(2000),
         process_name: Some("process2".to_string()),
@@ -347,6 +358,7 @@ fn test_spawn_params_common_or() {
 
     let combined = params1.or(&params2);
 
+    assert_eq!(combined.selinux_flags, Some(0xabcd_ef01_2345_6789));
     assert_eq!(combined.uid, Some(1000));
     assert_eq!(combined.gid, Some(2000));
     assert_eq!(combined.process_name, Some("process1".to_string()));
@@ -368,6 +380,7 @@ fn test_spawn_params_common_or_rlimits() {
     rlimits2.push(RLimitData { resource: libc::RLIMIT_CPU as _, soft: 60, hard: 120 });
 
     let p1 = SpawnParamsCommon {
+        selinux_flags: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -383,6 +396,7 @@ fn test_spawn_params_common_or_rlimits() {
     };
 
     let p2 = SpawnParamsCommon {
+        selinux_flags: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -406,6 +420,7 @@ fn test_spawn_params_common_or_rlimits() {
 #[test]
 fn test_spawn_params_common_string_none_roundtrip() {
     let common = SpawnParamsCommon {
+        selinux_flags: None,
         uid: None,
         gid: None,
         process_name: None,
