@@ -6,5 +6,5 @@ service zygote_next /system/bin/zygote_next --name zygote_next --species android
     disabled
     onrestart setprop zygote.zygote_next.server_ready false
 
-on boot && property:persist.zygote.zygote_next.start_on_boot=true && property:persist.security.exec_spawn=0
+on boot && property:persist.zygote.zygote_next.start_on_boot=true && persist.security.exec_spawn=0
     start zygote_next
