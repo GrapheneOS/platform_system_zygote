@@ -997,8 +997,11 @@ impl Server {
 
 
     /// Process exec spawning command
+    ///
+    /// This consumes the server so that it is dropped, performing the child
+    /// process cleanup, before the returned thunk can be invoked.
     pub fn handle_message_exec_spawn(
-        &mut self,
+        mut self,
         message_buffer: MessageBuffer,
     ) -> Result<impl FnOnce() -> Infallible + use<>, ClientError> {
         match self.handle_message_spawn(None, message_buffer) {
@@ -1220,7 +1223,10 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if self.pid == sys::getpid() {
+        // An exec-spawned application does not fork after constructing the
+        // Server, so its PID still matches self.pid. Exclude it here so that it
+        // takes the application cleanup path below, like a forked child.
+        if self.pid == sys::getpid() && !is_exec_spawning() {
             self.species.on_server_destroy();
 
             // Clean up the server code in the server process

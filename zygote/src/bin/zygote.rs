@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             let cmd_fd_len = cmd_fd_arg[separator_idx + 1..].parse::<usize>()?;
             cmd_file.read_exact(&mut msg_bytes[0..cmd_fd_len])?;
         }
-        let mut server = server::Server::new(&config).map_err(|error| {
+        let server = server::Server::new(&config).map_err(|error| {
             log::error!("Error constructing server: {error}");
             error
         })?;
