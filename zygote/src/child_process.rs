@@ -96,8 +96,15 @@ pub(crate) fn re_initialize(
         }
     }
 
-    // Add the process to any secondary groups if requested
-    if !spawn_params.secondary_groups.is_empty() {
+    // Exec-spawned processes inherit readproc and reserved_disk from the primary Java Zygote
+    // across fork and exec. Call setgroups even when the requested list is empty, so these inherited
+    // groups are always replaced.
+    //
+    // The persistent native Zygote starts without supplementary groups, while children of native
+    // app zygotes keep their parent's groups. Skip setgroups for an empty list to preserve this
+    // inheritance, and because the app zygote seccomp filter that these children inherit blocks
+    // the syscall.
+    if !spawn_params.secondary_groups.is_empty() || crate::server::is_exec_spawning() {
         sys::setgroups(spawn_params.secondary_groups.as_slice()).expect("Failed to set groups");
     }
 
