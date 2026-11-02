@@ -38,6 +38,7 @@ fn test_capability_flags_marshaling() {
 fn test_message_get_spawn_data() {
     let common = SpawnParamsCommon {
         selinux_flags: Some(0xabcd_ef01_2345_6789),
+        no_new_privs: None,
         uid: Some(1000),
         gid: Some(1000),
         process_name: Some("test".to_string()),
@@ -148,6 +149,7 @@ fn test_message_roundtrip_identity_query_response() {
 fn test_message_roundtrip_spawn() {
     let common = SpawnParamsCommon {
         selinux_flags: Some(0xabcd_ef01_2345_6789),
+        no_new_privs: Some(true),
         uid: Some(1234),
         gid: Some(5678),
         process_name: Some("spawn_test".to_string()),
@@ -171,6 +173,7 @@ fn test_message_roundtrip_spawn() {
     let decoded = Message::try_from_parcel(bytes).expect("Failed to decode Spawn message");
     if let Message::Spawn { common: decoded_common, payload: decoded_payload } = decoded {
         assert_eq!(decoded_common.selinux_flags, common.selinux_flags);
+        assert_eq!(decoded_common.no_new_privs, Some(true));
         assert_eq!(decoded_common.uid, common.uid);
         assert_eq!(decoded_common.gid, common.gid);
         assert_eq!(decoded_common.process_name, common.process_name);
@@ -244,6 +247,7 @@ fn test_message_roundtrip_stat_response() {
 fn test_message_roundtrip_spawn_subspecies() {
     let common = SpawnParamsCommon {
         selinux_flags: Some(0xabcd_ef01_2345_6789),
+        no_new_privs: None,
         uid: Some(999),
         gid: Some(888),
         process_name: Some("subspecies_test".to_string()),
@@ -293,6 +297,7 @@ fn test_rlimits_roundtrip() {
 
     let common = SpawnParamsCommon {
         selinux_flags: None,
+        no_new_privs: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -326,6 +331,7 @@ fn test_rlimits_roundtrip() {
 fn test_spawn_params_common_or() {
     let params1 = SpawnParamsCommon {
         selinux_flags: None,
+        no_new_privs: None,
         uid: Some(1000),
         gid: None,
         process_name: Some("process1".to_string()),
@@ -342,6 +348,7 @@ fn test_spawn_params_common_or() {
 
     let params2 = SpawnParamsCommon {
         selinux_flags: Some(0xabcd_ef01_2345_6789),
+        no_new_privs: Some(true),
         uid: None,
         gid: Some(2000),
         process_name: Some("process2".to_string()),
@@ -359,6 +366,7 @@ fn test_spawn_params_common_or() {
     let combined = params1.or(&params2);
 
     assert_eq!(combined.selinux_flags, Some(0xabcd_ef01_2345_6789));
+    assert_eq!(combined.no_new_privs, Some(true));
     assert_eq!(combined.uid, Some(1000));
     assert_eq!(combined.gid, Some(2000));
     assert_eq!(combined.process_name, Some("process1".to_string()));
@@ -381,6 +389,7 @@ fn test_spawn_params_common_or_rlimits() {
 
     let p1 = SpawnParamsCommon {
         selinux_flags: None,
+        no_new_privs: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -397,6 +406,7 @@ fn test_spawn_params_common_or_rlimits() {
 
     let p2 = SpawnParamsCommon {
         selinux_flags: None,
+        no_new_privs: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -421,6 +431,7 @@ fn test_spawn_params_common_or_rlimits() {
 fn test_spawn_params_common_string_none_roundtrip() {
     let common = SpawnParamsCommon {
         selinux_flags: None,
+        no_new_privs: None,
         uid: None,
         gid: None,
         process_name: None,
@@ -447,6 +458,7 @@ fn test_spawn_params_common_string_none_roundtrip() {
         // unmarshal_string returns Some("".to_string()) for Some("").
         assert_eq!(decoded_common.process_name, Some("".to_string()));
         assert_eq!(decoded_common.se_info, Some("".to_string()));
+        assert_eq!(decoded_common.no_new_privs, Some(false));
     } else {
         panic!("Wrong message type");
     }
