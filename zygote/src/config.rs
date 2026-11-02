@@ -142,6 +142,7 @@ impl Server {
     pub(crate) fn to_spawn_params(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
             selinux_flags: self.selinux_flags,
+            no_new_privs: None,
             uid: self.uid,
             gid: self.gid,
             process_name: self.process_name.clone(),

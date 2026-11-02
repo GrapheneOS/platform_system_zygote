@@ -194,6 +194,10 @@ pub struct SpawnParamsCommon {
     #[marshal(default = 0)]
     #[unmarshal(valid_range = (0..))]
     pub selinux_flags: Option<u64>,
+    /// Whether to set NO_NEW_PRIVS after the SELinux context transition
+    #[marshal(default = false)]
+    #[unmarshal(valid_range = (false..))]
+    pub no_new_privs: Option<bool>,
     /// UID for the new process
     #[marshal(default = -1)]
     #[unmarshal(valid_range = (1..))]
@@ -251,6 +255,7 @@ impl SpawnParamsCommon {
     pub fn or(&self, other: &Self) -> SpawnParamsCommon {
         SpawnParamsCommon {
             selinux_flags: self.selinux_flags.or(other.selinux_flags),
+            no_new_privs: self.no_new_privs.or(other.no_new_privs),
             uid: self.uid.or(other.uid),
             gid: self.gid.or(other.gid),
             process_name: self.process_name.clone().or(other.process_name.clone()),
@@ -585,6 +590,7 @@ impl SpawnCommonParser {
     pub fn to_spawn_common(&self) -> SpawnParamsCommon {
         SpawnParamsCommon {
             selinux_flags: self.selinux_flags,
+            no_new_privs: None,
             uid: self.uid,
             gid: self.gid,
             process_name: self.process_name.clone(),

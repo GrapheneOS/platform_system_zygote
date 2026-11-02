@@ -63,6 +63,7 @@ root_type SpawnSubspeciesAndroidNative;
 
 table SpawnCommon {
     selinux_flags: uint64;
+    no_new_privs: bool;
     uid: int32;
     gid: int32;
 
