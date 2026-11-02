@@ -288,6 +288,12 @@ impl Species for App {
             spawn_params.selinux_flags.expect("no selinux_flags"),
         )
         .expect("Unable to transition SE Linux contexts");
+
+        // exec-spawned replacements of app zygote children don't inherit NO_NEW_PRIVS from the app
+        // zygote. It's set after the SELinux context transition, which it would otherwise restrict
+        if spawn_params.no_new_privs == Some(true) {
+            sys::prctl_set_no_new_privs().expect("Failed to set NO_NEW_PRIVS");
+        }
     }
 
     fn re_initialize_prologue(
